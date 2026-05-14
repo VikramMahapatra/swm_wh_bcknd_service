@@ -1,0 +1,164 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Webhook Request Rate (req/s)",
+      "targets": [
+        {
+          "expr": "sum(rate(swm_webhook_gps_requests_total[1m]))"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Request Rate by Vendor/Status",
+      "targets": [
+        {
+          "expr": "sum by (vendor_id, status) (rate(swm_webhook_gps_requests_total[1m]))"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Payload Throughput (published events/s)",
+      "targets": [
+        {
+          "expr": "sum(rate(swm_webhook_gps_payload_records_total{stage=\"published\"}[1m]))"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Payload Throughput by Vendor",
+      "targets": [
+        {
+          "expr": "sum by (vendor_id) (rate(swm_webhook_gps_payload_records_total{stage=\"published\"}[1m]))"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Webhook Latency p95/p99 (ms)",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(swm_webhook_gps_processing_seconds_bucket[1m]))) * 1000"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(swm_webhook_gps_processing_seconds_bucket[1m]))) * 1000"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency p95 by Vendor",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, vendor_id) (rate(swm_webhook_gps_processing_seconds_bucket[1m]))) * 1000"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Validation Failures (events/s)",
+      "targets": [
+        {
+          "expr": "sum(rate(swm_webhook_gps_validation_failures_total[1m]))"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Publish Failures by Retryability (events/s)",
+      "targets": [
+        {
+          "expr": "sum by (retryable) (rate(swm_webhook_gps_publish_failures_total[1m]))"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Validation Failures by Vendor",
+      "targets": [
+        {
+          "expr": "sum by (vendor_id, stage) (rate(swm_webhook_gps_validation_failures_total[1m]))"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Publish Failures by Vendor",
+      "targets": [
+        {
+          "expr": "sum by (vendor_id, retryable) (rate(swm_webhook_gps_publish_failures_total[1m]))"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      }
+    }
+  ],
+  "schemaVersion": 39,
+  "title": "Ingestion Webhook Performance",
+  "version": 1
+}

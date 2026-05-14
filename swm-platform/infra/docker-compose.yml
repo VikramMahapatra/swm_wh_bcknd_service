@@ -1,0 +1,454 @@
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-default-restart: &default-restart
+  restart: unless-stopped
+
+x-default-security: &default-security
+  init: true
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  nginx:
+    <<: [*default-restart, *default-security]
+    build:
+      context: ..
+      dockerfile: infra/nginx/Dockerfile
+    depends_on:
+      ingestion-api:
+        condition: service_healthy
+      websocket-api:
+        condition: service_healthy
+      admin-api:
+        condition: service_healthy
+    ports:
+      - "80:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - fleet-internal
+    logging: *default-logging
+    mem_limit: 256m
+    cpus: "0.50"
+
+  redis:
+    <<: [*default-restart, *default-security]
+    image: redis:7.2-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --no-appendfsync-on-rewrite
+      - "yes"
+      - --auto-aof-rewrite-percentage
+      - "200"
+      - --auto-aof-rewrite-min-size
+      - 256mb
+      - --save
+      - "300 100000"
+      - --maxmemory
+      - 1536mb
+      - --maxmemory-policy
+      - allkeys-lru
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - fleet-internal
+    logging: *default-logging
+    mem_limit: 2g
+    cpus: "1.50"
+
+  postgres:
+    <<: [*default-restart, *default-security]
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: swm
+      POSTGRES_USER: swm
+      POSTGRES_PASSWORD: swm
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U swm -d swm"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    networks:
+      - fleet-internal
+    logging: *default-logging
+    mem_limit: 1g
+    cpus: "1.00"
+
+  clickhouse:
+    <<: [*default-restart, *default-security]
+    image: clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_DB: swm
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: "swm123"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - clickhouse-logs:/var/log/clickhouse-server
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8123/ping || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    networks:
+      - fleet-internal
+    logging: *default-logging
+    mem_limit: 2g
+    cpus: "2.00"
+
+  prometheus:
+    <<: [*default-restart, *default-security]
+    image: prom/prometheus:v2.54.1
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - fleet-internal
+    logging: *default-logging
+    mem_limit: 768m
+    cpus: "1.00"
+
+  grafana:
+    <<: [*default-restart, *default-security]
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - fleet-internal
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "0.75"
+
+  ingestion-api:
+    <<: [*default-restart, *default-security]
+    build:
+      context: ..
+      dockerfile: apps/ingestion-api/Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      ENV: prod
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: swm
+      POSTGRES_USER: swm
+      POSTGRES_PASSWORD: swm
+      POSTGRES_DSN: postgresql+asyncpg://swm:swm@postgres:5432/swm
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: swm
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: "swm123"
+      CLICKHOUSE_DSN: http://default:swm123@clickhouse:8123
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379/0
+      REDIS_MAX_CONNECTIONS: 200
+      REDIS_RETRY_ATTEMPTS: 5
+      WAIT_FOR_HOSTS: redis:6379,postgres:5432,clickhouse:8123
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/healthz', timeout=3).getcode()==200 else 1)\""]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - fleet-internal
+    logging: *default-logging
+    mem_limit: 768m
+    cpus: "1.00"
+
+  websocket-api:
+    <<: [*default-restart, *default-security]
+    build:
+      context: ..
+      dockerfile: apps/websocket-api/Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      ENV: prod
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379/0
+      WAIT_FOR_HOSTS: redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8002/healthz', timeout=3).getcode()==200 else 1)\""]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - fleet-internal
+    logging: *default-logging
+    mem_limit: 768m
+    cpus: "1.00"
+
+  admin-api:
+    <<: [*default-restart, *default-security]
+    build:
+      context: ..
+      dockerfile: apps/admin-api/Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      ENV: prod
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: swm
+      POSTGRES_USER: swm
+      POSTGRES_PASSWORD: swm
+      POSTGRES_DSN: postgresql+asyncpg://swm:swm@postgres:5432/swm
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: swm
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: "swm123"
+      CLICKHOUSE_DSN: http://default:swm123@clickhouse:8123
+      WAIT_FOR_HOSTS: postgres:5432,clickhouse:8123
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "8003:8003"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8003/healthz', timeout=3).getcode()==200 else 1)\""]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - fleet-internal
+    logging: *default-logging
+    mem_limit: 768m
+    cpus: "1.00"
+
+  realtime-worker:
+    <<: [*default-restart, *default-security]
+    build:
+      context: ..
+      dockerfile: workers/realtime-worker/Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      ENV: prod
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379/0
+      TELEMETRY_STREAM: gps.telemetry.raw
+      TELEMETRY_GROUP: realtime
+      WAIT_FOR_HOSTS: redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os,sys; sys.exit(0 if os.path.exists('/tmp/worker-ready') else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - fleet-internal
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "0.75"
+
+  storage-worker:
+    <<: [*default-restart, *default-security]
+    build:
+      context: ..
+      dockerfile: workers/storage-worker/Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      ENV: prod
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: swm
+      POSTGRES_USER: swm
+      POSTGRES_PASSWORD: swm
+      POSTGRES_DSN: postgresql+asyncpg://swm:swm@postgres:5432/swm
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: swm
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: "swm123"
+      CLICKHOUSE_DSN: http://default:swm123@clickhouse:8123
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379/0
+      TELEMETRY_STREAM: gps.telemetry.raw
+      TELEMETRY_GROUP: storage
+      WAIT_FOR_HOSTS: redis:6379,postgres:5432,clickhouse:8123
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os,sys; sys.exit(0 if os.path.exists('/tmp/worker-ready') else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - fleet-internal
+    logging: *default-logging
+    mem_limit: 768m
+    cpus: "1.00"
+
+  analytics-worker:
+    <<: [*default-restart, *default-security]
+    build:
+      context: ..
+      dockerfile: workers/analytics-worker/Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      ENV: prod
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379/0
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: swm
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: "swm123"
+      CLICKHOUSE_DSN: http://default:swm123@clickhouse:8123
+      TELEMETRY_STREAM: gps.telemetry.raw
+      TELEMETRY_GROUP: analytics
+      WAIT_FOR_HOSTS: redis:6379,clickhouse:8123
+    depends_on:
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os,sys; sys.exit(0 if os.path.exists('/tmp/worker-ready') else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - fleet-internal
+    logging: *default-logging
+    mem_limit: 768m
+    cpus: "1.00"
+
+  alert-worker:
+    <<: [*default-restart, *default-security]
+    build:
+      context: ..
+      dockerfile: workers/alert-worker/Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      ENV: prod
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379/0
+      TELEMETRY_STREAM: gps.telemetry.raw
+      TELEMETRY_GROUP: alert
+      WAIT_FOR_HOSTS: redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os,sys; sys.exit(0 if os.path.exists('/tmp/worker-ready') else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - fleet-internal
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "0.75"
+
+networks:
+  fleet-internal:
+    driver: bridge
+
+volumes:
+  redis-data:
+  postgres-data:
+  clickhouse-data:
+  clickhouse-logs:
+  prometheus-data:
+  grafana-data:

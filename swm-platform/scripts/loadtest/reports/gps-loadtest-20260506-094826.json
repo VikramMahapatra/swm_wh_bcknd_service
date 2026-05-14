@@ -1,0 +1,359 @@
+{
+  "generated_at": "2026-05-06T09:48:26.911935+00:00",
+  "config": {
+    "base_url": "http://127.0.0.1:8001",
+    "endpoint": "/webhook/gps",
+    "trucks": 200,
+    "target_eps": 300,
+    "duration_seconds": 15,
+    "concurrency": 80,
+    "timeout_seconds": 5.0,
+    "seed": 42
+  },
+  "scenarios": [
+    {
+      "scenario": "steady_traffic",
+      "duration_seconds": 15,
+      "expected_events": 4500,
+      "generated_requests": 4500,
+      "http": {
+        "2xx": 4500,
+        "4xx": 0,
+        "5xx": 0,
+        "transport_failures": 0
+      },
+      "application": {
+        "accepted": 4500,
+        "published": 4500,
+        "rejected": 0,
+        "validation_failures": 0,
+        "publish_failures": 0
+      },
+      "throughput": {
+        "requests_per_sec": 300.0,
+        "payload_per_sec": 300.0
+      },
+      "latency": {
+        "avg_ms": 2047.478,
+        "p50_ms": 1451.091,
+        "p95_ms": 6069.704,
+        "p99_ms": 8797.518,
+        "max_ms": 15357.036
+      },
+      "vendor_breakdown": {
+        "vendor_a": {
+          "requests": 1508,
+          "http_2xx": 1508,
+          "http_4xx": 0,
+          "http_5xx": 0,
+          "accepted": 1508,
+          "published": 1508,
+          "rejected": 0,
+          "validation_failures": 0,
+          "publish_failures": 0,
+          "latency": {
+            "avg_ms": 2007.797,
+            "p50_ms": 1425.606,
+            "p95_ms": 5814.803,
+            "p99_ms": 8499.408,
+            "max_ms": 15357.036
+          }
+        },
+        "vendor_b": {
+          "requests": 1507,
+          "http_2xx": 1507,
+          "http_4xx": 0,
+          "http_5xx": 0,
+          "accepted": 1507,
+          "published": 1507,
+          "rejected": 0,
+          "validation_failures": 0,
+          "publish_failures": 0,
+          "latency": {
+            "avg_ms": 2072.214,
+            "p50_ms": 1450.237,
+            "p95_ms": 6112.922,
+            "p99_ms": 10146.974,
+            "max_ms": 14054.714
+          }
+        },
+        "vendor_c": {
+          "requests": 1485,
+          "http_2xx": 1485,
+          "http_4xx": 0,
+          "http_5xx": 0,
+          "accepted": 1485,
+          "published": 1485,
+          "rejected": 0,
+          "validation_failures": 0,
+          "publish_failures": 0,
+          "latency": {
+            "avg_ms": 2062.67,
+            "p50_ms": 1481.411,
+            "p95_ms": 6145.783,
+            "p99_ms": 8496.486,
+            "max_ms": 12127.284
+          }
+        }
+      }
+    },
+    {
+      "scenario": "burst_traffic",
+      "duration_seconds": 15,
+      "expected_events": 3600,
+      "generated_requests": 3600,
+      "http": {
+        "2xx": 3599,
+        "4xx": 0,
+        "5xx": 0,
+        "transport_failures": 1
+      },
+      "application": {
+        "accepted": 3599,
+        "published": 3599,
+        "rejected": 0,
+        "validation_failures": 0,
+        "publish_failures": 0
+      },
+      "throughput": {
+        "requests_per_sec": 240.0,
+        "payload_per_sec": 239.93
+      },
+      "latency": {
+        "avg_ms": 2243.821,
+        "p50_ms": 1587.803,
+        "p95_ms": 6707.206,
+        "p99_ms": 10163.723,
+        "max_ms": 16109.296
+      },
+      "vendor_breakdown": {
+        "vendor_a": {
+          "requests": 1206,
+          "http_2xx": 1206,
+          "http_4xx": 0,
+          "http_5xx": 0,
+          "accepted": 1206,
+          "published": 1206,
+          "rejected": 0,
+          "validation_failures": 0,
+          "publish_failures": 0,
+          "latency": {
+            "avg_ms": 2231.912,
+            "p50_ms": 1535.86,
+            "p95_ms": 6746.078,
+            "p99_ms": 9544.612,
+            "max_ms": 16109.296
+          }
+        },
+        "vendor_b": {
+          "requests": 1206,
+          "http_2xx": 1205,
+          "http_4xx": 0,
+          "http_5xx": 0,
+          "accepted": 1205,
+          "published": 1205,
+          "rejected": 0,
+          "validation_failures": 0,
+          "publish_failures": 0,
+          "latency": {
+            "avg_ms": 2248.156,
+            "p50_ms": 1624.096,
+            "p95_ms": 6697.392,
+            "p99_ms": 9849.978,
+            "max_ms": 15753.727
+          }
+        },
+        "vendor_c": {
+          "requests": 1188,
+          "http_2xx": 1188,
+          "http_4xx": 0,
+          "http_5xx": 0,
+          "accepted": 1188,
+          "published": 1188,
+          "rejected": 0,
+          "validation_failures": 0,
+          "publish_failures": 0,
+          "latency": {
+            "avg_ms": 2251.515,
+            "p50_ms": 1601.651,
+            "p95_ms": 6628.207,
+            "p99_ms": 10364.955,
+            "max_ms": 13322.345
+          }
+        }
+      }
+    },
+    {
+      "scenario": "latency_benchmark",
+      "duration_seconds": 10,
+      "expected_events": 1200,
+      "generated_requests": 1200,
+      "http": {
+        "2xx": 1200,
+        "4xx": 0,
+        "5xx": 0,
+        "transport_failures": 0
+      },
+      "application": {
+        "accepted": 1200,
+        "published": 1200,
+        "rejected": 0,
+        "validation_failures": 0,
+        "publish_failures": 0
+      },
+      "throughput": {
+        "requests_per_sec": 120.0,
+        "payload_per_sec": 120.0
+      },
+      "latency": {
+        "avg_ms": 1944.219,
+        "p50_ms": 1302.648,
+        "p95_ms": 6047.595,
+        "p99_ms": 8853.348,
+        "max_ms": 11628.375
+      },
+      "vendor_breakdown": {
+        "vendor_a": {
+          "requests": 402,
+          "http_2xx": 402,
+          "http_4xx": 0,
+          "http_5xx": 0,
+          "accepted": 402,
+          "published": 402,
+          "rejected": 0,
+          "validation_failures": 0,
+          "publish_failures": 0,
+          "latency": {
+            "avg_ms": 1939.911,
+            "p50_ms": 1241.496,
+            "p95_ms": 6659.399,
+            "p99_ms": 9831.963,
+            "max_ms": 11628.375
+          }
+        },
+        "vendor_b": {
+          "requests": 402,
+          "http_2xx": 402,
+          "http_4xx": 0,
+          "http_5xx": 0,
+          "accepted": 402,
+          "published": 402,
+          "rejected": 0,
+          "validation_failures": 0,
+          "publish_failures": 0,
+          "latency": {
+            "avg_ms": 1962.27,
+            "p50_ms": 1404.135,
+            "p95_ms": 5683.755,
+            "p99_ms": 8120.487,
+            "max_ms": 10432.438
+          }
+        },
+        "vendor_c": {
+          "requests": 396,
+          "http_2xx": 396,
+          "http_4xx": 0,
+          "http_5xx": 0,
+          "accepted": 396,
+          "published": 396,
+          "rejected": 0,
+          "validation_failures": 0,
+          "publish_failures": 0,
+          "latency": {
+            "avg_ms": 1930.269,
+            "p50_ms": 1346.754,
+            "p95_ms": 5836.824,
+            "p99_ms": 8421.238,
+            "max_ms": 11584.672
+          }
+        }
+      }
+    },
+    {
+      "scenario": "failure_benchmark",
+      "duration_seconds": 15,
+      "expected_events": 4500,
+      "generated_requests": 4500,
+      "http": {
+        "2xx": 4273,
+        "4xx": 227,
+        "5xx": 0,
+        "transport_failures": 0
+      },
+      "application": {
+        "accepted": 3654,
+        "published": 3654,
+        "rejected": 619,
+        "validation_failures": 619,
+        "publish_failures": 0
+      },
+      "throughput": {
+        "requests_per_sec": 300.0,
+        "payload_per_sec": 243.6
+      },
+      "latency": {
+        "avg_ms": 2106.807,
+        "p50_ms": 1479.943,
+        "p95_ms": 6288.134,
+        "p99_ms": 9714.563,
+        "max_ms": 18330.643
+      },
+      "vendor_breakdown": {
+        "vendor_a": {
+          "requests": 1508,
+          "http_2xx": 1430,
+          "http_4xx": 78,
+          "http_5xx": 0,
+          "accepted": 1231,
+          "published": 1231,
+          "rejected": 199,
+          "validation_failures": 199,
+          "publish_failures": 0,
+          "latency": {
+            "avg_ms": 2118.156,
+            "p50_ms": 1496.413,
+            "p95_ms": 6266.86,
+            "p99_ms": 9160.148,
+            "max_ms": 18330.643
+          }
+        },
+        "vendor_b": {
+          "requests": 1507,
+          "http_2xx": 1431,
+          "http_4xx": 76,
+          "http_5xx": 0,
+          "accepted": 1198,
+          "published": 1198,
+          "rejected": 233,
+          "validation_failures": 233,
+          "publish_failures": 0,
+          "latency": {
+            "avg_ms": 2131.552,
+            "p50_ms": 1504.23,
+            "p95_ms": 6533.784,
+            "p99_ms": 9650.197,
+            "max_ms": 14396.806
+          }
+        },
+        "vendor_c": {
+          "requests": 1485,
+          "http_2xx": 1412,
+          "http_4xx": 73,
+          "http_5xx": 0,
+          "accepted": 1225,
+          "published": 1225,
+          "rejected": 187,
+          "validation_failures": 187,
+          "publish_failures": 0,
+          "latency": {
+            "avg_ms": 2070.172,
+            "p50_ms": 1456.901,
+            "p95_ms": 6088.613,
+            "p99_ms": 9888.663,
+            "max_ms": 14878.762
+          }
+        }
+      }
+    }
+  ]
+}

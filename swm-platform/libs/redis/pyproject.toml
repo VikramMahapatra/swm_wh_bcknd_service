@@ -1,0 +1,16 @@
+[project]
+name = "swm-redis"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "redis[hiredis]>=5.2.1",
+  "swm-common",
+  "swm-models"
+]
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/swm_redis"]

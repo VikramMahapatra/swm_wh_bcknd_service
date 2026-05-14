@@ -1,0 +1,20 @@
+[project]
+name = "websocket-api"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.12",
+  "uvicorn[standard]>=0.34.2",
+  "redis[hiredis]>=5.2.1",
+  "swm-common"
+]
+
+[project.scripts]
+websocket-api = "websocket_api.main:run"
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/websocket_api"]

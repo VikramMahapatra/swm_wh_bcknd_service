@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["prometheus:9090"]
+
+  - job_name: ingestion_api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["ingestion-api:8001"]
+
+  - job_name: websocket_api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["websocket-api:8002"]
+
+  - job_name: admin_api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["admin-api:8003"]

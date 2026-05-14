@@ -1,0 +1,38 @@
+# Core and shared runtime dependencies
+alembic>=1.16.0
+asyncpg>=0.30.0
+clickhouse-connect>=0.8.15
+fastapi>=0.115.12
+orjson>=3.10.16
+prometheus-client>=0.21.1
+pydantic>=2.11.3
+pydantic-settings>=2.8.1
+python-multipart>=0.0.9
+pyjwt[crypto]>=2.10.1
+redis[hiredis]>=5.2.1
+sqlalchemy[asyncio]>=2.0.40
+structlog>=25.2.0
+uvicorn[standard]>=0.34.2
+
+# Dev/test/tooling dependencies
+httpx>=0.28.1
+mypy>=1.15.0
+pre-commit>=4.2.0
+pytest>=8.3.5
+pytest-asyncio>=0.26.0
+ruff>=0.11.8
+types-redis>=4.6.0.20241004
+
+# Install local workspace packages in editable mode
+-e libs/common
+-e libs/schemas
+-e libs/db
+-e libs/redis
+-e libs/auth
+-e apps/ingestion-api
+-e apps/websocket-api
+-e apps/admin-api
+-e workers/realtime-worker
+-e workers/storage-worker
+-e workers/analytics-worker
+-e workers/alert-worker

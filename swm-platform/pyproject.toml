@@ -1,0 +1,123 @@
+[project]
+name = "swm-platform"
+version = "0.1.0"
+description = "Fleet GPS telemetry platform monorepo"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "alembic>=1.16.0",
+  "httpx>=0.28.1",
+  "mypy>=1.15.0",
+  "pre-commit>=4.2.0",
+  "pytest>=8.3.5",
+  "pytest-asyncio>=0.26.0",
+  "ruff>=0.11.8",
+  "types-redis>=4.6.0.20241004"
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+swm-common = { workspace = true }
+swm-schemas = { workspace = true }
+swm-db = { workspace = true }
+swm-redis = { workspace = true }
+swm-auth = { workspace = true }
+swm-models = { workspace = true }
+swm-clickhouse = { workspace = true }
+ingestion-api = { workspace = true }
+websocket-api = { workspace = true }
+admin-api = { workspace = true }
+realtime-worker = { workspace = true }
+storage-worker = { workspace = true }
+analytics-worker = { workspace = true }
+alert-worker = { workspace = true }
+
+[tool.uv.workspace]
+members = [
+  "apps/ingestion-api",
+  "apps/websocket-api",
+  "apps/admin-api",
+  "workers/realtime-worker",
+  "workers/storage-worker",
+  "workers/analytics-worker",
+  "workers/alert-worker",
+  "libs/schemas",
+  "libs/db",
+  "libs/redis",
+  "libs/auth",
+  "libs/common",
+  "libs/models",
+  "libs/clickhouse"
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = [
+  "apps",
+  "workers",
+  "libs",
+  "tests"
+]
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "F",
+  "I",
+  "UP",
+  "B",
+  "A",
+  "ASYNC",
+  "RUF",
+  "N",
+  "S",
+  "PL",
+  "C4"
+]
+ignore = [
+  "S101"
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR2004", "PLW0108", "S101"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra -q"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+warn_return_any = true
+warn_unreachable = true
+disallow_any_generics = true
+show_error_codes = true
+pretty = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = [
+  "prometheus_client.*"
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+  "alembic.*",
+  "asyncpg.*"
+]
+ignore_missing_imports = true

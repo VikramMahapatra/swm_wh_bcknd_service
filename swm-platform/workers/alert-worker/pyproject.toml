@@ -1,0 +1,19 @@
+[project]
+name = "alert-worker"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "swm-common",
+  "swm-models",
+  "swm-redis"
+]
+
+[project.scripts]
+alert-worker = "alert_worker.main:run"
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/alert_worker"]

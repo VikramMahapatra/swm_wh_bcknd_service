@@ -1,0 +1,23 @@
+[project]
+name = "admin-api"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.12",
+  "python-multipart>=0.0.9",
+  "uvicorn[standard]>=0.34.2",
+  "clickhouse-connect>=0.8.15",
+  "swm-common",
+  "swm-db",
+  "swm-redis"
+]
+
+[project.scripts]
+admin-api = "admin_api.main:run"
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/admin_api"]

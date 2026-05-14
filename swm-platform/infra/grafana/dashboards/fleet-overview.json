@@ -1,0 +1,29 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Ingestion Request Rate",
+      "targets": [
+        {
+          "expr": "rate(http_requests_total{app=\"ingestion-api\"}[1m])"
+        }
+      ],
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "WebSocket Connections",
+      "targets": [
+        {
+          "expr": "websocket_connections"
+        }
+      ],
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 0}
+    }
+  ],
+  "schemaVersion": 39,
+  "title": "Fleet Platform Overview",
+  "version": 1
+}

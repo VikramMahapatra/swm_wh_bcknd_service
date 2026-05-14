@@ -1,0 +1,655 @@
+"""
+Application ORM models.
+
+All models should inherit from :class:`~swm_db.base.AuditBase` which provides:
+- UUID primary key
+- created_at / updated_at timestamps
+- deleted_at soft-delete
+- created_by / updated_by audit columns
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import re
+import uuid
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
+
+from swm_db.base import AuditBase, Base
+
+
+class DeviceEventORM(Base):
+    __tablename__ = "device_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    device_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    lon: Mapped[float] = mapped_column(Float, nullable=False)
+    speed_kph: Mapped[float] = mapped_column(Float, nullable=False)
+    heading: Mapped[int] = mapped_column(nullable=False)
+    ignition: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    attributes: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+
+_VENDOR_CODE_RE = re.compile(r"^[A-Z0-9_-]{3,32}$")
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_AUTH_TYPES = {"header", "signature", "ip"}
+_IMEI_RE = re.compile(r"^[0-9]{14,17}$")
+_HEALTH_STATUSES = {"healthy", "warning", "critical", "offline"}
+_VEHICLE_NO_RE = re.compile(r"^[A-Z0-9-]{4,24}$")
+_REG_NO_RE = re.compile(r"^[A-Z0-9-]{4,24}$")
+_FUEL_TYPES = {"diesel", "petrol", "cng", "electric", "lng"}
+_VEHICLE_STATUSES = {"operational", "maintenance", "breakdown", "retired"}
+_CONTRACTOR_CODE_RE = re.compile(r"^[A-Z0-9_-]{3,24}$")
+_WARD_CODE_RE = re.compile(r"^[A-Z0-9_-]{2,24}$")
+_ROUTE_CODE_RE = re.compile(r"^[A-Z0-9_-]{2,24}$")
+_GEOFENCE_CODE_RE = re.compile(r"^[A-Z0-9_-]{2,32}$")
+_GEOFENCE_TYPES = {"depot", "landfill", "zone", "parking", "maintenance"}
+_GEOMETRY_TYPES = {"circle", "polygon"}
+
+
+class VendorORM(Base):
+    __tablename__ = "vendors"
+    __table_args__ = (
+        CheckConstraint(
+            "auth_type IN ('header','signature','ip')",
+            name="ck_vendors_auth_type",
+        ),
+        Index("ix_vendors_vendor_name", "vendor_name"),
+        Index("ix_vendors_email", "email"),
+        Index("ix_vendors_active", "active"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    vendor_code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    vendor_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    contact_person: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    webhook_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    signature_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    allowed_ips: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    auth_type: Mapped[str] = mapped_column(String(16), nullable=False, default="header")
+    callback_format: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    devices: Mapped[list["DeviceORM"]] = relationship(
+        back_populates="vendor",
+        cascade="all, delete-orphan",
+    )
+
+    @validates("vendor_code")
+    def validate_vendor_code(self, _: str, value: str) -> str:
+        code = value.strip().upper()
+        if not _VENDOR_CODE_RE.fullmatch(code):
+            raise ValueError("vendor_code must match ^[A-Z0-9_-]{3,32}$")
+        return code
+
+    @validates("email")
+    def validate_email(self, _: str, value: str | None) -> str | None:
+        if value is None:
+            return None
+        email = value.strip().lower()
+        if not _EMAIL_RE.fullmatch(email):
+            raise ValueError("email is not valid")
+        return email
+
+    @validates("auth_type")
+    def validate_auth_type(self, _: str, value: str) -> str:
+        auth_type = value.strip().lower()
+        if auth_type not in _AUTH_TYPES:
+            raise ValueError("auth_type must be one of: header, signature, ip")
+        return auth_type
+
+    @validates("allowed_ips")
+    def validate_allowed_ips(self, _: str, value: list[str]) -> list[str]:
+        if not isinstance(value, list):
+            raise ValueError("allowed_ips must be a list of IP strings")
+        normalised: list[str] = []
+        for ip in value:
+            ip_obj = ipaddress.ip_address(ip)
+            normalised.append(str(ip_obj))
+        return normalised
+
+    @validates("callback_format", "metadata_json")
+    def validate_json_objects(self, field: str, value: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise ValueError(f"{field} must be a JSON object")
+        return value
+
+
+class DeviceORM(Base):
+    __tablename__ = "devices"
+    __table_args__ = (
+        CheckConstraint(
+            "health_status IN ('healthy','warning','critical','offline')",
+            name="ck_devices_health_status",
+        ),
+        Index("ix_devices_vendor_id", "vendor_id"),
+        Index("ix_devices_active", "active"),
+        Index("ix_devices_last_seen", "last_seen"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    vendor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("vendors.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    imei: Mapped[str] = mapped_column(String(17), nullable=False, unique=True, index=True)
+    serial_no: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    manufacturer: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    firmware_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sim_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    installed_on: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    activated_on: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    battery_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    signal_strength: Mapped[float | None] = mapped_column(Float, nullable=True)
+    health_status: Mapped[str] = mapped_column(String(16), nullable=False, default="healthy")
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    vendor: Mapped[VendorORM] = relationship(back_populates="devices")
+    assignments: Mapped[list["DeviceVehicleAssignmentORM"]] = relationship(
+        back_populates="device",
+        cascade="all, delete-orphan",
+    )
+
+    @validates("imei")
+    def validate_imei(self, _: str, value: str) -> str:
+        imei = value.strip()
+        if not _IMEI_RE.fullmatch(imei):
+            raise ValueError("imei must be 14-17 numeric digits")
+        return imei
+
+    @validates("health_status")
+    def validate_health_status(self, _: str, value: str) -> str:
+        status = value.strip().lower()
+        if status not in _HEALTH_STATUSES:
+            raise ValueError("health_status must be one of: healthy, warning, critical, offline")
+        return status
+
+    @validates("battery_percent")
+    def validate_battery_percent(self, _: str, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if value < 0 or value > 100:
+            raise ValueError("battery_percent must be between 0 and 100")
+        return value
+
+    @validates("metadata_json")
+    def validate_metadata_json(self, _: str, value: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise ValueError("metadata_json must be a JSON object")
+        return value
+
+
+class ContractorORM(Base):
+    __tablename__ = "contractors"
+    __table_args__ = (
+        Index("ix_contractors_contractor_name", "contractor_name"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    contractor_code: Mapped[str] = mapped_column(String(24), nullable=False, unique=True)
+    contractor_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    contact: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sla_details: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    vehicles: Mapped[list["VehicleORM"]] = relationship(back_populates="contractor")
+
+    @validates("contractor_code")
+    def validate_contractor_code(self, _: str, value: str) -> str:
+        normalized = value.strip().upper()
+        if not _CONTRACTOR_CODE_RE.fullmatch(normalized):
+            raise ValueError("contractor_code must match ^[A-Z0-9_-]{3,24}$")
+        return normalized
+
+    @validates("sla_details")
+    def validate_sla_details(self, _: str, value: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise ValueError("sla_details must be a JSON object")
+        return value
+
+
+class WardORM(Base):
+    __tablename__ = "wards"
+    __table_args__ = (
+        Index("ix_wards_zone_name", "zone_name"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    ward_code: Mapped[str] = mapped_column(String(24), nullable=False, unique=True)
+    ward_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    zone_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    vehicles: Mapped[list["VehicleORM"]] = relationship(back_populates="ward")
+    geofences: Mapped[list["GeofenceORM"]] = relationship(back_populates="ward")
+
+    @validates("ward_code")
+    def validate_ward_code(self, _: str, value: str) -> str:
+        normalized = value.strip().upper()
+        if not _WARD_CODE_RE.fullmatch(normalized):
+            raise ValueError("ward_code must match ^[A-Z0-9_-]{2,24}$")
+        return normalized
+
+
+class RouteORM(Base):
+    __tablename__ = "routes"
+    __table_args__ = (
+        Index("ix_routes_active", "active"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    route_code: Mapped[str] = mapped_column(String(24), nullable=False, unique=True)
+    route_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    expected_distance_km: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    expected_duration_min: Mapped[int] = mapped_column(nullable=False, default=0)
+    start_point: Mapped[str] = mapped_column(String(255), nullable=False)
+    end_point: Mapped[str] = mapped_column(String(255), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    vehicles: Mapped[list["VehicleORM"]] = relationship(back_populates="route")
+
+    @validates("route_code")
+    def validate_route_code(self, _: str, value: str) -> str:
+        normalized = value.strip().upper()
+        if not _ROUTE_CODE_RE.fullmatch(normalized):
+            raise ValueError("route_code must match ^[A-Z0-9_-]{2,24}$")
+        return normalized
+
+    @validates("expected_distance_km")
+    def validate_expected_distance(self, _: str, value: float) -> float:
+        if value < 0:
+            raise ValueError("expected_distance_km must be non-negative")
+        return value
+
+    @validates("expected_duration_min")
+    def validate_expected_duration(self, _: str, value: int) -> int:
+        if value < 0:
+            raise ValueError("expected_duration_min must be non-negative")
+        return value
+
+
+class GeofenceORM(Base):
+    __tablename__ = "geofences"
+    __table_args__ = (
+        CheckConstraint(
+            "type IN ('depot','landfill','zone','parking','maintenance')",
+            name="ck_geofences_type",
+        ),
+        CheckConstraint(
+            "geometry_type IN ('circle','polygon')",
+            name="ck_geofences_geometry_type",
+        ),
+        Index("ix_geofences_ward_id", "ward_id"),
+        Index("ix_geofences_active", "active"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    geofence_code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    geofence_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    type: Mapped[str] = mapped_column(String(16), nullable=False)
+    geometry_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    center_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    center_lng: Mapped[float | None] = mapped_column(Float, nullable=True)
+    radius_meter: Mapped[float | None] = mapped_column(Float, nullable=True)
+    polygon: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    ward_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("wards.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+
+    ward: Mapped[WardORM | None] = relationship(back_populates="geofences")
+
+    @validates("geofence_code")
+    def validate_geofence_code(self, _: str, value: str) -> str:
+        normalized = value.strip().upper()
+        if not _GEOFENCE_CODE_RE.fullmatch(normalized):
+            raise ValueError("geofence_code must match ^[A-Z0-9_-]{2,32}$")
+        return normalized
+
+    @validates("type")
+    def validate_type(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in _GEOFENCE_TYPES:
+            raise ValueError("type must be one of: depot, landfill, zone, parking, maintenance")
+        return normalized
+
+    @validates("geometry_type")
+    def validate_geometry_type(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in _GEOMETRY_TYPES:
+            raise ValueError("geometry_type must be one of: circle, polygon")
+        return normalized
+
+    @validates("center_lat")
+    def validate_center_lat(self, _: str, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if value < -90 or value > 90:
+            raise ValueError("center_lat must be between -90 and 90")
+        return value
+
+    @validates("center_lng")
+    def validate_center_lng(self, _: str, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if value < -180 or value > 180:
+            raise ValueError("center_lng must be between -180 and 180")
+        return value
+
+    @validates("radius_meter")
+    def validate_radius_meter(self, _: str, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if value <= 0:
+            raise ValueError("radius_meter must be greater than 0")
+        return value
+
+    @validates("polygon")
+    def validate_polygon(self, _: str, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("polygon must be a GeoJSON object")
+        if value.get("type") != "Polygon":
+            raise ValueError("polygon GeoJSON type must be Polygon")
+        coordinates = value.get("coordinates")
+        if not isinstance(coordinates, list) or len(coordinates) == 0:
+            raise ValueError("polygon.coordinates must be a non-empty array")
+        return value
+
+
+class VehicleORM(Base):
+    __tablename__ = "vehicles"
+    __table_args__ = (
+        CheckConstraint(
+            "fuel_type IN ('diesel','petrol','cng','electric','lng')",
+            name="ck_vehicles_fuel_type",
+        ),
+        CheckConstraint(
+            "operational_status IN ('operational','maintenance','breakdown','retired')",
+            name="ck_vehicles_operational_status",
+        ),
+        CheckConstraint("capacity_kg >= 0", name="ck_vehicles_capacity_kg_non_negative"),
+        CheckConstraint(
+            "capacity_cubic_meter >= 0",
+            name="ck_vehicles_capacity_cubic_meter_non_negative",
+        ),
+        CheckConstraint(
+            "manufacture_year >= 1950 AND manufacture_year <= 2100",
+            name="ck_vehicles_manufacture_year_range",
+        ),
+        Index("ix_vehicles_contractor_id", "contractor_id"),
+        Index("ix_vehicles_ward_id", "ward_id"),
+        Index("ix_vehicles_route_id", "route_id"),
+        Index("ix_vehicles_active", "active"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    vehicle_number: Mapped[str] = mapped_column(String(24), nullable=False, unique=True)
+    registration_number: Mapped[str] = mapped_column(String(24), nullable=False, unique=True)
+    truck_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    capacity_kg: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    capacity_cubic_meter: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    contractor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("contractors.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    ward_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("wards.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    route_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("routes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    fuel_type: Mapped[str] = mapped_column(String(16), nullable=False, default="diesel")
+    operational_status: Mapped[str] = mapped_column(String(16), nullable=False, default="operational")
+    chassis_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    engine_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    manufacture_year: Mapped[int | None] = mapped_column(nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    contractor: Mapped[ContractorORM] = relationship(back_populates="vehicles")
+    ward: Mapped[WardORM] = relationship(back_populates="vehicles")
+    route: Mapped[RouteORM | None] = relationship(back_populates="vehicles")
+    assignments: Mapped[list["DeviceVehicleAssignmentORM"]] = relationship(
+        back_populates="vehicle",
+        cascade="all, delete-orphan",
+    )
+
+    @validates("vehicle_number")
+    def validate_vehicle_number(self, _: str, value: str) -> str:
+        normalized = value.strip().upper()
+        if not _VEHICLE_NO_RE.fullmatch(normalized):
+            raise ValueError("vehicle_number must match ^[A-Z0-9-]{4,24}$")
+        return normalized
+
+    @validates("registration_number")
+    def validate_registration_number(self, _: str, value: str) -> str:
+        normalized = value.strip().upper()
+        if not _REG_NO_RE.fullmatch(normalized):
+            raise ValueError("registration_number must match ^[A-Z0-9-]{4,24}$")
+        return normalized
+
+    @validates("fuel_type")
+    def validate_fuel_type(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in _FUEL_TYPES:
+            raise ValueError("fuel_type must be one of: diesel, petrol, cng, electric, lng")
+        return normalized
+
+    @validates("operational_status")
+    def validate_operational_status(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in _VEHICLE_STATUSES:
+            raise ValueError(
+                "operational_status must be one of: operational, maintenance, breakdown, retired"
+            )
+        return normalized
+
+    @validates("capacity_kg", "capacity_cubic_meter")
+    def validate_non_negative_capacity(self, field: str, value: float) -> float:
+        if value < 0:
+            raise ValueError(f"{field} must be non-negative")
+        return value
+
+    @validates("manufacture_year")
+    def validate_manufacture_year(self, _: str, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if value < 1950 or value > 2100:
+            raise ValueError("manufacture_year must be between 1950 and 2100")
+        return value
+
+    @validates("metadata_json")
+    def validate_metadata_json_vehicle(self, _: str, value: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise ValueError("metadata_json must be a JSON object")
+        return value
+
+
+class DeviceVehicleAssignmentORM(Base):
+    __tablename__ = "device_vehicle_assignments"
+    __table_args__ = (
+        CheckConstraint(
+            "assigned_to IS NULL OR assigned_to >= assigned_from",
+            name="ck_dva_assigned_range",
+        ),
+        CheckConstraint(
+            "(active = false) OR (assigned_to IS NULL)",
+            name="ck_dva_active_assigned_to",
+        ),
+        Index("ix_dva_device_assigned_from", "device_id", "assigned_from"),
+        Index("ix_dva_vehicle_assigned_from", "vehicle_id", "assigned_from"),
+        Index(
+            "ux_dva_active_device",
+            "device_id",
+            unique=True,
+            postgresql_where=text("active IS TRUE AND assigned_to IS NULL"),
+        ),
+        Index(
+            "ux_dva_active_vehicle",
+            "vehicle_id",
+            unique=True,
+            postgresql_where=text("active IS TRUE AND assigned_to IS NULL"),
+        ),
+    )
+
+    device_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("devices.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    vehicle_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("vehicles.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    assigned_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        primary_key=True,
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+    assigned_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    remarks: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    device: Mapped[DeviceORM] = relationship(back_populates="assignments")
+    vehicle: Mapped[VehicleORM] = relationship(back_populates="assignments")
+
+    @validates("assigned_to")
+    def validate_assigned_to(self, _: str, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if self.assigned_from is not None and value < self.assigned_from:
+            raise ValueError("assigned_to must be greater than or equal to assigned_from")
+        return value
+
+    def close(self, *, assigned_to: datetime, remarks: str | None = None) -> None:
+        self.assigned_to = assigned_to
+        self.active = False
+        if remarks is not None:
+            self.remarks = remarks
+
