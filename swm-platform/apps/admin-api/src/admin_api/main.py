@@ -7,6 +7,7 @@ from uuid import UUID
 
 import uvicorn
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import String, asc, cast, desc, func, or_, select
 from sqlalchemy.exc import NoResultFound
@@ -40,13 +41,23 @@ from swm_db import (
     WardRepository,
     get_db_session,
 )
-from swm_redis import RedisClient
+from swm_redis import RedisClient, RealtimeCacheKeys
 
 settings = get_settings()
 configure_logging(settings.log_level)
 logger = get_logger("admin_api")
 
 app = FastAPI(title="SWM Admin API", version="0.1.0")
+
+# Add CORS middleware to allow frontend (localhost:8080) to call this API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:8080", "http://127.0.0.1:8080"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 redis_client = RedisClient.from_url(settings.redis_url)
 
 INGESTION_QUARANTINE_STREAM = "gps.telemetry.retry"
@@ -85,6 +96,25 @@ class IngestionFailurePage(BaseModel):
     items: list[IngestionFailureRecord]
     total: int
     source: str
+
+
+class LiveMapTruckPosition(BaseModel):
+    imei: str
+    device_id: str | None = None
+    vehicle_id: str | None = None
+    lat: float
+    lng: float
+    speed_kph: float
+    heading: int
+    ignition: bool
+    event_ts: datetime
+    status: str | None = None
+    vendor_id: str | None = None
+
+
+class LiveMapSnapshotResponse(BaseModel):
+    items: list[LiveMapTruckPosition]
+    total: int
 
 
 def _to_dict(obj: Any) -> dict[str, Any]:
@@ -394,6 +424,77 @@ async def platform_status() -> dict[str, str]:
     now = datetime.now(tz=UTC).isoformat()
     logger.info("platform_status_requested", ts=now)
     return {"status": "operational", "timestamp": now}
+
+
+@app.get("/v1/realtime/trucks", response_model=LiveMapSnapshotResponse)
+async def list_realtime_trucks(
+    limit: int = Query(default=10000, ge=1, le=50000),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+) -> LiveMapSnapshotResponse:
+    keys = RealtimeCacheKeys()
+    pattern = keys.truck_last("*")
+
+    cursor = 0
+    matched_keys: list[str] = []
+    while True:
+        cursor, batch = await redis_client.scan(cursor=cursor, match=pattern, count=1000)
+        if batch:
+            matched_keys.extend(batch)
+            if len(matched_keys) >= limit:
+                matched_keys = matched_keys[:limit]
+                break
+        if cursor == 0:
+            break
+
+    last_payloads = await redis_client.mget_json(*matched_keys)
+    truck_rows: list[tuple[str, dict[str, Any], dict[str, Any], datetime]] = []
+    state_keys: list[str] = []
+
+    for key, payload in zip(matched_keys, last_payloads, strict=False):
+        if not isinstance(payload, dict):
+            continue
+
+        attributes_raw = payload.get("attributes")
+        attributes = attributes_raw if isinstance(attributes_raw, dict) else {}
+
+        try:
+            event_ts = datetime.fromisoformat(str(payload.get("ts")))
+            imei = str(payload.get("imei") or key.rsplit(":", 1)[-1])
+        except Exception:
+            continue
+
+        truck_rows.append((imei, payload, attributes, event_ts))
+        state_keys.append(keys.truck_state(imei))
+
+    state_payloads = await redis_client.mget_json(*state_keys)
+
+    items: list[LiveMapTruckPosition] = []
+    for (imei, payload, attributes, event_ts), state_payload in zip(truck_rows, state_payloads, strict=False):
+        try:
+            status = None
+            if isinstance(state_payload, dict) and state_payload.get("status") is not None:
+                status = str(state_payload.get("status"))
+
+            items.append(
+                LiveMapTruckPosition(
+                    imei=imei,
+                    device_id=(str(payload["device_id"]) if payload.get("device_id") is not None else None),
+                    vehicle_id=(str(attributes["vehicle_id"]) if attributes.get("vehicle_id") is not None else None),
+                    lat=float(payload.get("lat")),
+                    lng=float(payload.get("lon")),
+                    speed_kph=float(payload.get("speed_kph", 0.0)),
+                    heading=int(payload.get("heading", 0)),
+                    ignition=bool(payload.get("ignition", False)),
+                    event_ts=event_ts,
+                    status=status,
+                    vendor_id=(str(attributes["vendor_id"]) if attributes.get("vendor_id") is not None else None),
+                )
+            )
+        except Exception:
+            continue
+
+    items.sort(key=lambda truck: truck.imei)
+    return LiveMapSnapshotResponse(items=items, total=len(items))
 
 
 @app.get("/v1/ingestion/failures", response_model=IngestionFailurePage)

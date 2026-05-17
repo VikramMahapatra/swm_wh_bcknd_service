@@ -1,6 +1,6 @@
-# SWM Fleet GPS Telemetry Platform
+# SWM-FLEET: Fleet Master & Device Registry Platform
 
-Production-grade Python 3.12 monorepo for fleet telemetry ingestion, realtime fanout, storage, analytics, and alerting.
+Production-grade Python 3.12 monorepo for fleet master data, device registry, telemetry ingestion, realtime fanout, storage, analytics, and alerting.
 
 ## Tech Stack
 - FastAPI (async-first APIs)
@@ -68,6 +68,7 @@ swm-platform/
 - Ingestion API: `POST /v1/events`, `GET /healthz`, `GET /metrics`
 - WebSocket API: `WS /ws/realtime`, `GET /healthz`, `GET /metrics`
 - Admin API: `GET /v1/platform/status`, `GET /healthz`, `GET /metrics`
+- Master data API: `/vendors`, `/devices`, `/vehicles`, `/geofences`, `/device-assignments`
 
 ## Migration Workflow
 - Create migration: `make db-revision MSG="add new table"`

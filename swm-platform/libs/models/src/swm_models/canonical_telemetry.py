@@ -72,8 +72,12 @@ class CanonicalTelemetry(BaseModel):
             value = payload.get(key)
             return int(float(value)) if value not in (None, "") else default
 
+        imei = _s("imei")
+        device_id = _s("device_id") or imei
+        vehicle_id = _s("vehicle_id") or imei
+
         return cls(
-            imei=_s("imei"),
+            imei=imei,
             lat=_f("lat"),
             lng=_f("lng"),
             speed=_f("speed"),
@@ -82,8 +86,8 @@ class CanonicalTelemetry(BaseModel):
             odometer=_f("odometer") if payload.get("odometer") not in (None, "") else None,
             fuel_level=_f("fuel_level") if payload.get("fuel_level") not in (None, "") else None,
             vendor_id=_s("vendor_id"),
-            device_id=_s("device_id"),
-            vehicle_id=_s("vehicle_id"),
+            device_id=device_id,
+            vehicle_id=vehicle_id,
             event_ts=payload.get("event_ts") or datetime.now(tz=UTC),
             received_ts=payload.get("received_ts") or datetime.now(tz=UTC),
             raw_payload=raw_payload_obj,

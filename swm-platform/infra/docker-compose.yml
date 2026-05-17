@@ -187,6 +187,9 @@ services:
       - ../.env
     environment:
       ENV: prod
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379/0
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: swm
@@ -199,9 +202,6 @@ services:
       CLICKHOUSE_USER: default
       CLICKHOUSE_PASSWORD: "swm123"
       CLICKHOUSE_DSN: http://default:swm123@clickhouse:8123
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_URL: redis://redis:6379/0
       REDIS_MAX_CONNECTIONS: 200
       REDIS_RETRY_ATTEMPTS: 5
       WAIT_FOR_HOSTS: redis:6379,postgres:5432,clickhouse:8123
@@ -265,6 +265,9 @@ services:
       - ../.env
     environment:
       ENV: prod
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379/0
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: swm
@@ -277,11 +280,13 @@ services:
       CLICKHOUSE_USER: default
       CLICKHOUSE_PASSWORD: "swm123"
       CLICKHOUSE_DSN: http://default:swm123@clickhouse:8123
-      WAIT_FOR_HOSTS: postgres:5432,clickhouse:8123
+      WAIT_FOR_HOSTS: postgres:5432,clickhouse:8123,redis:6379
     depends_on:
       postgres:
         condition: service_healthy
       clickhouse:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     ports:
       - "8003:8003"

@@ -1,0 +1,179 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    --background: 210 25% 98%;
+    --foreground: 195 25% 15%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 195 25% 15%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 195 25% 15%;
+
+    --primary: 186 65% 32%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 164 55% 50%;
+    --secondary-foreground: 0 0% 100%;
+
+    --muted: 210 20% 94%;
+    --muted-foreground: 195 15% 45%;
+
+    --accent: 164 55% 50%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+
+    --border: 210 20% 88%;
+    --input: 210 20% 88%;
+    --ring: 186 65% 32%;
+
+    --radius: 0.75rem;
+
+    --chart-1: 186 65% 42%;
+    --chart-2: 164 55% 50%;
+    --chart-3: 142 71% 45%;
+    --chart-4: 38 92% 50%;
+    --chart-5: 0 72% 51%;
+
+    --gradient-primary: linear-gradient(135deg, hsl(186 65% 32%), hsl(164 55% 50%));
+    --gradient-surface: linear-gradient(180deg, hsl(210 25% 98%), hsl(210 20% 94%));
+    
+    --shadow-sm: 0 1px 2px 0 hsl(195 25% 15% / 0.05);
+    --shadow-md: 0 4px 6px -1px hsl(195 25% 15% / 0.08);
+    --shadow-lg: 0 10px 15px -3px hsl(195 25% 15% / 0.1);
+    --shadow-glow: 0 0 30px hsl(186 65% 32% / 0.15);
+  }
+
+  .dark {
+    --background: 195 30% 8%;
+    --foreground: 210 25% 95%;
+
+    --card: 195 25% 12%;
+    --card-foreground: 210 25% 95%;
+
+    --popover: 195 25% 12%;
+    --popover-foreground: 210 25% 95%;
+
+    --primary: 164 55% 50%;
+    --primary-foreground: 195 30% 8%;
+
+    --secondary: 186 45% 40%;
+    --secondary-foreground: 210 25% 95%;
+
+    --muted: 195 20% 18%;
+    --muted-foreground: 210 15% 65%;
+
+    --accent: 164 55% 50%;
+    --accent-foreground: 195 30% 8%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 25% 95%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 195 30% 8%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 210 25% 95%;
+
+    --border: 195 20% 20%;
+    --input: 195 20% 20%;
+    --ring: 164 55% 50%;
+
+    --chart-1: 164 55% 50%;
+    --chart-2: 186 45% 40%;
+    --chart-3: 142 71% 45%;
+    --chart-4: 38 92% 50%;
+    --chart-5: 0 72% 51%;
+
+    --gradient-primary: linear-gradient(135deg, hsl(186 45% 40%), hsl(164 55% 50%));
+    --gradient-surface: linear-gradient(180deg, hsl(195 30% 8%), hsl(195 25% 12%));
+    
+    --shadow-sm: 0 1px 2px 0 hsl(0 0% 0% / 0.2);
+    --shadow-md: 0 4px 6px -1px hsl(0 0% 0% / 0.3);
+    --shadow-lg: 0 10px 15px -3px hsl(0 0% 0% / 0.4);
+    --shadow-glow: 0 0 30px hsl(164 55% 50% / 0.2);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  /* Prevent scroll position jumping on dynamic content updates */
+  html, body {
+    overflow-anchor: none;
+    scroll-behavior: auto;
+  }
+
+  /* Stable scrolling for all scrollable containers */
+  [class*="overflow-auto"],
+  [class*="overflow-y-auto"],
+  [class*="overflow-x-auto"] {
+    overflow-anchor: none;
+  }
+
+  /* Colorful, subtle scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--primary)) hsl(var(--muted));
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: hsl(var(--muted));
+    border-radius: 999px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, hsl(var(--primary)) 0%, hsl(var(--secondary)) 100%);
+    border-radius: 999px;
+    border: 2px solid hsl(var(--muted));
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, hsl(var(--secondary)) 0%, hsl(var(--primary)) 100%);
+  }
+}
+
+@layer components {
+  .app-surface {
+    background-color: hsl(var(--background));
+    background-image:
+      linear-gradient(180deg, hsl(var(--background)) 0%, hsl(var(--muted) / 0.7) 100%),
+      radial-gradient(circle at 18% 12%, hsl(var(--primary) / 0.1), transparent 40%),
+      radial-gradient(circle at 82% 8%, hsl(var(--secondary) / 0.08), transparent 35%),
+      repeating-linear-gradient(
+        135deg,
+        hsl(var(--foreground) / 0.03) 0,
+        hsl(var(--foreground) / 0.03) 1px,
+        transparent 1px,
+        transparent 7px
+      );
+    background-attachment: local;
+    background-size: cover;
+  }
+}

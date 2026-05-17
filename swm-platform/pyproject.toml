@@ -1,7 +1,7 @@
 [project]
 name = "swm-platform"
 version = "0.1.0"
-description = "Fleet GPS telemetry platform monorepo"
+description = "Fleet master data, device registry, and telemetry platform monorepo"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []

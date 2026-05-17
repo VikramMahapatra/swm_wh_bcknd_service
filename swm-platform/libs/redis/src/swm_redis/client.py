@@ -274,6 +274,11 @@ class RedisClient:
     async def get(self, key: str) -> str | None:
         return await self._run(lambda: self._r.get(key), "get")  # type: ignore[no-any-return]
 
+    async def mget(self, *keys: str) -> list[str | None]:
+        if not keys:
+            return []
+        return await self._run(lambda: self._r.mget(list(keys)), "mget")  # type: ignore[no-any-return]
+
     async def delete(self, *keys: str) -> int:
         return await self._run(lambda: self._r.delete(*keys), "delete")  # type: ignore[no-any-return]
 
@@ -288,6 +293,19 @@ class RedisClient:
 
     async def incr(self, key: str, amount: int = 1) -> int:
         return await self._run(lambda: self._r.incr(key, amount), "incr")  # type: ignore[no-any-return]
+
+    async def scan(
+        self,
+        cursor: int = 0,
+        *,
+        match: str | None = None,
+        count: int | None = None,
+    ) -> tuple[int, list[str]]:
+        """Iterate keys incrementally using Redis SCAN."""
+        return await self._run(  # type: ignore[no-any-return]
+            lambda: self._r.scan(cursor=cursor, match=match, count=count),
+            "scan",
+        )
 
     # --- JSON ---------------------------------------------------------------------
 
@@ -308,6 +326,19 @@ class RedisClient:
         if raw is None:
             return None
         return orjson.loads(raw)
+
+    async def mget_json(self, *keys: str) -> list[Any | None]:
+        values = await self.mget(*keys)
+        parsed: list[Any | None] = []
+        for raw in values:
+            if raw is None:
+                parsed.append(None)
+                continue
+            try:
+                parsed.append(orjson.loads(raw))
+            except Exception:
+                parsed.append(None)
+        return parsed
 
     # --- hash ---------------------------------------------------------------------
 
