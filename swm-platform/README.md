@@ -70,9 +70,60 @@ swm-platform/
 - Admin API: `GET /v1/platform/status`, `GET /healthz`, `GET /metrics`
 - Master data API: `/vendors`, `/devices`, `/vehicles`, `/geofences`, `/device-assignments`
 
+## Analytics (Epic-5)
+
+Analytics processing is now persisted in PostgreSQL from `analytics-worker` and exposed through `admin-api` reporting endpoints.
+
+### Analytics tables
+- `analytics_vehicle_state`: per-vehicle stream state for trip/idle/geofence continuity.
+- `analytics_trip_records`: trip start/end records with runtime, moving/idle, stoppages, and distance.
+- `analytics_idle_records`: idle segments with duration and anchor point.
+- `analytics_overspeed_events`: overspeed detections with threshold and severity.
+- `analytics_geofence_events`: geofence entry/exit and route deviation events.
+- `analytics_daily_kpis`: daily rollup used for period reports.
+
+### Analytics APIs (Admin API)
+- Event feeds:
+   - `/analytics/trips`
+   - `/analytics/idle-segments`
+   - `/analytics/overspeed-events`
+   - `/analytics/geofence-events`
+- Period reports (JSON or CSV with `export=json|csv`):
+   - `/analytics/reports/daily`
+   - `/analytics/reports/monthly`
+   - `/analytics/reports/quarterly`
+   - `/analytics/reports/half-yearly`
+   - `/analytics/reports/annual`
+
+### Analytics worker logic
+- Trip detection start/end based on ignition, speed, idle window, and odometer/distance increments.
+- Idle detection using stationary speed threshold + minimum idle duration.
+- Overspeed event detection with configurable threshold and severity.
+- Geofence entry/exit and dwell tracking (circle + polygon support).
+- Route deviation events with cooldown to avoid event flooding.
+- Daily KPI upsert aggregation used by period-level report APIs.
+
 ## Migration Workflow
 - Create migration: `make db-revision MSG="add new table"`
 - Apply migrations: `make db-migrate`
+
+## Next Steps (Runbook)
+
+1. Apply DB migration for analytics tables:
+   - `make db-migrate`
+
+2. Start or restart the platform services:
+   - `docker compose -f infra/docker-compose.yml up -d --build`
+
+3. Start analytics worker (if running outside compose):
+   - `uv run --package analytics-worker python -m analytics_worker.main`
+
+4. Verify analytics data is being produced:
+   - `uv run --package admin-api python -c "import requests; print(requests.get('http://localhost:8003/analytics/trips', headers={'X-Role':'admin'}).status_code)"`
+
+5. Validate report endpoints (Swagger or curl):
+   - `curl "http://localhost:8003/analytics/reports/daily?date_from=2026-05-01&date_to=2026-05-17" -H "X-Role: admin"`
+   - `curl "http://localhost:8003/analytics/reports/monthly?export=csv" -H "X-Role: admin" -o analytics-monthly.csv`
 
 ## Notes
 - Each app, worker, and library is an independently importable package with its own `pyproject.toml`.

@@ -17,6 +17,12 @@ from swm_db.device_service import DeviceCreateInput, DeviceService, DeviceUpdate
 from swm_db.engine import DatabaseSessionManager, EngineConfig, build_async_engine
 from swm_db.geofence_repository import GeofenceRepository
 from swm_db.models import (
+    AnalyticsDailyKPIORM,
+    AnalyticsGeofenceEventORM,
+    AnalyticsIdleRecordORM,
+    AnalyticsOverspeedEventORM,
+    AnalyticsTripRecordORM,
+    AnalyticsVehicleStateORM,
     ContractorORM,
     DeviceEventORM,
     DeviceORM,
@@ -41,6 +47,12 @@ __all__ = [
     "AuditMixin",
     "Base",
     "DatabaseSessionManager",
+    "AnalyticsVehicleStateORM",
+    "AnalyticsTripRecordORM",
+    "AnalyticsIdleRecordORM",
+    "AnalyticsOverspeedEventORM",
+    "AnalyticsGeofenceEventORM",
+    "AnalyticsDailyKPIORM",
     "DeviceEventORM",
     "DeviceORM",
     "DeviceVehicleAssignmentORM",

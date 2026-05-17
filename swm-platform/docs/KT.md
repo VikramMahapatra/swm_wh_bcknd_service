@@ -191,8 +191,20 @@ flowchart TD
 ### 4. Analytics
 
 - **Worker:** `analytics-worker` subscribes to `gps.telemetry.raw`.
-- **Job Streams:** May also use streams like `analytics.jobs` for batch analytics tasks.
-- **Database Table:** Writes rollups/aggregates to analytics tables in ClickHouse.
+- **PostgreSQL analytics tables:**
+    - `analytics_vehicle_state`
+    - `analytics_trip_records`
+    - `analytics_idle_records`
+    - `analytics_overspeed_events`
+    - `analytics_geofence_events`
+    - `analytics_daily_kpis`
+- **Derived outputs:** trip detection, idle segments, overspeed events, geofence entry/exit/dwell, route deviation, and daily KPI rollups.
+- **Admin API read layer:**
+    - `/analytics/trips`
+    - `/analytics/idle-segments`
+    - `/analytics/overspeed-events`
+    - `/analytics/geofence-events`
+    - `/analytics/reports/daily|monthly|quarterly|half-yearly|annual`
 
 ### 5. Alerts
 

@@ -1,7 +1,8 @@
 from collections.abc import Awaitable, Callable
-from csv import DictReader
-from datetime import UTC, datetime
+from csv import DictReader, DictWriter
+from datetime import UTC, date, datetime
 from io import StringIO
+import os
 from typing import Any
 from uuid import UUID
 
@@ -9,7 +10,7 @@ import uvicorn
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import String, asc, cast, desc, func, or_, select
+from sqlalchemy import String, asc, case, cast, desc, func, or_, select
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
@@ -21,6 +22,11 @@ from swm_common import (
     metrics_response,
 )
 from swm_db import (
+    AnalyticsDailyKPIORM,
+    AnalyticsGeofenceEventORM,
+    AnalyticsIdleRecordORM,
+    AnalyticsOverspeedEventORM,
+    AnalyticsTripRecordORM,
     AssignmentCreateInput,
     ContractorORM,
     ContractorRepository,
@@ -49,10 +55,19 @@ logger = get_logger("admin_api")
 
 app = FastAPI(title="SWM Admin API", version="0.1.0")
 
-# Add CORS middleware to allow frontend (localhost:8080) to call this API
+_cors_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:8080,http://127.0.0.1:8080",
+    ).split(",")
+    if origin.strip()
+]
+
+# CORS origins should represent browser UI origins, not API service ports.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8080", "http://127.0.0.1:8080"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -224,6 +239,60 @@ def _parse_uuid(value: str | None) -> UUID | None:
 
 def _allowed_sort(model: Any) -> set[str]:
     return {c.name for c in model.__table__.columns}
+
+
+def _csv_response(rows: list[dict[str, Any]], filename: str) -> Response:
+    output = StringIO()
+    if rows:
+        writer = DictWriter(output, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _serialize_scalar(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    return value
+
+
+def _rows_from_result(result: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in result.mappings().all():
+        rows.append({key: _serialize_scalar(value) for key, value in dict(row).items()})
+    return rows
+
+
+def _period_start_expr(period: str) -> Any:
+    metric_date = AnalyticsDailyKPIORM.metric_date
+    if period == "daily":
+        return metric_date.label("period_start")
+    if period == "monthly":
+        return func.date_trunc("month", metric_date).cast(String).label("period_start")
+    if period == "quarterly":
+        return func.date_trunc("quarter", metric_date).cast(String).label("period_start")
+    if period == "half-yearly":
+        return (
+            func.to_date(
+                func.concat(
+                    func.extract("year", metric_date).cast(String),
+                    "-",
+                    case((func.extract("month", metric_date) <= 6, "01-01"), else_="07-01"),
+                ),
+                "YYYY-MM-DD",
+            )
+            .cast(String)
+            .label("period_start")
+        )
+    return func.date_trunc("year", metric_date).cast(String).label("period_start")
 
 
 async def _list_entities(  # noqa: PLR0913
@@ -1542,6 +1611,258 @@ async def bulk_import_device_assignments(
         )
         created += 1
     return {"created": created}
+
+
+async def _analytics_report(
+    session: AsyncSession,
+    *,
+    period: str,
+    date_from: date | None,
+    date_to: date | None,
+    vehicle_id: str | None,
+    vendor_id: str | None,
+    export: str,
+) -> Response | dict[str, Any]:
+    period_expr = _period_start_expr(period)
+    stmt = (
+        select(
+            period_expr,
+            func.sum(AnalyticsDailyKPIORM.trips_count).label("trips_count"),
+            func.sum(AnalyticsDailyKPIORM.distance_km).label("distance_km"),
+            func.sum(AnalyticsDailyKPIORM.runtime_seconds).label("runtime_seconds"),
+            func.sum(AnalyticsDailyKPIORM.moving_seconds).label("moving_seconds"),
+            func.sum(AnalyticsDailyKPIORM.idle_seconds).label("idle_seconds"),
+            func.sum(AnalyticsDailyKPIORM.stoppages_count).label("stoppages_count"),
+            func.sum(AnalyticsDailyKPIORM.overspeed_count).label("overspeed_count"),
+            func.sum(AnalyticsDailyKPIORM.geofence_entries).label("geofence_entries"),
+            func.sum(AnalyticsDailyKPIORM.geofence_exits).label("geofence_exits"),
+            func.sum(AnalyticsDailyKPIORM.route_deviation_count).label("route_deviation_count"),
+            func.sum(AnalyticsDailyKPIORM.fuel_used_l).label("fuel_used_l"),
+            func.avg(AnalyticsDailyKPIORM.utilization_pct).label("utilization_pct"),
+        )
+        .select_from(AnalyticsDailyKPIORM)
+        .group_by(period_expr)
+        .order_by(period_expr)
+    )
+
+    if date_from is not None:
+        stmt = stmt.where(AnalyticsDailyKPIORM.metric_date >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(AnalyticsDailyKPIORM.metric_date <= date_to)
+    if vehicle_id:
+        stmt = stmt.where(AnalyticsDailyKPIORM.vehicle_id == vehicle_id)
+    if vendor_id:
+        stmt = stmt.where(AnalyticsDailyKPIORM.vendor_id == vendor_id)
+
+    rows = _rows_from_result(await session.execute(stmt))
+    if export == "csv":
+        return _csv_response(rows, f"analytics-{period}-report.csv")
+    return {"period": period, "items": rows, "total": len(rows)}
+
+
+@app.get("/analytics/trips")
+async def list_trip_records(
+    started_from: datetime | None = Query(default=None),
+    started_to: datetime | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    vendor_id: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=5000),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    stmt = select(AnalyticsTripRecordORM).order_by(AnalyticsTripRecordORM.started_at.desc()).limit(limit)
+    if started_from is not None:
+        stmt = stmt.where(AnalyticsTripRecordORM.started_at >= started_from)
+    if started_to is not None:
+        stmt = stmt.where(AnalyticsTripRecordORM.started_at <= started_to)
+    if vehicle_id:
+        stmt = stmt.where(AnalyticsTripRecordORM.vehicle_id == vehicle_id)
+    if vendor_id:
+        stmt = stmt.where(AnalyticsTripRecordORM.vendor_id == vendor_id)
+
+    rows = (await session.execute(stmt)).scalars().all()
+    items = [_to_dict(row) for row in rows]
+    return {"items": items, "total": len(items)}
+
+
+@app.get("/analytics/idle-segments")
+async def list_idle_segments(
+    started_from: datetime | None = Query(default=None),
+    started_to: datetime | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    vendor_id: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=5000),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    stmt = select(AnalyticsIdleRecordORM).order_by(AnalyticsIdleRecordORM.started_at.desc()).limit(limit)
+    if started_from is not None:
+        stmt = stmt.where(AnalyticsIdleRecordORM.started_at >= started_from)
+    if started_to is not None:
+        stmt = stmt.where(AnalyticsIdleRecordORM.started_at <= started_to)
+    if vehicle_id:
+        stmt = stmt.where(AnalyticsIdleRecordORM.vehicle_id == vehicle_id)
+    if vendor_id:
+        stmt = stmt.where(AnalyticsIdleRecordORM.vendor_id == vendor_id)
+
+    rows = (await session.execute(stmt)).scalars().all()
+    items = [_to_dict(row) for row in rows]
+    return {"items": items, "total": len(items)}
+
+
+@app.get("/analytics/overspeed-events")
+async def list_overspeed_events(
+    from_ts: datetime | None = Query(default=None),
+    to_ts: datetime | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    vendor_id: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=5000),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    stmt = select(AnalyticsOverspeedEventORM).order_by(AnalyticsOverspeedEventORM.event_ts.desc()).limit(limit)
+    if from_ts is not None:
+        stmt = stmt.where(AnalyticsOverspeedEventORM.event_ts >= from_ts)
+    if to_ts is not None:
+        stmt = stmt.where(AnalyticsOverspeedEventORM.event_ts <= to_ts)
+    if vehicle_id:
+        stmt = stmt.where(AnalyticsOverspeedEventORM.vehicle_id == vehicle_id)
+    if vendor_id:
+        stmt = stmt.where(AnalyticsOverspeedEventORM.vendor_id == vendor_id)
+
+    rows = (await session.execute(stmt)).scalars().all()
+    items = [_to_dict(row) for row in rows]
+    return {"items": items, "total": len(items)}
+
+
+@app.get("/analytics/geofence-events")
+async def list_geofence_events(
+    from_ts: datetime | None = Query(default=None),
+    to_ts: datetime | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    event_type: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=5000),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    stmt = select(AnalyticsGeofenceEventORM).order_by(AnalyticsGeofenceEventORM.event_ts.desc()).limit(limit)
+    if from_ts is not None:
+        stmt = stmt.where(AnalyticsGeofenceEventORM.event_ts >= from_ts)
+    if to_ts is not None:
+        stmt = stmt.where(AnalyticsGeofenceEventORM.event_ts <= to_ts)
+    if vehicle_id:
+        stmt = stmt.where(AnalyticsGeofenceEventORM.vehicle_id == vehicle_id)
+    if event_type:
+        stmt = stmt.where(AnalyticsGeofenceEventORM.event_type == event_type)
+
+    rows = (await session.execute(stmt)).scalars().all()
+    items = [_to_dict(row) for row in rows]
+    return {"items": items, "total": len(items)}
+
+
+@app.get("/analytics/reports/daily")
+async def report_daily(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    vendor_id: str | None = Query(default=None),
+    export: str = Query(default="json", pattern="^(json|csv)$"),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> Response | dict[str, Any]:
+    return await _analytics_report(
+        session,
+        period="daily",
+        date_from=date_from,
+        date_to=date_to,
+        vehicle_id=vehicle_id,
+        vendor_id=vendor_id,
+        export=export,
+    )
+
+
+@app.get("/analytics/reports/monthly")
+async def report_monthly(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    vendor_id: str | None = Query(default=None),
+    export: str = Query(default="json", pattern="^(json|csv)$"),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> Response | dict[str, Any]:
+    return await _analytics_report(
+        session,
+        period="monthly",
+        date_from=date_from,
+        date_to=date_to,
+        vehicle_id=vehicle_id,
+        vendor_id=vendor_id,
+        export=export,
+    )
+
+
+@app.get("/analytics/reports/quarterly")
+async def report_quarterly(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    vendor_id: str | None = Query(default=None),
+    export: str = Query(default="json", pattern="^(json|csv)$"),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> Response | dict[str, Any]:
+    return await _analytics_report(
+        session,
+        period="quarterly",
+        date_from=date_from,
+        date_to=date_to,
+        vehicle_id=vehicle_id,
+        vendor_id=vendor_id,
+        export=export,
+    )
+
+
+@app.get("/analytics/reports/half-yearly")
+async def report_half_yearly(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    vendor_id: str | None = Query(default=None),
+    export: str = Query(default="json", pattern="^(json|csv)$"),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> Response | dict[str, Any]:
+    return await _analytics_report(
+        session,
+        period="half-yearly",
+        date_from=date_from,
+        date_to=date_to,
+        vehicle_id=vehicle_id,
+        vendor_id=vendor_id,
+        export=export,
+    )
+
+
+@app.get("/analytics/reports/annual")
+async def report_annual(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    vendor_id: str | None = Query(default=None),
+    export: str = Query(default="json", pattern="^(json|csv)$"),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> Response | dict[str, Any]:
+    return await _analytics_report(
+        session,
+        period="annual",
+        date_from=date_from,
+        date_to=date_to,
+        vehicle_id=vehicle_id,
+        vendor_id=vendor_id,
+        export=export,
+    )
 
 
 def run() -> None:

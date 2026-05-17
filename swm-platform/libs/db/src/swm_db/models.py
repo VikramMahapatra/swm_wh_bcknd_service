@@ -13,10 +13,22 @@ from __future__ import annotations
 import ipaddress
 import re
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
@@ -652,4 +664,206 @@ class DeviceVehicleAssignmentORM(Base):
         self.active = False
         if remarks is not None:
             self.remarks = remarks
+
+
+class AnalyticsVehicleStateORM(Base):
+    __tablename__ = "analytics_vehicle_state"
+
+    vehicle_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    imei: Mapped[str] = mapped_column(String(17), nullable=False, index=True)
+    device_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    last_event_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_lat: Mapped[float] = mapped_column(Float, nullable=False)
+    last_lng: Mapped[float] = mapped_column(Float, nullable=False)
+    last_speed_kph: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    last_odometer_km: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_ignition: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    trip_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    trip_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    trip_start_odometer_km: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trip_distance_km: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    trip_runtime_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    trip_moving_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    trip_idle_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    trip_stoppages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    idle_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    idle_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    idle_anchor_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    idle_anchor_lng: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    current_geofence_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    current_geofence_entered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_route_deviation_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class AnalyticsTripRecordORM(Base):
+    __tablename__ = "analytics_trip_records"
+    __table_args__ = (
+        Index("ix_analytics_trip_records_vehicle_started", "vehicle_id", "started_at"),
+        Index("ix_analytics_trip_records_started", "started_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    vehicle_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    imei: Mapped[str] = mapped_column(String(17), nullable=False)
+    device_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    vendor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    runtime_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    moving_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    idle_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stoppages_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    start_odometer_km: Mapped[float | None] = mapped_column(Float, nullable=True)
+    end_odometer_km: Mapped[float | None] = mapped_column(Float, nullable=True)
+    distance_km: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class AnalyticsIdleRecordORM(Base):
+    __tablename__ = "analytics_idle_records"
+    __table_args__ = (
+        Index("ix_analytics_idle_records_vehicle_started", "vehicle_id", "started_at"),
+        Index("ix_analytics_idle_records_started", "started_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    vehicle_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    imei: Mapped[str] = mapped_column(String(17), nullable=False)
+    device_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    vendor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    lng: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class AnalyticsOverspeedEventORM(Base):
+    __tablename__ = "analytics_overspeed_events"
+    __table_args__ = (
+        Index("ix_analytics_overspeed_vehicle_ts", "vehicle_id", "event_ts"),
+        Index("ix_analytics_overspeed_event_ts", "event_ts"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    vehicle_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    imei: Mapped[str] = mapped_column(String(17), nullable=False)
+    device_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    vendor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    event_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    speed_kph: Mapped[float] = mapped_column(Float, nullable=False)
+    threshold_kph: Mapped[float] = mapped_column(Float, nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    lng: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class AnalyticsGeofenceEventORM(Base):
+    __tablename__ = "analytics_geofence_events"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('entry','exit','route_deviation')",
+            name="ck_analytics_geofence_event_type",
+        ),
+        Index("ix_analytics_geofence_vehicle_ts", "vehicle_id", "event_ts"),
+        Index("ix_analytics_geofence_code_ts", "geofence_code", "event_ts"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    vehicle_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    imei: Mapped[str] = mapped_column(String(17), nullable=False)
+    device_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    vendor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    geofence_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    geofence_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    geofence_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    event_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    dwell_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    lng: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class AnalyticsDailyKPIORM(Base):
+    __tablename__ = "analytics_daily_kpis"
+    __table_args__ = (
+        Index("ix_analytics_daily_kpis_metric_date", "metric_date"),
+        Index("ix_analytics_daily_kpis_vendor_date", "vendor_id", "metric_date"),
+    )
+
+    metric_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    vehicle_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    imei: Mapped[str] = mapped_column(String(17), nullable=False)
+    vendor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    trips_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    distance_km: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    runtime_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    moving_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    idle_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stoppages_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    overspeed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    geofence_entries: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    geofence_exits: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    route_deviation_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fuel_used_l: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    utilization_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
 
