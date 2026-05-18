@@ -34,6 +34,7 @@ type LiveWsMessage = {
 
 const RECONNECT_DELAY_MS = 1500;
 
+
 function toTruckStatus(rawStatus: string | null | undefined, speed: number): TruckData["status"] {
   const status = (rawStatus || "").toLowerCase();
   if (status === "moving") return "moving";
@@ -121,8 +122,17 @@ function mergeWsUpdate(existing: TruckData, msg: LiveWsMessage): TruckData {
   };
 }
 
-export function useSwmLiveFleet(limit = 20000): { trucks: TruckData[]; isConnected: boolean } {
+const MAX_TRAIL_POINTS = 80;
+
+export type TrailPoint = { lat: number; lng: number };
+
+export function useSwmLiveFleet(limit = 20000): {
+  trucks: TruckData[];
+  isConnected: boolean;
+  trails: Record<string, TrailPoint[]>;
+} {
   const [trucksById, setTrucksById] = useState<Record<string, TruckData>>({});
+  const [trailsById, setTrailsById] = useState<Record<string, TrailPoint[]>>({});
   const [isConnected, setIsConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
@@ -167,7 +177,8 @@ export function useSwmLiveFleet(limit = 20000): { trucks: TruckData[]; isConnect
 
       ws.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data) as LiveWsMessage;
+          const raw = JSON.parse(event.data);
+          const data = (raw?.payload ?? raw) as LiveWsMessage;
           const imei = (data.imei || "").trim();
           if (!imei) return;
 
@@ -212,6 +223,19 @@ export function useSwmLiveFleet(limit = 20000): { trucks: TruckData[]; isConnect
               [imei]: mergeWsUpdate(existing, data),
             };
           });
+
+          const newLat = Number(data.lat);
+          const newLng = Number(data.lng);
+          if (Number.isFinite(newLat) && Number.isFinite(newLng)) {
+            setTrailsById((prev) => {
+              const existing = prev[imei] || [];
+              const updated = [...existing, { lat: newLat, lng: newLng }];
+              return {
+                ...prev,
+                [imei]: updated.length > MAX_TRAIL_POINTS ? updated.slice(-MAX_TRAIL_POINTS) : updated,
+              };
+            });
+          }
         } catch {
           // Ignore malformed payloads from websocket.
         }
@@ -251,5 +275,5 @@ export function useSwmLiveFleet(limit = 20000): { trucks: TruckData[]; isConnect
     return Object.values(trucksById).sort((a, b) => a.truckNumber.localeCompare(b.truckNumber));
   }, [trucksById]);
 
-  return { trucks, isConnected };
+  return { trucks, isConnected, trails: trailsById };
 }
