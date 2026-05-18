@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
-import { GoogleMap, Marker, InfoWindow, Polygon } from "@react-google-maps/api";
+import { GoogleMap, Marker, InfoWindow, Polygon, Polyline } from "@react-google-maps/api";
 import FleetStats from "@/components/FleetStats";
 import TruckList from "@/components/TruckList";
 import AlertsPanel from "@/components/AlertsPanel";
@@ -21,6 +21,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 
 const containerStyle = { width: '100%', height: '100%' };
 
+const TRAIL_COLOR = "#3b82f6";
+
 const statusConfig: Record<string, { color: string; label: string; bgClass: string }> = {
   moving: { color: "#22c55e", label: "Moving", bgClass: "bg-success" },
   idle: { color: "#f59e0b", label: "Idle", bgClass: "bg-warning" },
@@ -38,7 +40,7 @@ const Index = () => {
   const [routeSearch, setRouteSearch] = useState("");
   const [filterZone, setFilterZone] = useState<string>("all");
   const [filterWard, setFilterWard] = useState<string>("all");
-  const { trucks: liveMapTrucks, isConnected: isLiveFeedConnected } = useSwmLiveFleet();
+  const { trucks: liveMapTrucks, isConnected: isLiveFeedConnected, trails } = useSwmLiveFleet();
 
   const availableZones = useMemo(() => {
     const seen = new Set<string>();
@@ -425,6 +427,24 @@ const Index = () => {
                         title={site.name}
                       />
                     ))}
+
+                    {/* Truck Trail Polylines */}
+                    {isMapLoaded && window.google && filteredMapTrucks.map((truck) => {
+                      const trail = trails[truck.id];
+                      if (!trail || trail.length < 2) return null;
+                      return (
+                        <Polyline
+                          key={`trail-${truck.id}`}
+                          path={trail}
+                          options={{
+                            strokeColor: TRAIL_COLOR,
+                            strokeOpacity: 0.75,
+                            strokeWeight: 3,
+                            geodesic: true,
+                          }}
+                        />
+                      );
+                    })}
 
                     {/* Truck Markers */}
                     {isMapLoaded && window.google && filteredMapTrucks.map(truck => (
