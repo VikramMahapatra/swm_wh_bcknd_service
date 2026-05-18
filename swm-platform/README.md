@@ -129,3 +129,26 @@ Analytics processing is now persisted in PostgreSQL from `analytics-worker` and 
 - Each app, worker, and library is an independently importable package with its own `pyproject.toml`.
 - Shared contracts and cross-cutting concerns live in `libs/*`.
 - Production hardening (auth policy, retries, circuit breakers, DLQs, backpressure) should be layered into workers as the domain matures.
+
+## Reliability Operations Starter (Epic)
+
+This repository now includes a first implementation slice for platform reliability operations:
+
+- `alert-worker` emits alerts for `offline`, `stale_gps`, `overspeed`, `geofence_breach`, and `panic` events.
+- Worker stream runtime emits Prometheus metrics for throughput, pending backlog, stream lag, retry/poison routing, stream length, and heartbeat timestamps.
+- Prometheus loads alert rules from `infra/prometheus/alerts.yml`.
+- Grafana dashboard `Platform Reliability Operations` is provisioned from `infra/grafana/dashboards/platform-reliability-operations.json`.
+
+### Quick Validate
+
+1. Restart stack:
+   - `docker compose -f infra/docker-compose.yml up -d --build`
+2. Verify Prometheus rule groups:
+   - `http://localhost:9090/rules`
+3. Open Grafana and check dashboard:
+   - `http://localhost:3000` (admin/admin)
+4. Generate traffic and confirm metrics:
+   - `swm_stream_consumer_pending`
+   - `swm_stream_consumer_lag_seconds`
+   - `swm_stream_consumer_retry_total`
+   - `swm_alert_worker_alert_event_total`

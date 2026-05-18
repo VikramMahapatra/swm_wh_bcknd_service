@@ -6,6 +6,7 @@ Create Date: 2026-05-04 02:00:00
 """
 
 from collections.abc import Sequence
+from typing import Any
 
 import sqlalchemy as sa
 from alembic import op
@@ -18,21 +19,16 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.execute("CREATE EXTENSION IF NOT EXISTS postgis")
+    bind = op.get_bind()
+    postgis_available = bool(
+        bind.execute(sa.text("SELECT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'postgis')")).scalar()
+    )
+    postgis_enabled = False
+    if postgis_available:
+        op.execute("CREATE EXTENSION IF NOT EXISTS postgis")
+        postgis_enabled = True
 
-    op.create_table(
-        "geofences",
-        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("geofence_code", sa.String(length=32), nullable=False),
-        sa.Column("geofence_name", sa.String(length=255), nullable=False),
-        sa.Column("type", sa.String(length=16), nullable=False),
-        sa.Column("geometry_type", sa.String(length=16), nullable=False),
-        sa.Column("center_lat", sa.Float(), nullable=True),
-        sa.Column("center_lng", sa.Float(), nullable=True),
-        sa.Column("radius_meter", sa.Float(), nullable=True),
-        sa.Column("polygon", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.Column("ward_id", postgresql.UUID(as_uuid=True), nullable=True),
-        sa.Column("active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
+    constraints: list[Any] = [
         sa.CheckConstraint(
             "type IN ('depot','landfill','zone','parking','maintenance')",
             name="ck_geofences_type",
@@ -63,10 +59,28 @@ def upgrade() -> None:
             "(polygon IS NOT NULL AND center_lat IS NULL AND center_lng IS NULL AND radius_meter IS NULL)",
             name="ck_geofences_polygon_fields",
         ),
-        sa.CheckConstraint(
-            "polygon IS NULL OR ST_IsValid(ST_SetSRID(ST_GeomFromGeoJSON(polygon::text), 4326))",
-            name="ck_geofences_polygon_valid",
-        ),
+    ]
+    if postgis_enabled:
+        constraints.append(
+            sa.CheckConstraint(
+                "polygon IS NULL OR ST_IsValid(ST_SetSRID(ST_GeomFromGeoJSON(polygon::text), 4326))",
+                name="ck_geofences_polygon_valid",
+            )
+        )
+
+    op.create_table(
+        "geofences",
+        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("geofence_code", sa.String(length=32), nullable=False),
+        sa.Column("geofence_name", sa.String(length=255), nullable=False),
+        sa.Column("type", sa.String(length=16), nullable=False),
+        sa.Column("geometry_type", sa.String(length=16), nullable=False),
+        sa.Column("center_lat", sa.Float(), nullable=True),
+        sa.Column("center_lng", sa.Float(), nullable=True),
+        sa.Column("radius_meter", sa.Float(), nullable=True),
+        sa.Column("polygon", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column("ward_id", postgresql.UUID(as_uuid=True), nullable=True),
+        sa.Column("active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
         sa.ForeignKeyConstraint(
             ["ward_id"],
             ["wards.id"],
@@ -75,28 +89,30 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name="pk_geofences"),
         sa.UniqueConstraint("geofence_code", name="uq_geofences_geofence_code"),
+        *constraints,
     )
 
     op.create_index("ix_geofences_ward_id", "geofences", ["ward_id"])
     op.create_index("ix_geofences_active", "geofences", ["active"])
 
-    op.execute(
-        """
-        CREATE INDEX ix_geofences_circle_gist
-        ON geofences
-        USING GIST (geography(ST_SetSRID(ST_MakePoint(center_lng, center_lat), 4326)))
-        WHERE geometry_type = 'circle' AND center_lat IS NOT NULL AND center_lng IS NOT NULL
-        """
-    )
+    if postgis_enabled:
+        op.execute(
+            """
+            CREATE INDEX ix_geofences_circle_gist
+            ON geofences
+            USING GIST (geography(ST_SetSRID(ST_MakePoint(center_lng, center_lat), 4326)))
+            WHERE geometry_type = 'circle' AND center_lat IS NOT NULL AND center_lng IS NOT NULL
+            """
+        )
 
-    op.execute(
-        """
-        CREATE INDEX ix_geofences_polygon_gist
-        ON geofences
-        USING GIST (ST_SetSRID(ST_GeomFromGeoJSON(polygon::text), 4326))
-        WHERE geometry_type = 'polygon' AND polygon IS NOT NULL
-        """
-    )
+        op.execute(
+            """
+            CREATE INDEX ix_geofences_polygon_gist
+            ON geofences
+            USING GIST (ST_SetSRID(ST_GeomFromGeoJSON(polygon::text), 4326))
+            WHERE geometry_type = 'polygon' AND polygon IS NOT NULL
+            """
+        )
 
 
 def downgrade() -> None:

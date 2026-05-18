@@ -1,5 +1,6 @@
+from typing import Any
+
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_latest
-from starlette.responses import Response
 
 REQUEST_COUNTER = Counter(
     "http_requests_total",
@@ -13,6 +14,8 @@ WEBSOCKET_CONNECTIONS = Gauge(
 )
 
 
-def metrics_response() -> Response:
+def metrics_response() -> Any:
+    from starlette.responses import Response
+
     payload = generate_latest()
     return Response(content=payload, media_type=CONTENT_TYPE_LATEST)

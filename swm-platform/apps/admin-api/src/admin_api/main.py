@@ -27,6 +27,7 @@ from swm_db import (
     AnalyticsIdleRecordORM,
     AnalyticsOverspeedEventORM,
     AnalyticsTripRecordORM,
+    AnalyticsVehicleStateORM,
     AssignmentCreateInput,
     ContractorORM,
     ContractorRepository,
@@ -135,7 +136,10 @@ class LiveMapSnapshotResponse(BaseModel):
 def _to_dict(obj: Any) -> dict[str, Any]:
     data: dict[str, Any] = {}
     for col in obj.__table__.columns:
-        value = getattr(obj, col.name)
+        if col.name == "metadata" and hasattr(obj, "metadata_json"):
+            value = getattr(obj, "metadata_json")
+        else:
+            value = getattr(obj, col.name)
         if isinstance(value, UUID):
             data[col.name] = str(value)
         elif isinstance(value, datetime):
@@ -1181,18 +1185,20 @@ async def create_geofence(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     repo = GeofenceRepository(session)
-    row = await repo.create(
-        geofence_code=payload.geofence_code,
-        geofence_name=payload.geofence_name,
-        type=payload.type,
-        geometry_type=payload.geometry_type,
-        center_lat=payload.center_lat,
-        center_lng=payload.center_lng,
-        radius_meter=payload.radius_meter,
-        polygon=payload.polygon,
-        ward_id=payload.ward_id,
-        active=payload.active,
-    )
+    create_kwargs: dict[str, Any] = {
+        "geofence_code": payload.geofence_code,
+        "geofence_name": payload.geofence_name,
+        "type": payload.type,
+        "geometry_type": payload.geometry_type,
+        "center_lat": payload.center_lat,
+        "center_lng": payload.center_lng,
+        "radius_meter": payload.radius_meter,
+        "ward_id": payload.ward_id,
+        "active": payload.active,
+    }
+    if payload.polygon is not None:
+        create_kwargs["polygon"] = payload.polygon
+    row = await repo.create(**create_kwargs)
     return _to_dict(row)
 
 
@@ -1216,19 +1222,20 @@ async def update_geofence(
 ) -> dict[str, Any]:
     repo = GeofenceRepository(session)
     try:
-        row = await repo.update(
-            geofence_id,
-            geofence_code=payload.geofence_code,
-            geofence_name=payload.geofence_name,
-            type=payload.type,
-            geometry_type=payload.geometry_type,
-            center_lat=payload.center_lat,
-            center_lng=payload.center_lng,
-            radius_meter=payload.radius_meter,
-            polygon=payload.polygon,
-            ward_id=payload.ward_id,
-            active=payload.active,
-        )
+        update_kwargs: dict[str, Any] = {
+            "geofence_code": payload.geofence_code,
+            "geofence_name": payload.geofence_name,
+            "type": payload.type,
+            "geometry_type": payload.geometry_type,
+            "center_lat": payload.center_lat,
+            "center_lng": payload.center_lng,
+            "radius_meter": payload.radius_meter,
+            "ward_id": payload.ward_id,
+            "active": payload.active,
+        }
+        if payload.polygon is not None:
+            update_kwargs["polygon"] = payload.polygon
+        row = await repo.update(geofence_id, **update_kwargs)
     except NoResultFound:
         _raise_not_found("geofence", geofence_id)
     return _to_dict(row)
@@ -1270,7 +1277,6 @@ async def bulk_import_geofences(
                 "center_lat": float(r["center_lat"]) if r.get("center_lat") else None,
                 "center_lng": float(r["center_lng"]) if r.get("center_lng") else None,
                 "radius_meter": float(r["radius_meter"]) if r.get("radius_meter") else None,
-                "polygon": None,
                 "ward_id": _parse_uuid(r.get("ward_id")),
                 "active": _parse_bool(r.get("active"), default=True),
             }
@@ -1622,7 +1628,7 @@ async def _analytics_report(
     vehicle_id: str | None,
     vendor_id: str | None,
     export: str,
-) -> Response | dict[str, Any]:
+) -> Any:
     period_expr = _period_start_expr(period)
     stmt = (
         select(
@@ -1769,7 +1775,7 @@ async def report_daily(
     export: str = Query(default="json", pattern="^(json|csv)$"),
     _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
     session: AsyncSession = Depends(get_db_session),
-) -> Response | dict[str, Any]:
+) -> Any:
     return await _analytics_report(
         session,
         period="daily",
@@ -1790,7 +1796,7 @@ async def report_monthly(
     export: str = Query(default="json", pattern="^(json|csv)$"),
     _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
     session: AsyncSession = Depends(get_db_session),
-) -> Response | dict[str, Any]:
+) -> Any:
     return await _analytics_report(
         session,
         period="monthly",
@@ -1811,7 +1817,7 @@ async def report_quarterly(
     export: str = Query(default="json", pattern="^(json|csv)$"),
     _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
     session: AsyncSession = Depends(get_db_session),
-) -> Response | dict[str, Any]:
+) -> Any:
     return await _analytics_report(
         session,
         period="quarterly",
@@ -1832,7 +1838,7 @@ async def report_half_yearly(
     export: str = Query(default="json", pattern="^(json|csv)$"),
     _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
     session: AsyncSession = Depends(get_db_session),
-) -> Response | dict[str, Any]:
+) -> Any:
     return await _analytics_report(
         session,
         period="half-yearly",
@@ -1853,7 +1859,7 @@ async def report_annual(
     export: str = Query(default="json", pattern="^(json|csv)$"),
     _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
     session: AsyncSession = Depends(get_db_session),
-) -> Response | dict[str, Any]:
+) -> Any:
     return await _analytics_report(
         session,
         period="annual",
@@ -1863,6 +1869,282 @@ async def report_annual(
         vendor_id=vendor_id,
         export=export,
     )
+
+
+@app.get("/analytics/vehicle-state")
+async def list_vehicle_states(
+    limit: int = Query(default=500, ge=1, le=5000),
+    vehicle_id: str | None = Query(default=None),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Get current state for all or filtered vehicles."""
+    stmt = select(AnalyticsVehicleStateORM).limit(limit)
+    if vehicle_id:
+        stmt = stmt.where(AnalyticsVehicleStateORM.vehicle_id == vehicle_id)
+    
+    rows = (await session.execute(stmt)).scalars().all()
+    items = [_to_dict(row) for row in rows]
+    return {"items": items, "total": len(items)}
+
+
+@app.get("/analytics/vehicle-state/{vehicle_id}")
+async def get_vehicle_state(
+    vehicle_id: str,
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Get current state for a specific vehicle."""
+    stmt = select(AnalyticsVehicleStateORM).where(AnalyticsVehicleStateORM.vehicle_id == vehicle_id)
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"vehicle state not found for {vehicle_id}")
+    return _to_dict(row)
+
+
+@app.get("/analytics/geofence-summary")
+async def geofence_summary(
+    from_ts: datetime | None = Query(default=None),
+    to_ts: datetime | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    geofence_code: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=5000),
+    export: str = Query(default="json", pattern="^(json|csv)$"),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> Any:
+    """Get geofence entry/exit/dwell summary statistics."""
+    stmt = (
+        select(
+            AnalyticsGeofenceEventORM.geofence_code,
+            func.count(AnalyticsGeofenceEventORM.id).label("total_events"),
+            func.sum(case((AnalyticsGeofenceEventORM.event_type == "entry", 1), else_=0)).label("entries"),
+            func.sum(case((AnalyticsGeofenceEventORM.event_type == "exit", 1), else_=0)).label("exits"),
+            func.sum(AnalyticsGeofenceEventORM.dwell_minutes).label("total_dwell_minutes"),
+            func.avg(AnalyticsGeofenceEventORM.dwell_minutes).label("avg_dwell_minutes"),
+        )
+        .select_from(AnalyticsGeofenceEventORM)
+        .group_by(AnalyticsGeofenceEventORM.geofence_code)
+        .limit(limit)
+    )
+    
+    if from_ts is not None:
+        stmt = stmt.where(AnalyticsGeofenceEventORM.event_ts >= from_ts)
+    if to_ts is not None:
+        stmt = stmt.where(AnalyticsGeofenceEventORM.event_ts <= to_ts)
+    if vehicle_id:
+        stmt = stmt.where(AnalyticsGeofenceEventORM.vehicle_id == vehicle_id)
+    if geofence_code:
+        stmt = stmt.where(AnalyticsGeofenceEventORM.geofence_code == geofence_code)
+    
+    rows = _rows_from_result(await session.execute(stmt))
+    if export == "csv":
+        return _csv_response(rows, "geofence-summary.csv")
+    return {"items": rows, "total": len(rows)}
+
+
+@app.get("/analytics/vehicle-utilization")
+async def vehicle_utilization(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    vendor_id: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=5000),
+    export: str = Query(default="json", pattern="^(json|csv)$"),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> Any:
+    """Get vehicle utilization metrics by day."""
+    stmt = (
+        select(
+            AnalyticsDailyKPIORM.metric_date,
+            AnalyticsDailyKPIORM.vehicle_id,
+            AnalyticsDailyKPIORM.utilization_pct,
+            AnalyticsDailyKPIORM.distance_km,
+            AnalyticsDailyKPIORM.runtime_seconds,
+            AnalyticsDailyKPIORM.moving_seconds,
+            AnalyticsDailyKPIORM.idle_seconds,
+            AnalyticsDailyKPIORM.trips_count,
+        )
+        .select_from(AnalyticsDailyKPIORM)
+        .order_by(AnalyticsDailyKPIORM.metric_date.desc(), AnalyticsDailyKPIORM.vehicle_id)
+        .limit(limit)
+    )
+    
+    if date_from is not None:
+        stmt = stmt.where(AnalyticsDailyKPIORM.metric_date >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(AnalyticsDailyKPIORM.metric_date <= date_to)
+    if vehicle_id:
+        stmt = stmt.where(AnalyticsDailyKPIORM.vehicle_id == vehicle_id)
+    if vendor_id:
+        stmt = stmt.where(AnalyticsDailyKPIORM.vendor_id == vendor_id)
+    
+    rows = _rows_from_result(await session.execute(stmt))
+    if export == "csv":
+        return _csv_response(rows, "vehicle-utilization.csv")
+    return {"items": rows, "total": len(rows)}
+
+
+@app.get("/analytics/route-deviation-summary")
+async def route_deviation_summary(
+    from_ts: datetime | None = Query(default=None),
+    to_ts: datetime | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=5000),
+    export: str = Query(default="json", pattern="^(json|csv)$"),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> Any:
+    """Get route deviation event summary by vehicle."""
+    stmt = (
+        select(
+            AnalyticsTripRecordORM.vehicle_id,
+            func.count(AnalyticsTripRecordORM.id).label("trips_total"),
+            func.sum(case((AnalyticsTripRecordORM.route_deviation == True, 1), else_=0)).label("trips_with_deviation"),
+            func.avg(AnalyticsTripRecordORM.route_deviation_distance_km).label("avg_deviation_distance_km"),
+            func.max(AnalyticsTripRecordORM.route_deviation_distance_km).label("max_deviation_distance_km"),
+        )
+        .select_from(AnalyticsTripRecordORM)
+        .group_by(AnalyticsTripRecordORM.vehicle_id)
+        .limit(limit)
+    )
+    
+    if from_ts is not None:
+        stmt = stmt.where(AnalyticsTripRecordORM.started_at >= from_ts)
+    if to_ts is not None:
+        stmt = stmt.where(AnalyticsTripRecordORM.started_at <= to_ts)
+    if vehicle_id:
+        stmt = stmt.where(AnalyticsTripRecordORM.vehicle_id == vehicle_id)
+    
+    rows = _rows_from_result(await session.execute(stmt))
+    if export == "csv":
+        return _csv_response(rows, "route-deviation-summary.csv")
+    return {"items": rows, "total": len(rows)}
+
+
+@app.get("/analytics/fuel-efficiency")
+async def fuel_efficiency(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    vendor_id: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=5000),
+    export: str = Query(default="json", pattern="^(json|csv)$"),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> Any:
+    """Get fuel efficiency metrics (km per liter)."""
+    stmt = (
+        select(
+            AnalyticsDailyKPIORM.metric_date,
+            AnalyticsDailyKPIORM.vehicle_id,
+            AnalyticsDailyKPIORM.vendor_id,
+            AnalyticsDailyKPIORM.distance_km,
+            AnalyticsDailyKPIORM.fuel_used_l,
+            (AnalyticsDailyKPIORM.distance_km / func.nullif(AnalyticsDailyKPIORM.fuel_used_l, 0)).cast(Float).label("km_per_liter"),
+        )
+        .select_from(AnalyticsDailyKPIORM)
+        .where(AnalyticsDailyKPIORM.fuel_used_l > 0)
+        .order_by(AnalyticsDailyKPIORM.metric_date.desc())
+        .limit(limit)
+    )
+    
+    if date_from is not None:
+        stmt = stmt.where(AnalyticsDailyKPIORM.metric_date >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(AnalyticsDailyKPIORM.metric_date <= date_to)
+    if vehicle_id:
+        stmt = stmt.where(AnalyticsDailyKPIORM.vehicle_id == vehicle_id)
+    if vendor_id:
+        stmt = stmt.where(AnalyticsDailyKPIORM.vendor_id == vendor_id)
+    
+    rows = _rows_from_result(await session.execute(stmt))
+    if export == "csv":
+        return _csv_response(rows, "fuel-efficiency.csv")
+    return {"items": rows, "total": len(rows)}
+
+
+@app.get("/analytics/speed-analysis")
+async def speed_analysis(
+    from_ts: datetime | None = Query(default=None),
+    to_ts: datetime | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    vendor_id: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=5000),
+    export: str = Query(default="json", pattern="^(json|csv)$"),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> Any:
+    """Get speed statistics: overspeed events count and distribution by vehicle."""
+    stmt = (
+        select(
+            AnalyticsOverspeedEventORM.vehicle_id,
+            func.count(AnalyticsOverspeedEventORM.id).label("overspeed_events"),
+            func.avg(AnalyticsOverspeedEventORM.speed_kph).label("avg_overspeed_kph"),
+            func.max(AnalyticsOverspeedEventORM.speed_kph).label("max_speed_kph"),
+            func.min(AnalyticsOverspeedEventORM.speed_kph).label("min_overspeed_kph"),
+        )
+        .select_from(AnalyticsOverspeedEventORM)
+        .group_by(AnalyticsOverspeedEventORM.vehicle_id)
+        .limit(limit)
+    )
+    
+    if from_ts is not None:
+        stmt = stmt.where(AnalyticsOverspeedEventORM.event_ts >= from_ts)
+    if to_ts is not None:
+        stmt = stmt.where(AnalyticsOverspeedEventORM.event_ts <= to_ts)
+    if vehicle_id:
+        stmt = stmt.where(AnalyticsOverspeedEventORM.vehicle_id == vehicle_id)
+    if vendor_id:
+        stmt = stmt.where(AnalyticsOverspeedEventORM.vendor_id == vendor_id)
+    
+    rows = _rows_from_result(await session.execute(stmt))
+    if export == "csv":
+        return _csv_response(rows, "speed-analysis.csv")
+    return {"items": rows, "total": len(rows)}
+
+
+@app.get("/analytics/idle-summary")
+async def idle_summary(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    vendor_id: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=5000),
+    export: str = Query(default="json", pattern="^(json|csv)$"),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> Any:
+    """Get idle time summary by vehicle and date."""
+    stmt = (
+        select(
+            AnalyticsDailyKPIORM.metric_date,
+            AnalyticsDailyKPIORM.vehicle_id,
+            AnalyticsDailyKPIORM.idle_seconds,
+            AnalyticsDailyKPIORM.stoppages_count,
+            AnalyticsDailyKPIORM.moving_seconds,
+            AnalyticsDailyKPIORM.runtime_seconds,
+            (AnalyticsDailyKPIORM.idle_seconds * 100.0 / func.nullif(AnalyticsDailyKPIORM.runtime_seconds, 0)).cast(Float).label("idle_percent"),
+        )
+        .select_from(AnalyticsDailyKPIORM)
+        .order_by(AnalyticsDailyKPIORM.metric_date.desc())
+        .limit(limit)
+    )
+    
+    if date_from is not None:
+        stmt = stmt.where(AnalyticsDailyKPIORM.metric_date >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(AnalyticsDailyKPIORM.metric_date <= date_to)
+    if vehicle_id:
+        stmt = stmt.where(AnalyticsDailyKPIORM.vehicle_id == vehicle_id)
+    if vendor_id:
+        stmt = stmt.where(AnalyticsDailyKPIORM.vendor_id == vendor_id)
+    
+    rows = _rows_from_result(await session.execute(stmt))
+    if export == "csv":
+        return _csv_response(rows, "idle-summary.csv")
+    return {"items": rows, "total": len(rows)}
 
 
 def run() -> None:

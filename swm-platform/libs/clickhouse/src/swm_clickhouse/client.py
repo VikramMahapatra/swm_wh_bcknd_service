@@ -66,7 +66,7 @@ class ClickHouseRawTelemetryClient:
         ENGINE = MergeTree
         PARTITION BY toYYYYMM(event_ts)
         ORDER BY (vehicle_id, event_ts)
-        TTL event_ts + INTERVAL 24 MONTH DELETE
+        TTL toDateTime(event_ts) + INTERVAL 24 MONTH DELETE
         """
 
         def _ensure() -> None:

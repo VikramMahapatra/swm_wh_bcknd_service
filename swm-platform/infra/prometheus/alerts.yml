@@ -1,0 +1,64 @@
+groups:
+  - name: stream-reliability
+    rules:
+      - alert: StreamConsumerStalled
+        expr: time() - max by (stream, group, consumer) (swm_stream_consumer_last_seen_unix) > 180
+        for: 5m
+        labels:
+          severity: critical
+          service: workers
+        annotations:
+          summary: Stream consumer heartbeat stalled
+          description: "Consumer {{ $labels.consumer }} for {{ $labels.stream }}/{{ $labels.group }} has not heartbeated for > 3m."
+
+      - alert: StreamConsumerHighLag
+        expr: max by (stream, group) (swm_stream_consumer_lag_seconds) > 120
+        for: 5m
+        labels:
+          severity: warning
+          service: workers
+        annotations:
+          summary: Stream consumer lag is high
+          description: "Lag for {{ $labels.stream }}/{{ $labels.group }} is above 120s."
+
+      - alert: StreamPendingBacklogHigh
+        expr: max by (stream, group) (swm_stream_consumer_pending) > 5000
+        for: 10m
+        labels:
+          severity: warning
+          service: redis-streams
+        annotations:
+          summary: Pending backlog is high
+          description: "Pending entries for {{ $labels.stream }}/{{ $labels.group }} exceeded 5000 for 10m."
+
+      - alert: PoisonQueueEntriesObserved
+        expr: increase(swm_stream_consumer_retry_total{destination="poison"}[10m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: redis-streams
+        annotations:
+          summary: Messages moved to poison queue
+          description: "Poison queue activity detected in the last 10m for {{ $labels.stream }}/{{ $labels.group }}."
+
+      - alert: PoisonQueueDepthHigh
+        expr: max by (stream, group, poison_stream) (swm_stream_consumer_poison_stream_length) > 100
+        for: 10m
+        labels:
+          severity: critical
+          service: redis-streams
+        annotations:
+          summary: Poison queue depth is high
+          description: "Poison stream {{ $labels.poison_stream }} exceeded 100 items for 10m."
+
+  - name: alert-events
+    rules:
+      - alert: PanicAlertsSpike
+        expr: increase(swm_alert_worker_alert_event_total{alert_type="panic",status="emitted"}[5m]) > 5
+        for: 2m
+        labels:
+          severity: critical
+          service: alert-worker
+        annotations:
+          summary: Panic alerts spike detected
+          description: "More than 5 panic alerts emitted in 5m."

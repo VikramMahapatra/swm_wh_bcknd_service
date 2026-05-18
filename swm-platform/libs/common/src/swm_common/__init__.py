@@ -1,4 +1,7 @@
-from swm_common.log_middleware import RequestLoggingMiddleware
+try:
+    from swm_common.log_middleware import RequestLoggingMiddleware
+except ModuleNotFoundError:
+    RequestLoggingMiddleware = None
 from swm_common.logger import (
     bind_request_context,
     bind_worker_context,

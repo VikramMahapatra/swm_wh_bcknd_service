@@ -18,28 +18,90 @@ VENDORS = ("vendor_a", "vendor_b", "vendor_c")
 class Truck:
     imei: str
     vendor_id: str
+    lat: float
+    lng: float
+    heading: int
+    odometer_km: float
+    phase: str
+    phase_seconds_left: int
 
 
-def build_trucks(total: int) -> list[Truck]:
+def _rand_duration(rng: random.Random, minimum: int, maximum: int) -> int:
+    if maximum <= minimum:
+        return minimum
+    return rng.randint(minimum, maximum)
+
+
+def build_trucks(total: int, *, rng: random.Random, base_lat: float, base_lng: float) -> list[Truck]:
     trucks: list[Truck] = []
     for i in range(total):
         imei = f"990000000000{i:03d}"[-15:]
         vendor_id = VENDORS[i % len(VENDORS)]
-        trucks.append(Truck(imei=imei, vendor_id=vendor_id))
+        trucks.append(
+            Truck(
+                imei=imei,
+                vendor_id=vendor_id,
+                lat=base_lat + (i % 10) * 0.00015,
+                lng=base_lng + (i % 10) * 0.00015,
+                heading=rng.randint(0, 359),
+                odometer_km=10_000 + i * 0.5,
+                phase="moving",
+                phase_seconds_left=_rand_duration(rng, 45, 120),
+            )
+        )
     return trucks
 
 
-def build_event(truck: Truck, idx: int, rng: random.Random) -> dict[str, Any]:
-    base_lat = 28.6139 + (idx % 30) * 0.0001
-    base_lng = 77.2090 + (idx % 30) * 0.0001
+def _switch_phase(truck: Truck, rng: random.Random) -> None:
+    if truck.phase == "moving":
+        truck.phase = "idle"
+        truck.phase_seconds_left = _rand_duration(rng, 120, 180)
+        return
+    truck.phase = "moving"
+    truck.phase_seconds_left = _rand_duration(rng, 30, 70)
+
+
+def build_event(
+    truck: Truck,
+    rng: random.Random,
+    *,
+    overspeed_chance: float,
+    overspeed_min_kph: float,
+    overspeed_max_kph: float,
+) -> dict[str, Any]:
+    if truck.phase_seconds_left <= 0:
+        _switch_phase(truck, rng)
+
+    if truck.phase == "idle":
+        speed = round(rng.uniform(0.0, 0.8), 2)
+        ignition = True
+        truck.lat = round(truck.lat + rng.uniform(-0.000002, 0.000002), 6)
+        truck.lng = round(truck.lng + rng.uniform(-0.000002, 0.000002), 6)
+    else:
+        is_overspeed = rng.random() < overspeed_chance
+        if is_overspeed:
+            speed = round(rng.uniform(overspeed_min_kph, overspeed_max_kph), 2)
+        else:
+            speed = round(rng.uniform(14.0, 52.0), 2)
+        ignition = True
+        truck.heading = (truck.heading + rng.randint(-20, 20)) % 360
+        step = speed / 3600.0
+        lat_step = (step / 111.0) * rng.uniform(0.5, 1.2)
+        lng_step = (step / 111.0) * rng.uniform(0.5, 1.2)
+        truck.lat = round(truck.lat + lat_step * (1 if rng.random() > 0.5 else -1), 6)
+        truck.lng = round(truck.lng + lng_step * (1 if rng.random() > 0.5 else -1), 6)
+        truck.odometer_km = round(truck.odometer_km + step, 3)
+
+    truck.phase_seconds_left -= 1
+
     return {
         "imei": truck.imei,
-        "latitude": round(base_lat + rng.uniform(-0.0005, 0.0005), 6),
-        "longitude": round(base_lng + rng.uniform(-0.0005, 0.0005), 6),
-        "speed": round(rng.uniform(0, 62), 2),
-        "heading": int(rng.uniform(0, 359)),
-        "ignition": bool(rng.randint(0, 1)),
-        "odometer": round(10_000 + idx * 0.07, 3),
+        "latitude": truck.lat,
+        "longitude": truck.lng,
+        "speed": speed,
+        "heading": truck.heading,
+        "ignition": ignition,
+        "odometer": truck.odometer_km,
         "fuel_level": round(rng.uniform(5, 90), 2),
         "timestamp": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
     }
@@ -104,7 +166,13 @@ def chunked(items: list[Truck], size: int) -> list[list[Truck]]:
 
 async def run_steady(args: argparse.Namespace) -> None:
     url = f"{args.base_url.rstrip('/')}{args.endpoint}"
-    trucks = build_trucks(args.trucks)
+    rng = random.Random(args.seed)
+    trucks = build_trucks(
+        args.trucks,
+        rng=rng,
+        base_lat=args.base_lat,
+        base_lng=args.base_lng,
+    )
     by_vendor: dict[str, list[Truck]] = {vendor: [] for vendor in VENDORS}
     for t in trucks:
         by_vendor[t.vendor_id].append(t)
@@ -124,9 +192,6 @@ async def run_steady(args: argparse.Namespace) -> None:
     }
 
     seconds_total = args.duration_minutes * 60
-    rng = random.Random(args.seed)
-    idx = 0
-
     timeout = httpx.Timeout(args.timeout_seconds)
     limits = httpx.Limits(max_connections=args.concurrency, max_keepalive_connections=args.concurrency)
     request_semaphore = asyncio.Semaphore(args.max_parallel_requests)
@@ -152,8 +217,15 @@ async def run_steady(args: argparse.Namespace) -> None:
                 for truck_chunk in chunked(vendor_trucks, args.batch_size):
                     payload: list[dict[str, Any]] = []
                     for truck in truck_chunk:
-                        idx += 1
-                        payload.append(build_event(truck, idx, rng))
+                        payload.append(
+                            build_event(
+                                truck,
+                                rng,
+                                overspeed_chance=args.overspeed_chance,
+                                overspeed_min_kph=args.overspeed_min_kph,
+                                overspeed_max_kph=args.overspeed_max_kph,
+                            )
+                        )
                     tasks.append(
                         asyncio.create_task(
                             send_batch(
@@ -211,6 +283,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-parallel-requests", type=int, default=6)
     p.add_argument("--timeout-seconds", type=float, default=10.0)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--base-lat", type=float, default=28.6139)
+    p.add_argument("--base-lng", type=float, default=77.2090)
+    p.add_argument("--overspeed-chance", type=float, default=0.18)
+    p.add_argument("--overspeed-min-kph", type=float, default=82.0)
+    p.add_argument("--overspeed-max-kph", type=float, default=96.0)
     return p.parse_args()
 
 

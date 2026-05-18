@@ -1,0 +1,89 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Worker Throughput (msg/s)",
+      "targets": [
+        {
+          "expr": "sum by (group) (rate(swm_stream_consumer_message_total{status=\"ok\"}[1m]))"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Pending Backlog by Group",
+      "targets": [
+        {
+          "expr": "max by (group) (swm_stream_consumer_pending)"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Consumer Lag (seconds)",
+      "targets": [
+        {
+          "expr": "max by (group) (swm_stream_consumer_lag_seconds)"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Poison Queue Rate (msg/s)",
+      "targets": [
+        {
+          "expr": "sum by (group) (rate(swm_stream_consumer_retry_total{destination=\"poison\"}[5m]))"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Worker Heartbeat Age (seconds)",
+      "targets": [
+        {
+          "expr": "time() - max by (group, consumer) (swm_stream_consumer_last_seen_unix)"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+    },
+    {
+      "type": "timeseries",
+      "title": "Retry Queue Depth",
+      "targets": [
+        {
+          "expr": "max by (group, retry_stream) (swm_stream_consumer_retry_stream_length)"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}
+    },
+    {
+      "type": "timeseries",
+      "title": "Poison Queue Depth",
+      "targets": [
+        {
+          "expr": "max by (group, poison_stream) (swm_stream_consumer_poison_stream_length)"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24}
+    },
+    {
+      "type": "timeseries",
+      "title": "Alert Events Emitted (events/s)",
+      "targets": [
+        {
+          "expr": "sum by (alert_type) (rate(swm_alert_worker_alert_event_total{status=\"emitted\"}[5m]))"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24}
+    }
+  ],
+  "schemaVersion": 39,
+  "title": "Platform Reliability Operations",
+  "version": 1
+}

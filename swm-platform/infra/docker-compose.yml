@@ -135,6 +135,7 @@ services:
       - "--web.enable-lifecycle"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"
@@ -316,6 +317,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       TELEMETRY_STREAM: gps.telemetry.raw
       TELEMETRY_GROUP: realtime
+      WORKER_METRICS_PORT: 9101
       WAIT_FOR_HOSTS: redis:6379
     depends_on:
       redis:
@@ -358,6 +360,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       TELEMETRY_STREAM: gps.telemetry.raw
       TELEMETRY_GROUP: storage
+      WORKER_METRICS_PORT: 9102
       WAIT_FOR_HOSTS: redis:6379,postgres:5432,clickhouse:8123
     depends_on:
       redis:
@@ -387,6 +390,12 @@ services:
       - ../.env
     environment:
       ENV: prod
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: swm
+      POSTGRES_USER: swm
+      POSTGRES_PASSWORD: swm
+      POSTGRES_DSN: postgresql+asyncpg://swm:swm@postgres:5432/swm
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_URL: redis://redis:6379/0
@@ -398,9 +407,15 @@ services:
       CLICKHOUSE_DSN: http://default:swm123@clickhouse:8123
       TELEMETRY_STREAM: gps.telemetry.raw
       TELEMETRY_GROUP: analytics
-      WAIT_FOR_HOSTS: redis:6379,clickhouse:8123
+      WORKER_METRICS_PORT: 9103
+      ANALYTICS_IDLE_MIN_SECONDS: 90
+      ANALYTICS_TRIP_END_STATIONARY_SECONDS: 150
+      ANALYTICS_IDLE_STATIONARY_RADIUS_M: 40
+      WAIT_FOR_HOSTS: redis:6379,postgres:5432,clickhouse:8123
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
@@ -430,6 +445,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       TELEMETRY_STREAM: gps.telemetry.raw
       TELEMETRY_GROUP: alert
+      WORKER_METRICS_PORT: 9104
+      ALERT_OVERSPEED_KPH: 80
+      ALERT_STALE_GPS_SECONDS: 300
+      ALERT_OFFLINE_SECONDS: 600
+      ALERT_COOLDOWN_SECONDS: 120
       WAIT_FOR_HOSTS: redis:6379
     depends_on:
       redis:

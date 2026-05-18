@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import os
 import signal
 from typing import Any
 
-from prometheus_client import Counter, Gauge, Histogram
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 from redis.exceptions import BusyLoadingError, RedisError
 from swm_common import get_logger
 from swm_redis.client import RedisClient
@@ -33,6 +34,41 @@ _CONSUMER_PENDING = Gauge(
     "swm_stream_consumer_pending",
     "Pending messages in consumer group",
     ["stream", "group"],
+)
+_CONSUMER_STREAM_LENGTH = Gauge(
+    "swm_stream_consumer_stream_length",
+    "Current stream length",
+    ["stream"],
+)
+_CONSUMER_RETRY_STREAM_LENGTH = Gauge(
+    "swm_stream_consumer_retry_stream_length",
+    "Current retry stream length",
+    ["stream", "group", "retry_stream"],
+)
+_CONSUMER_POISON_STREAM_LENGTH = Gauge(
+    "swm_stream_consumer_poison_stream_length",
+    "Current poison stream length",
+    ["stream", "group", "poison_stream"],
+)
+_CONSUMER_RETRY_TOTAL = Counter(
+    "swm_stream_consumer_retry_total",
+    "Messages moved to retry or poison streams",
+    ["stream", "group", "destination"],
+)
+_CONSUMER_RECLAIMED_TOTAL = Counter(
+    "swm_stream_consumer_reclaimed_total",
+    "Messages reclaimed from pending list",
+    ["stream", "group"],
+)
+_CONSUMER_LAG_SECONDS = Gauge(
+    "swm_stream_consumer_lag_seconds",
+    "Observed max lag in seconds for messages in the last consumed batch",
+    ["stream", "group", "consumer"],
+)
+_CONSUMER_LAST_SEEN_UNIX = Gauge(
+    "swm_stream_consumer_last_seen_unix",
+    "Unix timestamp of the last stream consumer heartbeat",
+    ["stream", "group", "consumer"],
 )
 
 
@@ -64,6 +100,7 @@ class RedisStreamBatchConsumer:
         self.redis = redis_client
         self.settings = settings
         self._stop = asyncio.Event()
+        self._metrics_server_started = False
 
     async def setup(self) -> None:
         await self.redis.xgroup_create(
@@ -90,10 +127,16 @@ class RedisStreamBatchConsumer:
 
     async def run_forever(self) -> None:
         await self.setup()
+        self._start_metrics_server()
         self.install_signal_handlers()
         consecutive_failures = 0
         while not self._stop.is_set():
             try:
+                _CONSUMER_LAST_SEEN_UNIX.labels(
+                    self.settings.stream,
+                    self.settings.group,
+                    self.settings.consumer_name,
+                ).set(datetime.now(tz=UTC).timestamp())
                 await self._inspect_pending()
                 await self._reclaim_stuck_messages()
                 await self._consume_once()
@@ -134,6 +177,8 @@ class RedisStreamBatchConsumer:
         if not records:
             return
 
+        self._observe_batch_lag(records)
+
         started = asyncio.get_running_loop().time()
         try:
             await self.handle_batch(records)
@@ -156,6 +201,22 @@ class RedisStreamBatchConsumer:
             _CONSUMER_PENDING.labels(self.settings.stream, self.settings.group).set(float(pending.get("pending") or 0))
         elif isinstance(pending, (list, tuple)) and pending:
             _CONSUMER_PENDING.labels(self.settings.stream, self.settings.group).set(float(pending[0]))
+        stream_length = await self.redis.xlen(self.settings.stream)
+        _CONSUMER_STREAM_LENGTH.labels(self.settings.stream).set(float(stream_length))
+
+        retry_length = await self.redis.xlen(self.settings.retry_stream)
+        _CONSUMER_RETRY_STREAM_LENGTH.labels(
+            self.settings.stream,
+            self.settings.group,
+            self.settings.retry_stream,
+        ).set(float(retry_length))
+
+        poison_length = await self.redis.xlen(self.settings.poison_stream)
+        _CONSUMER_POISON_STREAM_LENGTH.labels(
+            self.settings.stream,
+            self.settings.group,
+            self.settings.poison_stream,
+        ).set(float(poison_length))
 
     async def _reclaim_stuck_messages(self) -> None:
         claimed = await self.redis.xautoclaim(
@@ -189,6 +250,7 @@ class RedisStreamBatchConsumer:
             consumer=self.settings.consumer_name,
             reclaimed=len(records),
         )
+        _CONSUMER_RECLAIMED_TOTAL.labels(self.settings.stream, self.settings.group).inc(len(records))
 
         try:
             await self.handle_batch(records)
@@ -225,8 +287,10 @@ class RedisStreamBatchConsumer:
 
             if retry_count <= self.settings.max_retries:
                 await self.redis.xadd(self.settings.retry_stream, {k: str(v) for k, v in payload.items()})
+                _CONSUMER_RETRY_TOTAL.labels(self.settings.stream, self.settings.group, "retry").inc()
             else:
                 await self.redis.xadd(self.settings.poison_stream, {k: str(v) for k, v in payload.items()})
+                _CONSUMER_RETRY_TOTAL.labels(self.settings.stream, self.settings.group, "poison").inc()
 
         await self._ack_batch(records)
 
@@ -253,5 +317,62 @@ class RedisStreamBatchConsumer:
         except (ValueError, TypeError):
             return 0
 
+    def _observe_batch_lag(self, records: list[StreamConsumerRecord]) -> None:
+        max_lag = 0.0
+        for record in records:
+            lag = self._message_lag_seconds(record.message_id)
+            if lag is not None and lag > max_lag:
+                max_lag = lag
+
+        _CONSUMER_LAG_SECONDS.labels(
+            self.settings.stream,
+            self.settings.group,
+            self.settings.consumer_name,
+        ).set(max_lag)
+
+    def _message_lag_seconds(self, message_id: str) -> float | None:
+        try:
+            stream_ms = int(message_id.split("-", 1)[0])
+        except (TypeError, ValueError, IndexError):
+            return None
+        return max((datetime.now(tz=UTC).timestamp() * 1000 - stream_ms) / 1000.0, 0.0)
+
     async def handle_batch(self, records: list[StreamConsumerRecord]) -> None:
         raise NotImplementedError
+
+    def _start_metrics_server(self) -> None:
+        if self._metrics_server_started:
+            return
+
+        port_value = os.getenv("WORKER_METRICS_PORT", "").strip()
+        if not port_value:
+            return
+
+        try:
+            port = int(port_value)
+        except ValueError:
+            logger.warning(
+                "worker_metrics_invalid_port",
+                stream=self.settings.stream,
+                group=self.settings.group,
+                port_value=port_value,
+            )
+            return
+
+        try:
+            start_http_server(port)
+            self._metrics_server_started = True
+            logger.info(
+                "worker_metrics_server_started",
+                stream=self.settings.stream,
+                group=self.settings.group,
+                port=port,
+            )
+        except OSError as exc:
+            logger.warning(
+                "worker_metrics_server_failed",
+                stream=self.settings.stream,
+                group=self.settings.group,
+                port=port,
+                error=str(exc),
+            )

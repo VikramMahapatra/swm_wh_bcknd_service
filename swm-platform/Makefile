@@ -9,7 +9,7 @@ LOADTEST_CONCURRENCY ?= 1200
 LOADTEST_TIMEOUT ?= 5
 LOADTEST_REPORT_DIR ?= scripts/loadtest/reports
 
-.PHONY: help sync lock lint format typecheck test pre-commit-up pre-commit-run compose-up compose-down compose-logs db-migrate db-revision loadtest-gps e2e-webhook-local ch-migrate-raw-telemetry
+.PHONY: help sync lock lint format typecheck test pre-commit-up pre-commit-run compose-up compose-down compose-logs db-migrate db-migrate-local db-revision loadtest-gps e2e-webhook-local ch-migrate-raw-telemetry
 
 help:
 	@echo "Available targets:"
@@ -25,6 +25,7 @@ help:
 	@echo "  compose-down    Stop local infrastructure and services"
 	@echo "  compose-logs    Tail compose logs"
 	@echo "  db-migrate      Apply alembic migrations"
+	@echo "  db-migrate-local Auto-migrate local docker postgres"
 	@echo "  db-revision     Create a new alembic revision (use MSG=...)"
 	@echo "  loadtest-gps    Run GPS webhook load test suite and generate report"
 	@echo "  e2e-webhook-local Run full local production-like webhook E2E flow"
@@ -64,10 +65,13 @@ compose-logs:
 	docker compose -f $(COMPOSE_FILE) logs -f
 
 db-migrate:
-	$(UV) run --package swm-db alembic upgrade head
+	$(UV) run --active --package swm-db alembic -c libs/db/alembic.ini upgrade head
+
+db-migrate-local:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/db_migrate_local.ps1
 
 db-revision:
-	$(UV) run --package swm-db alembic revision --autogenerate -m "$(MSG)"
+	$(UV) run --active --package swm-db alembic -c libs/db/alembic.ini revision --autogenerate -m "$(MSG)"
 
 loadtest-gps:
 	$(UV) run python scripts/loadtest/gps_ingestion_load_test.py --base-url $(LOADTEST_BASE_URL) --endpoint $(LOADTEST_ENDPOINT) --trucks $(LOADTEST_TRUCKS) --target-eps $(LOADTEST_EPS) --duration-seconds $(LOADTEST_DURATION) --concurrency $(LOADTEST_CONCURRENCY) --timeout-seconds $(LOADTEST_TIMEOUT) --report-dir $(LOADTEST_REPORT_DIR)
