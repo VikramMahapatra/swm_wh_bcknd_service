@@ -65,6 +65,18 @@ _ROUTE_CODE_RE = re.compile(r"^[A-Z0-9_-]{2,24}$")
 _GEOFENCE_CODE_RE = re.compile(r"^[A-Z0-9_-]{2,32}$")
 _GEOFENCE_TYPES = {"depot", "landfill", "zone", "parking", "maintenance"}
 _GEOMETRY_TYPES = {"circle", "polygon"}
+_ALERT_STATUSES = {"open", "acknowledged", "resolved", "escalated"}
+_ALERT_SEVERITIES = {"low", "medium", "high", "critical"}
+_ALERT_ACTIONS = {"created", "acknowledged", "resolved", "escalated", "updated", "commented"}
+_CONFIG_TYPES = {
+    "speed_threshold",
+    "geofence",
+    "idle_threshold",
+    "alert_rule",
+    "webhook_secret",
+    "vendor_config",
+    "retention_policy",
+}
 
 
 class VendorORM(Base):
@@ -864,6 +876,223 @@ class AnalyticsDailyKPIORM(Base):
         DateTime(timezone=True),
         server_default=text("CURRENT_TIMESTAMP"),
         onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class OperationalCategoryORM(Base):
+    __tablename__ = "operational_categories"
+    __table_args__ = (Index("ix_operational_categories_active", "active"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    category_code: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    category_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class AlertORM(Base):
+    __tablename__ = "alerts"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('open','acknowledged','resolved','escalated')",
+            name="ck_alerts_status",
+        ),
+        CheckConstraint(
+            "severity IN ('low','medium','high','critical')",
+            name="ck_alerts_severity",
+        ),
+        Index("ix_alerts_vehicle_ts", "vehicle_id", "triggered_at"),
+        Index("ix_alerts_status", "status"),
+        Index("ix_alerts_category", "category"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    alert_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    category: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    message: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    escalation_status: Mapped[str] = mapped_column(String(64), nullable=False, default="none")
+
+    vehicle_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    imei: Mapped[str | None] = mapped_column(String(17), nullable=True)
+    contractor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    route_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    ward_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+    triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acknowledged_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    actions: Mapped[list["AlertActionORM"]] = relationship(
+        back_populates="alert",
+        cascade="all, delete-orphan",
+    )
+
+    @validates("status")
+    def validate_status(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in _ALERT_STATUSES:
+            raise ValueError("status must be one of: open, acknowledged, resolved, escalated")
+        return normalized
+
+    @validates("severity")
+    def validate_severity(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in _ALERT_SEVERITIES:
+            raise ValueError("severity must be one of: low, medium, high, critical")
+        return normalized
+
+
+class AlertActionORM(Base):
+    __tablename__ = "alert_actions"
+    __table_args__ = (
+        CheckConstraint(
+            "action_type IN ('created','acknowledged','resolved','escalated','updated','commented')",
+            name="ck_alert_actions_type",
+        ),
+        Index("ix_alert_actions_alert_created", "alert_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    alert_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("alerts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    action_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    notes: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    payload_json: Mapped[dict[str, Any]] = mapped_column("payload", JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    alert: Mapped[AlertORM] = relationship(back_populates="actions")
+
+    @validates("action_type")
+    def validate_action_type(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in _ALERT_ACTIONS:
+            raise ValueError(
+                "action_type must be one of: created, acknowledged, resolved, escalated, updated, commented"
+            )
+        return normalized
+
+
+class SystemConfigurationORM(Base):
+    __tablename__ = "system_configurations"
+    __table_args__ = (
+        CheckConstraint(
+            "config_type IN ('speed_threshold','geofence','idle_threshold','alert_rule','webhook_secret','vendor_config','retention_policy')",
+            name="ck_system_configurations_type",
+        ),
+        Index("ix_system_configurations_type", "config_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    config_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    config_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    value_json: Mapped[dict[str, Any]] = mapped_column("value", JSONB, nullable=False, default=dict)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    updated_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    @validates("config_type")
+    def validate_config_type(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in _CONFIG_TYPES:
+            raise ValueError(
+                "config_type must be one of: speed_threshold, geofence, idle_threshold, alert_rule, webhook_secret, vendor_config, retention_policy"
+            )
+        return normalized
+
+
+class AuditLogORM(Base):
+    __tablename__ = "audit_logs"
+    __table_args__ = (
+        Index("ix_audit_logs_entity", "entity_type", "entity_id"),
+        Index("ix_audit_logs_created", "created_at"),
+        Index("ix_audit_logs_actor", "actor"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    before_json: Mapped[dict[str, Any] | None] = mapped_column("before", JSONB, nullable=True)
+    after_json: Mapped[dict[str, Any] | None] = mapped_column("after", JSONB, nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
         nullable=False,
     )
 

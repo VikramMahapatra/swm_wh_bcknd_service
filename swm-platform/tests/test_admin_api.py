@@ -11,15 +11,46 @@ from admin_api.main import app, get_db_session
 
 
 class _DummySession:
+    def add(self, *_args, **_kwargs):
+        return None
+
+    async def flush(self):
+        return None
+
+    async def commit(self):
+        return None
+
+    def delete(self, *_args, **_kwargs):
+        return None
+
     async def execute(self, *_args, **_kwargs):
         class _Result:
             def scalar_one(self):
                 return 0
 
+            def scalar_one_or_none(self):
+                return None
+
+            def mappings(self):
+                class _M:
+                    def all(self):
+                        return []
+
+                    def first(self):
+                        return {}
+
+                return _M()
+
+            def first(self):
+                return None
+
             def scalars(self):
                 class _S:
                     def all(self):
                         return []
+
+                    def first(self):
+                        return None
 
                 return _S()
 
@@ -344,3 +375,21 @@ def test_device_assignment_endpoint(monkeypatch):
         headers={"x-role": "ops"},
     )
     assert missing.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/dashboard/kpis",
+        "/v1/vehicles/search",
+        "/v1/alerts",
+        "/v1/configurations",
+        "/v1/operational-categories",
+        "/v1/reports/operations/export?export=json",
+        "/v1/audit-logs",
+    ],
+)
+def test_epic_endpoints_smoke(monkeypatch, path):
+    client = _client(monkeypatch)
+    response = client.get(path, headers={"x-role": "viewer"})
+    assert response.status_code == 200
