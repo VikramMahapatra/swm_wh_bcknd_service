@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Smoke-test remote SWM service endpoints.
+
+The script checks the ingestion and Grafana HTTP endpoints and performs a
+real websocket handshake against the realtime endpoint.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+from dataclasses import dataclass
+from urllib.parse import urlparse, urlunparse
+
+import httpx
+from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosed
+
+
+@dataclass(slots=True)
+class CheckResult:
+    name: str
+    ok: bool
+    details: str
+
+
+HTTP_ERROR_STATUS = 400
+WEBSOCKET_PREVIEW_LIMIT = 200
+
+
+def ensure_scheme(url: str, default_scheme: str) -> str:
+    text = url.strip()
+    if "//" not in text:
+        return f"{default_scheme}://{text}"
+    return text
+
+
+def ensure_http_url(url: str, default_path: str) -> str:
+    normalized = ensure_scheme(url, "https")
+    parsed = urlparse(normalized)
+    path = parsed.path or ""
+    if path in {"", "/"}:
+        parsed = parsed._replace(path=default_path)
+    return urlunparse(parsed)
+
+
+def ensure_websocket_url(url: str, default_path: str) -> str:
+    normalized = ensure_scheme(url, "wss")
+    parsed = urlparse(normalized)
+    path = parsed.path or ""
+    if path in {"", "/"}:
+        parsed = parsed._replace(path=default_path)
+    return urlunparse(parsed)
+
+
+async def check_http(name: str, url: str, timeout_seconds: float) -> CheckResult:
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
+            response = await client.get(url)
+        details = f"status={response.status_code} final_url={response.url}"
+        if response.status_code >= HTTP_ERROR_STATUS:
+            body = response.text.strip()
+            if body:
+                details = f"{details} body={body[:500]!r}"
+            return CheckResult(name=name, ok=False, details=details)
+        return CheckResult(name=name, ok=True, details=details)
+    except Exception as exc:
+        return CheckResult(name=name, ok=False, details=str(exc))
+
+
+async def check_websocket(url: str, timeout_seconds: float, listen_seconds: float) -> CheckResult:
+    try:
+        async with connect(url, open_timeout=timeout_seconds, ping_interval=None) as websocket:
+            details = ["connected"]
+            try:
+                message = await asyncio.wait_for(websocket.recv(), timeout=listen_seconds)
+            except TimeoutError:
+                details.append(f"no message received within {listen_seconds:.1f}s")
+            except ConnectionClosed as exc:
+                return CheckResult(
+                    name="websocket",
+                    ok=False,
+                    details=f"connected_then_closed code={exc.code} reason={exc.reason}",
+                )
+            else:
+                if isinstance(message, bytes):
+                    preview = message[:120]
+                    details.append(f"binary_message={preview!r}")
+                else:
+                    preview = message.strip()
+                    if len(preview) > WEBSOCKET_PREVIEW_LIMIT:
+                        preview = preview[:WEBSOCKET_PREVIEW_LIMIT] + "..."
+                    details.append(f"text_message={preview!r}")
+
+            return CheckResult(name="websocket", ok=True, details="; ".join(details))
+    except Exception as exc:
+        return CheckResult(name="websocket", ok=False, details=str(exc))
+
+
+async def main() -> int:
+    parser = argparse.ArgumentParser(description="Smoke-test SWM remote endpoints")
+    parser.add_argument("--ingestion-url", default="ingestion-swm.zentrixel.com")
+    parser.add_argument("--grafana-url", default="grafana-swm.zentrixel.com")
+    parser.add_argument("--websocket-url", default="websocket-swm.zentrixel.com")
+    parser.add_argument("--timeout-seconds", type=float, default=10.0)
+    parser.add_argument("--listen-seconds", type=float, default=5.0)
+    args = parser.parse_args()
+
+    ingestion_url = ensure_http_url(args.ingestion_url, "/healthz")
+    grafana_url = ensure_http_url(args.grafana_url, "/api/health")
+    websocket_url = ensure_websocket_url(args.websocket_url, "/ws/realtime")
+
+    checks = [
+        await check_http("ingestion", ingestion_url, args.timeout_seconds),
+        await check_http("grafana", grafana_url, args.timeout_seconds),
+        await check_websocket(websocket_url, args.timeout_seconds, args.listen_seconds),
+    ]
+
+    print("Remote endpoint smoke test")
+    print(f"- ingestion: {ingestion_url}")
+    print(f"- grafana:   {grafana_url}")
+    print(f"- websocket: {websocket_url}")
+
+    failed = False
+    for result in checks:
+        status = "OK" if result.ok else "FAIL"
+        print(f"[{status}] {result.name}: {result.details}")
+        failed = failed or not result.ok
+
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main()))

@@ -70,6 +70,19 @@ swm-platform/
 - Admin API: `GET /v1/platform/status`, `GET /healthz`, `GET /metrics`
 - Master data API: `/vendors`, `/devices`, `/vehicles`, `/geofences`, `/device-assignments`
 
+## Remote Smoke Test
+
+Use the remote probe script to verify the EC2 hostnames shared by the DevOps team:
+
+```bash
+uv run python scripts/loadtest/check_remote_services.py \
+   --ingestion-url https://ingestion-swm.zentrixel.com \
+   --websocket-url wss://websocket-swm.zentrixel.com \
+   --grafana-url https://grafana-swm.zentrixel.com
+```
+
+The script checks `GET /healthz` on ingestion, `GET /api/health` on Grafana, and a websocket handshake on `/ws/realtime`.
+
 ## Analytics (Epic-5)
 
 Analytics processing is now persisted in PostgreSQL from `analytics-worker` and exposed through `admin-api` reporting endpoints.
