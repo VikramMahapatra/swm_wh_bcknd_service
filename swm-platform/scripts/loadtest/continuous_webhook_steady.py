@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import random
-import sys
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -274,7 +273,7 @@ async def run_steady(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Steady webhook sender: trucks events each second")
-    p.add_argument("--base-url", default="http://127.0.0.1:8001")
+    p.add_argument("--base-url", default="http://127.0.0.1:9001")
     p.add_argument("--endpoint", default="/webhook/gps")
     p.add_argument("--trucks", type=int, default=600)
     p.add_argument("--duration-minutes", type=int, default=20)
@@ -297,6 +296,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     main()

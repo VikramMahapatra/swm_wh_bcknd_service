@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Smoke-test remote SWM service endpoints.
 
-The script checks the ingestion and Grafana HTTP endpoints and performs a
-real websocket handshake against the realtime endpoint.
+The script checks the ingestion webhook, admin-api, Grafana, and Prometheus
+HTTP endpoints and performs a real websocket handshake against the realtime
+endpoint.
 """
 
 from __future__ import annotations
@@ -53,12 +54,15 @@ def ensure_websocket_url(url: str, default_path: str) -> str:
     return urlunparse(parsed)
 
 
-async def check_http(name: str, url: str, timeout_seconds: float) -> CheckResult:
+async def check_http(name: str, url: str, timeout_seconds: float, allow_405: bool = False) -> CheckResult:
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
             response = await client.get(url)
         details = f"status={response.status_code} final_url={response.url}"
         if response.status_code >= HTTP_ERROR_STATUS:
+            # 405 Method Not Allowed means endpoint exists but doesn't accept GET
+            if allow_405 and response.status_code == 405:
+                return CheckResult(name=name, ok=True, details=f"{details} (endpoint exists, POST-only)")
             body = response.text.strip()
             if body:
                 details = f"{details} body={body[:500]!r}"
@@ -101,6 +105,9 @@ async def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke-test SWM remote endpoints")
     parser.add_argument("--ingestion-url", default="ingestion-swm.zentrixel.com")
     parser.add_argument("--grafana-url", default="grafana-swm.zentrixel.com")
+    parser.add_argument("--prometheus-url", default="grafana-swm.zentrixel.com/prometheus")
+    parser.add_argument("--admin-api-url", default="api-swm.zentrixel.com")
+    parser.add_argument("--webhook-url", default="ingestion-swm.zentrixel.com/webhook/gps")
     parser.add_argument("--websocket-url", default="websocket-swm.zentrixel.com")
     parser.add_argument("--timeout-seconds", type=float, default=10.0)
     parser.add_argument("--listen-seconds", type=float, default=5.0)
@@ -108,17 +115,26 @@ async def main() -> int:
 
     ingestion_url = ensure_http_url(args.ingestion_url, "/healthz")
     grafana_url = ensure_http_url(args.grafana_url, "/api/health")
+    prometheus_url = ensure_http_url(args.prometheus_url, "/prometheus/-/healthy")
+    admin_api_url = ensure_http_url(args.admin_api_url, "/healthz")
+    webhook_url = ensure_http_url(args.webhook_url, "/webhook/gps")
     websocket_url = ensure_websocket_url(args.websocket_url, "/ws/realtime")
 
     checks = [
         await check_http("ingestion", ingestion_url, args.timeout_seconds),
         await check_http("grafana", grafana_url, args.timeout_seconds),
+        await check_http("prometheus", prometheus_url, args.timeout_seconds),
+        await check_http("admin-api", admin_api_url, args.timeout_seconds),
+        await check_http("webhook", webhook_url, args.timeout_seconds, allow_405=True),
         await check_websocket(websocket_url, args.timeout_seconds, args.listen_seconds),
     ]
 
     print("Remote endpoint smoke test")
     print(f"- ingestion: {ingestion_url}")
     print(f"- grafana:   {grafana_url}")
+    print(f"- prometheus:{prometheus_url}")
+    print(f"- admin-api: {admin_api_url}")
+    print(f"- webhook:   {webhook_url}")
     print(f"- websocket: {websocket_url}")
 
     failed = False
