@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ssl
 from dataclasses import dataclass
 from urllib.parse import urlparse, urlunparse
 
@@ -54,6 +55,16 @@ def ensure_websocket_url(url: str, default_path: str) -> str:
     return urlunparse(parsed)
 
 
+def build_websocket_ssl_context() -> tuple[ssl.SSLContext, str]:
+    try:
+        import truststore
+
+        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT), "truststore"
+    except ImportError:
+        # Fall back to Python's default CA resolution when truststore isn't installed.
+        return ssl.create_default_context(), "default"
+
+
 async def check_http(name: str, url: str, timeout_seconds: float, allow_405: bool = False) -> CheckResult:
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
@@ -72,10 +83,16 @@ async def check_http(name: str, url: str, timeout_seconds: float, allow_405: boo
         return CheckResult(name=name, ok=False, details=str(exc))
 
 
-async def check_websocket(url: str, timeout_seconds: float, listen_seconds: float) -> CheckResult:
+async def check_websocket(
+    url: str,
+    timeout_seconds: float,
+    listen_seconds: float,
+    ssl_context: ssl.SSLContext,
+    ssl_context_mode: str,
+) -> CheckResult:
     try:
-        async with connect(url, open_timeout=timeout_seconds, ping_interval=None) as websocket:
-            details = ["connected"]
+        async with connect(url, ssl=ssl_context, open_timeout=timeout_seconds, ping_interval=None) as websocket:
+            details = ["connected", f"tls_context={ssl_context_mode}"]
             try:
                 message = await asyncio.wait_for(websocket.recv(), timeout=listen_seconds)
             except TimeoutError:
@@ -97,6 +114,13 @@ async def check_websocket(url: str, timeout_seconds: float, listen_seconds: floa
                     details.append(f"text_message={preview!r}")
 
             return CheckResult(name="websocket", ok=True, details="; ".join(details))
+    except ssl.SSLCertVerificationError as exc:
+        details = str(exc)
+        if ssl_context_mode == "default":
+            details = (
+                f"{details} (tip: install truststore and rerun: python -m pip install truststore)"
+            )
+        return CheckResult(name="websocket", ok=False, details=details)
     except Exception as exc:
         return CheckResult(name="websocket", ok=False, details=str(exc))
 
@@ -119,6 +143,7 @@ async def main() -> int:
     admin_api_url = ensure_http_url(args.admin_api_url, "/healthz")
     webhook_url = ensure_http_url(args.webhook_url, "/webhook/gps")
     websocket_url = ensure_websocket_url(args.websocket_url, "/ws/realtime")
+    websocket_ssl_context, websocket_ssl_context_mode = build_websocket_ssl_context()
 
     checks = [
         await check_http("ingestion", ingestion_url, args.timeout_seconds),
@@ -126,7 +151,13 @@ async def main() -> int:
         await check_http("prometheus", prometheus_url, args.timeout_seconds),
         await check_http("admin-api", admin_api_url, args.timeout_seconds),
         await check_http("webhook", webhook_url, args.timeout_seconds, allow_405=True),
-        await check_websocket(websocket_url, args.timeout_seconds, args.listen_seconds),
+        await check_websocket(
+            websocket_url,
+            args.timeout_seconds,
+            args.listen_seconds,
+            websocket_ssl_context,
+            websocket_ssl_context_mode,
+        ),
     ]
 
     print("Remote endpoint smoke test")
