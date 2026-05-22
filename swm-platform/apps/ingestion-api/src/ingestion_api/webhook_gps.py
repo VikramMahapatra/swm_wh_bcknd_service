@@ -474,22 +474,23 @@ def make_gps_webhook_router(
         async def _publish_batch(batch: list[dict[str, str]]) -> tuple[int, int, list[str]]:
             await publish_semaphore.acquire()
             try:
-                try:
-                    pipe = redis_client.client.pipeline(transaction=False)
+                published_count = 0
+                failed_count = 0
+                errors: list[str] = []
+                for entry in batch:
                     try:
-                        for entry in batch:
-                            pipe.xadd(
-                                GPS_STREAM,
-                                entry,
-                                maxlen=GPS_STREAM_MAXLEN,
-                                approximate=True,
-                            )
-                        await redis_client.run_operation(pipe.execute, "xadd_pipeline")
-                        return (len(batch), 0, [])
-                    finally:
-                        await pipe.reset()
-                except Exception as exc:
-                    return (0, len(batch), [str(exc)])
+                        await redis_client.xadd(
+                            GPS_STREAM,
+                            entry,
+                            maxlen=GPS_STREAM_MAXLEN,
+                            approximate=True,
+                        )
+                        published_count += 1
+                    except Exception as exc:
+                        failed_count += 1
+                        if len(errors) < 5:
+                            errors.append(str(exc))
+                return (published_count, failed_count, errors)
             finally:
                 publish_semaphore.release()
 

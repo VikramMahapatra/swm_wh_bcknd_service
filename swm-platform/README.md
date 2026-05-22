@@ -61,6 +61,7 @@ swm-platform/
 - `make format` format source
 - `make typecheck` run mypy strict checks
 - `make test` run pytest
+- `make test-api-smoke` run admin, webhook, and websocket API regression smoke suite
 - `make compose-up` start local stack
 - `make compose-down` stop local stack
 
@@ -165,3 +166,22 @@ This repository now includes a first implementation slice for platform reliabili
    - `swm_stream_consumer_lag_seconds`
    - `swm_stream_consumer_retry_total`
    - `swm_alert_worker_alert_event_total`
+
+   ## Security and Resilience Epic
+
+   Phase-wise rollout guidance and toggles are documented in:
+
+   - `docs/security-resilience-epic-phases.md`
+
+   Operational recovery execution runbook is documented in:
+
+   - `docs/operational-recovery-runbook.md`
+   - `docs/api-endpoints-reference.md`
+
+   Recovery command shortcuts:
+
+   - `make replay-dlq`
+   - `make backup-drill`
+   - `make restore-drill ARTIFACT_DIR=scripts/recovery/artifacts/<timestamp>`
+   - `make sla-validate`
+   - `make resilience-drill`

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import random
 import time
 from dataclasses import dataclass
@@ -111,6 +112,8 @@ async def send_batch(
     url: str,
     vendor_id: str,
     payload: list[dict[str, Any]],
+    webhook_secret: str,
+    webhook_secret_header: str,
     counters: dict[str, int],
     semaphore: asyncio.Semaphore,
 ) -> None:
@@ -120,6 +123,8 @@ async def send_batch(
             "X-Vendor-Id": vendor_id,
             "X-Request-Id": f"steady-{time.time_ns()}",
         }
+        if webhook_secret:
+            headers[webhook_secret_header] = webhook_secret
         try:
             resp = await client.post(url, json=payload, headers=headers)
             counters["requests"] += 1
@@ -198,7 +203,8 @@ async def run_steady(args: argparse.Namespace) -> None:
     print(
         (
             f"[steady] start minutes={args.duration_minutes} trucks={args.trucks} "
-            f"events_per_second={args.trucks} endpoint={url}"
+            f"events_per_second={args.trucks} endpoint={url} "
+            f"secret_enabled={'yes' if args.webhook_secret else 'no'}"
         ),
         flush=True,
     )
@@ -232,6 +238,8 @@ async def run_steady(args: argparse.Namespace) -> None:
                                 url,
                                 vendor_id,
                                 payload,
+                                args.webhook_secret,
+                                args.webhook_secret_header,
                                 counters,
                                 request_semaphore,
                             )
@@ -287,6 +295,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--overspeed-chance", type=float, default=0.18)
     p.add_argument("--overspeed-min-kph", type=float, default=82.0)
     p.add_argument("--overspeed-max-kph", type=float, default=96.0)
+    p.add_argument(
+        "--webhook-secret",
+        default=os.getenv("INGESTION_WEBHOOK_SECRET", ""),
+        help="Webhook shared secret value (default: INGESTION_WEBHOOK_SECRET env)",
+    )
+    p.add_argument(
+        "--webhook-secret-header",
+        default=os.getenv("INGESTION_WEBHOOK_SECRET_HEADER", "X-Webhook-Secret"),
+        help="Webhook secret header name (default: INGESTION_WEBHOOK_SECRET_HEADER env or X-Webhook-Secret)",
+    )
     return p.parse_args()
 
 

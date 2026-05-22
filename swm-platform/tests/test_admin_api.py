@@ -6,8 +6,9 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import NoResultFound
+from swm_db import get_db_session
 
-from admin_api.main import app, get_db_session
+from admin_api.main import app
 
 
 class _DummySession:
@@ -179,18 +180,31 @@ class _DeviceAssignmentService:
 
 
 def _client(monkeypatch):
-    from admin_api import main as m
+    from admin_api.routers import master_data as md
+    from admin_api.routers import realtime as rt
 
     app.dependency_overrides[get_db_session] = _override_db_session
-    monkeypatch.setattr(m, "VendorRepository", _VendorRepo)
-    monkeypatch.setattr(m, "DeviceRepository", _DeviceRepo)
-    monkeypatch.setattr(m, "VehicleRepository", _VehicleRepo)
-    monkeypatch.setattr(m, "RouteRepository", _RouteRepo)
-    monkeypatch.setattr(m, "GeofenceRepository", _GeofenceRepo)
-    monkeypatch.setattr(m, "ContractorRepository", _ContractorRepo)
-    monkeypatch.setattr(m, "WardRepository", _WardRepo)
-    monkeypatch.setattr(m, "DeviceVehicleAssignmentRepository", _DeviceAssignmentRepo)
-    monkeypatch.setattr(m, "DeviceVehicleAssignmentService", _DeviceAssignmentService)
+    monkeypatch.setattr(md, "VendorRepository", _VendorRepo)
+    monkeypatch.setattr(md, "DeviceRepository", _DeviceRepo)
+    monkeypatch.setattr(md, "VehicleRepository", _VehicleRepo)
+    monkeypatch.setattr(md, "RouteRepository", _RouteRepo)
+    monkeypatch.setattr(md, "GeofenceRepository", _GeofenceRepo)
+    monkeypatch.setattr(md, "ContractorRepository", _ContractorRepo)
+    monkeypatch.setattr(md, "WardRepository", _WardRepo)
+    monkeypatch.setattr(md, "DeviceVehicleAssignmentRepository", _DeviceAssignmentRepo)
+    monkeypatch.setattr(md, "DeviceVehicleAssignmentService", _DeviceAssignmentService)
+
+    class _RedisStub:
+        async def scan(self, *, cursor, match, count):
+            return (0, [])
+
+        async def mget_json(self, *keys):
+            return []
+
+        async def xrange(self, stream, count):
+            return []
+
+    monkeypatch.setattr(rt, "redis_client", _RedisStub())
     return TestClient(app)
 
 
@@ -382,6 +396,8 @@ def test_device_assignment_endpoint(monkeypatch):
     [
         "/v1/dashboard/kpis",
         "/v1/vehicles/search",
+        "/v1/realtime/trucks",
+        "/v1/ingestion/failures",
         "/v1/alerts",
         "/v1/configurations",
         "/v1/operational-categories",

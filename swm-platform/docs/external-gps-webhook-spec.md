@@ -1,126 +1,181 @@
-# GPS Webhook Spec for External Senders
+# GPS Telemetry Provider Integration Guide
 
-This document defines the payload and endpoint an external party should use to push GPS telemetry into the SWM platform.
+This document is for external telemetry providers who will push live GPS data
+into SWM.
 
-## Webhook URL
+## Production Webhook
 
-Use the public ingestion endpoint exposed by your deployment:
+- Method: `POST`
+- Live URL: `https://ingestion-swm.zentrixel.com/webhook/gps`
+- Content-Type: `application/json`
 
-- Preferred through Nginx: `POST /ingestion/webhook/gps`
-- Direct ingestion API path: `POST /webhook/gps`
+## Required Headers
 
-For local development in this repository:
+- `X-Vendor-Id`: provider identifier (example: `vendor_a`)
 
-- `http://localhost/ingestion/webhook/gps`
-- `http://localhost:8001/webhook/gps`
+## Recommended Headers
 
-If you have a public host name, replace `localhost` with that host.
+- `X-Request-Id`: unique ID per HTTP request for tracing and support
+- `X-Trace-Id`: optional end-to-end trace ID
 
-## Method
+## Request Body Contract
 
-- `POST`
+The request body must be a JSON array. Each array item is one GPS event.
 
-## Headers
+### Required Fields Per Event
 
-Required:
+- `imei`: string of 14 to 17 numeric digits
+- `latitude`: float in range `-90` to `90`
+- `longitude`: float in range `-180` to `180`
+- `timestamp`: one of:
+  - ISO-8601 UTC string (recommended), example: `2026-05-20T12:45:30Z`
+  - epoch seconds
+  - epoch milliseconds
 
-- `X-Vendor-Id`: vendor identifier string, for example `vendor_a`
+### Optional Fields Per Event
 
-Recommended:
-
-- `X-Request-Id`: request tracing identifier
-- `X-Trace-Id`: optional trace identifier; if omitted, the service will derive one
-
-## Body Format
-
-The request body must be a JSON array.
-
-Each array item is one GPS event object.
-
-### Required event fields
-
-- `imei`: numeric string, 14 to 17 digits
-- `latitude`: number between `-90` and `90`
-- `longitude`: number between `-180` and `180`
-- `timestamp`: ISO-8601 UTC string, or epoch seconds / milliseconds
-
-### Optional event fields
-
-- `speed`: `0` to `320`
+- `speed`: `0` to `320` (km/h)
 - `heading`: `0` to `359`
 - `ignition`: boolean
 - `odometer`: non-negative number
 - `fuel_level`: `0` to `100`
 
-### Accepted aliases
+### Accepted Aliases
 
-The API also accepts some common aliases, but external senders should prefer the canonical names above.
+Preferred keys are the canonical names above, but these aliases are accepted:
 
 - `lat` -> `latitude`
-- `lng` / `lon` -> `longitude`
-- `ts` / `event_time` / `time` -> `timestamp`
-- `acc` / `acc_status` -> `ignition`
+- `lng` or `lon` -> `longitude`
+- `ts`, `event_time`, `eventTime`, `gpsTime`, `time`, `datetime` -> `timestamp`
+- `acc` or `acc_status` -> `ignition`
 
-## Example Request
+## Sample Payload
 
 ```json
 [
   {
     "imei": "990000000000001",
     "latitude": 28.6139,
-    "longitude": 77.209,
-    "speed": 25.5,
-    "heading": 90,
+    "longitude": 77.2090,
+    "speed": 34.5,
+    "heading": 102,
     "ignition": true,
-    "odometer": 12345.6,
-    "fuel_level": 61.2,
-    "timestamp": "2026-05-09T10:00:00Z"
+    "odometer": 12345.67,
+    "fuel_level": 62.3,
+    "timestamp": "2026-05-20T12:45:30Z"
   },
   {
     "imei": "990000000000002",
     "latitude": 28.6141,
     "longitude": 77.2092,
-    "speed": 32.7,
-    "heading": 120,
+    "speed": 0.5,
+    "heading": 250,
     "ignition": true,
-    "odometer": 22345.6,
-    "fuel_level": 54.1,
-    "timestamp": "2026-05-09T10:00:01Z"
+    "timestamp": 1779271531000
   }
 ]
 ```
 
-## Example cURL
+## cURL Example (Ready To Use)
+
+The command below is for bash/zsh terminals (Linux/macOS/Git Bash):
 
 ```bash
-curl -X POST "https://YOUR_PUBLIC_HOST/ingestion/webhook/gps" \
+curl -X POST "https://ingestion-swm.zentrixel.com/webhook/gps" \
   -H "Content-Type: application/json" \
   -H "X-Vendor-Id: vendor_a" \
-  -H "X-Request-Id: ext-test-0001" \
-  --data @payload.json
+  -H "X-Request-Id: provider-batch-20260520-0001" \
+  --data '[
+    {
+      "imei":"990000000000001",
+      "latitude":28.6139,
+      "longitude":77.2090,
+      "speed":34.5,
+      "heading":102,
+      "ignition":true,
+      "timestamp":"2026-05-20T12:45:30Z"
+    }
+  ]'
 ```
 
-## Response
+## Windows PowerShell Examples (Tested)
 
-The API returns `202 Accepted` with a JSON response containing:
+Use `curl.exe` (not `curl`) in PowerShell.
 
-- `accepted`
-- `published`
-- `rejected`
-- `stream`
-- `request_id`
-- `latency_ms`
-- `error_summary`
+### Option A: Inline JSON in PowerShell
 
-## Validation Notes
+```powershell
+curl.exe -sS -i -X POST "https://ingestion-swm.zentrixel.com/webhook/gps" `
+  -H "Content-Type: application/json" `
+  -H "X-Vendor-Id: vendor_a" `
+  -H "X-Request-Id: provider-batch-20260520-0001" `
+  --data-raw "[{\"imei\":\"990000000000001\",\"latitude\":28.6139,\"longitude\":77.2090,\"speed\":34.5,\"heading\":102,\"ignition\":true,\"timestamp\":\"2026-05-20T12:45:30Z\"}]"
+```
 
-- The body must be a JSON array, not a single object.
-- Invalid records are counted in `rejected`.
-- `error_summary.validation.failed = 0` means the payload shape is valid.
-- `error_summary.publish.failed > 0` means Redis publish pressure or transient backend failure, not bad payload format.
+### Option B: JSON File (Recommended on Windows)
 
-## Operational Notes
+Create payload file without BOM:
 
-- Unknown extra fields are ignored.
-- The handler is asynchronous and returns after validation and publish.
-- No authentication header is currently enforced in the handler code.
+```powershell
+$payload = '[{"imei":"990000000000001","latitude":28.6139,"longitude":77.2090,"speed":34.5,"heading":102,"ignition":true,"timestamp":"2026-05-20T12:45:30Z"}]'
+[System.IO.File]::WriteAllText("payload.json", $payload)
+```
+
+Send request:
+
+```powershell
+curl.exe -sS -i -X POST "https://ingestion-swm.zentrixel.com/webhook/gps" `
+  -H "Content-Type: application/json" `
+  -H "X-Vendor-Id: vendor_a" `
+  -H "X-Request-Id: provider-batch-20260520-0001" `
+  --data-binary "@payload.json"
+```
+
+Expected success status: `HTTP/1.1 202 Accepted`
+
+## Success Response
+
+On accepted requests, API returns `202 Accepted`.
+
+Example:
+
+```json
+{
+  "accepted": 100,
+  "published": 100,
+  "rejected": 0,
+  "stream": "gps.telemetry.raw",
+  "request_id": "provider-batch-20260520-0001",
+  "latency_ms": 18.42,
+  "error_summary": {
+    "validation": {"failed": 0, "error_counts": {}, "samples": []},
+    "normalization": {"failed": 0, "samples": []},
+    "publish": {"failed": 0, "samples": []}
+  }
+}
+```
+
+## Error Response
+
+If body is not a JSON array, API returns `422 Unprocessable Entity`:
+
+```json
+{
+  "error": "Request body must be a JSON array"
+}
+```
+
+## Provider-side Best Practices
+
+- Send events in batches (recommended 20 to 500 events/request).
+- Include `X-Request-Id` and keep it unique for each request.
+- Use UTC timestamps.
+- Retry on network errors and `5xx` responses with exponential backoff.
+- For `202` with non-zero `rejected`, check payload quality for rejected items.
+
+## Go-live Checklist
+
+- Confirm your `X-Vendor-Id` value with SWM team.
+- Share your source IPs if allow-listing is enabled.
+- Send a pilot batch and confirm `published > 0`.
+- Validate latency and success rate during peak traffic.

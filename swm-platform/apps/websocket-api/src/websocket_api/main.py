@@ -2,7 +2,9 @@ import asyncio
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from jwt import InvalidTokenError
 from redis.asyncio import Redis
+from swm_auth import decode_access_token
 from starlette.responses import Response
 from swm_common import (
     REQUEST_COUNTER,
@@ -22,6 +24,33 @@ redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
 LIVE_UPDATES_CHANNEL = "live_updates"
 
 
+def _extract_websocket_token(websocket: WebSocket) -> str | None:
+    from_query = websocket.query_params.get("token")
+    if from_query:
+        return from_query.strip()
+
+    authorization = websocket.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() == "bearer" and token.strip():
+        return token.strip()
+    return None
+
+
+def _is_websocket_authenticated(websocket: WebSocket) -> bool:
+    if not settings.websocket_auth_required:
+        return True
+
+    token = _extract_websocket_token(websocket)
+    if not token:
+        return False
+
+    try:
+        decode_access_token(token, settings.jwt_secret, settings.jwt_algorithm)
+    except InvalidTokenError:
+        return False
+    return True
+
+
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok", "service": "websocket-api"}
@@ -34,6 +63,10 @@ async def metrics() -> Response:
 
 @app.websocket("/ws/realtime")
 async def realtime_socket(websocket: WebSocket) -> None:
+    if not _is_websocket_authenticated(websocket):
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
     WEBSOCKET_CONNECTIONS.inc()
     pubsub = redis_client.pubsub(ignore_subscribe_messages=True)

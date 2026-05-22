@@ -1,15 +1,48 @@
 param(
-    [string]$BaseUrl = "http://127.0.0.1:8001",
+    [string]$BaseUrl = "http://127.0.0.1:9001",
     [string]$Endpoint = "/webhook/gps",
     [int]$DurationMinutes = 10,
     [int]$Trucks = 10,
     [double]$CenterLat = 18.5516,
     [double]$CenterLng = 73.9483,
     [double]$OrbitRadiusDeg = 0.0020,
+    [string]$WebhookSecret = $env:INGESTION_WEBHOOK_SECRET,
+    [string]$WebhookSecretHeader = $(if ($env:INGESTION_WEBHOOK_SECRET_HEADER) { $env:INGESTION_WEBHOOK_SECRET_HEADER } else { "X-Webhook-Secret" }),
     [switch]$VerboseProgress
 )
 
 $ErrorActionPreference = "Stop"
+
+function Get-DotEnvValue {
+    param(
+        [string]$FilePath,
+        [string]$Key
+    )
+
+    if (-not (Test-Path $FilePath)) {
+        return $null
+    }
+
+    $match = Select-String -Path $FilePath -Pattern "^$([regex]::Escape($Key))=(.*)$" | Select-Object -First 1
+    if (-not $match) {
+        return $null
+    }
+
+    return $match.Matches[0].Groups[1].Value.Trim()
+}
+
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
+$dotEnvPath = Join-Path $repoRoot ".env"
+
+if ([string]::IsNullOrWhiteSpace($WebhookSecret)) {
+    $WebhookSecret = Get-DotEnvValue -FilePath $dotEnvPath -Key "INGESTION_WEBHOOK_SECRET"
+}
+if ([string]::IsNullOrWhiteSpace($WebhookSecretHeader)) {
+    $WebhookSecretHeader = Get-DotEnvValue -FilePath $dotEnvPath -Key "INGESTION_WEBHOOK_SECRET_HEADER"
+}
+if ([string]::IsNullOrWhiteSpace($WebhookSecretHeader)) {
+    $WebhookSecretHeader = "X-Webhook-Secret"
+}
 
 if ($Trucks -lt 1) {
     throw "Trucks must be >= 1"
@@ -34,6 +67,12 @@ $accepted = 0
 $published = 0
 
 Write-Host "[kharadi-live] start url=$url trucks=$Trucks duration_minutes=$DurationMinutes center=($CenterLat,$CenterLng)" -ForegroundColor Cyan
+if ([string]::IsNullOrWhiteSpace($WebhookSecret)) {
+    Write-Host "[kharadi-live] webhook_secret=disabled (no secret header will be sent)" -ForegroundColor Yellow
+}
+else {
+    Write-Host "[kharadi-live] webhook_secret=enabled header=$WebhookSecretHeader" -ForegroundColor Gray
+}
 
 while ((Get-Date) -lt $stopAt) {
     for ($i = 0; $i -lt $imeis.Count; $i++) {
@@ -69,6 +108,9 @@ while ((Get-Date) -lt $stopAt) {
         $headers = @{
             "X-Vendor-Id" = $vendor
             "X-Request-Id" = "kharadi-live-$([guid]::NewGuid().ToString())"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($WebhookSecret)) {
+            $headers[$WebhookSecretHeader] = $WebhookSecret
         }
 
         try {

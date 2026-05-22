@@ -6,6 +6,7 @@ dependencies = [
   "fastapi>=0.115.12",
   "uvicorn[standard]>=0.34.2",
   "swm-common",
+  "swm-auth",
   "swm-schemas",
   "swm-redis"
 ]

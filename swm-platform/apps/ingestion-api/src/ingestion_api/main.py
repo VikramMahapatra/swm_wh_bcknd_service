@@ -4,6 +4,7 @@ import uvicorn
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
+from swm_auth import WebhookAuthConfig, WebhookAuthMiddleware
 from swm_common import (
     REQUEST_COUNTER,
     configure_logging,
@@ -12,6 +13,7 @@ from swm_common import (
     metrics_response,
 )
 from swm_redis import RedisClient
+from swm_redis import RateLimitRule, RedisRateLimitMiddleware, RedisRateLimiterConfig
 from swm_schemas import EventBatch
 
 from ingestion_api.webhook_gps import make_gps_webhook_router
@@ -29,6 +31,65 @@ redis_client = RedisClient.from_url(
     retry_attempts=settings.redis_retry_attempts,
     retry_base_delay=settings.redis_retry_base_delay,
 )
+
+
+def _split_csv(raw: str) -> list[str]:
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+webhook_auth_enabled = settings.ingestion_webhook_auth_enabled or any(
+    [
+        settings.ingestion_webhook_secret.strip(),
+        settings.ingestion_webhook_hmac_secret.strip(),
+        settings.ingestion_webhook_allowed_ips.strip(),
+        settings.ingestion_webhook_nonce_ttl_seconds > 0,
+    ]
+)
+
+if webhook_auth_enabled:
+    app.add_middleware(
+        WebhookAuthMiddleware,
+        config=WebhookAuthConfig(
+            secret=settings.ingestion_webhook_secret.strip() or None,
+            secret_header=settings.ingestion_webhook_secret_header,
+            hmac_secret=(
+                settings.ingestion_webhook_hmac_secret.encode("utf-8")
+                if settings.ingestion_webhook_hmac_secret.strip()
+                else None
+            ),
+            signature_header=settings.ingestion_webhook_signature_header,
+            allowed_ips=_split_csv(settings.ingestion_webhook_allowed_ips),
+            nonce_ttl_seconds=settings.ingestion_webhook_nonce_ttl_seconds,
+            nonce_header=settings.ingestion_webhook_nonce_header,
+            vendor_header=settings.ingestion_webhook_vendor_header,
+        ),
+        redis_client=redis_client,
+    )
+
+if settings.ingestion_rate_limit_enabled:
+    app.add_middleware(
+        RedisRateLimitMiddleware,
+        redis_client=redis_client,
+        config=RedisRateLimiterConfig(
+            key_prefix=settings.ingestion_rate_limit_prefix,
+            global_rule=RateLimitRule(
+                limit=settings.ingestion_rate_limit_global_limit,
+                window_seconds=settings.ingestion_rate_limit_global_window_seconds,
+            ),
+            vendor_rule=RateLimitRule(
+                limit=settings.ingestion_rate_limit_vendor_limit,
+                window_seconds=settings.ingestion_rate_limit_vendor_window_seconds,
+            ),
+            ip_rule=RateLimitRule(
+                limit=settings.ingestion_rate_limit_ip_limit,
+                window_seconds=settings.ingestion_rate_limit_ip_window_seconds,
+            ),
+            imei_rule=RateLimitRule(
+                limit=settings.ingestion_rate_limit_imei_limit,
+                window_seconds=settings.ingestion_rate_limit_imei_window_seconds,
+            ),
+        ),
+    )
 
 # Register webhook routers
 app.include_router(make_gps_webhook_router(redis_client=redis_client))

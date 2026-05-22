@@ -36,6 +36,7 @@ dependencies = [
     { name = "openpyxl" },
     { name = "python-multipart" },
     { name = "reportlab" },
+    { name = "swm-auth" },
     { name = "swm-common" },
     { name = "swm-db" },
     { name = "swm-redis" },
@@ -49,6 +50,7 @@ requires-dist = [
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "reportlab", specifier = ">=4.2.2" },
+    { name = "swm-auth", editable = "libs/auth" },
     { name = "swm-common", editable = "libs/common" },
     { name = "swm-db", editable = "libs/db" },
     { name = "swm-redis", editable = "libs/redis" },
@@ -685,6 +687,7 @@ version = "0.1.0"
 source = { editable = "apps/ingestion-api" }
 dependencies = [
     { name = "fastapi" },
+    { name = "swm-auth" },
     { name = "swm-common" },
     { name = "swm-redis" },
     { name = "swm-schemas" },
@@ -694,6 +697,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115.12" },
+    { name = "swm-auth", editable = "libs/auth" },
     { name = "swm-common", editable = "libs/common" },
     { name = "swm-redis", editable = "libs/redis" },
     { name = "swm-schemas", editable = "libs/schemas" },
@@ -1972,6 +1976,7 @@ source = { editable = "apps/websocket-api" }
 dependencies = [
     { name = "fastapi" },
     { name = "redis", extra = ["hiredis"] },
+    { name = "swm-auth" },
     { name = "swm-common" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -1980,6 +1985,7 @@ dependencies = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115.12" },
     { name = "redis", extras = ["hiredis"], specifier = ">=5.2.1" },
+    { name = "swm-auth", editable = "libs/auth" },
     { name = "swm-common", editable = "libs/common" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.2" },
 ]

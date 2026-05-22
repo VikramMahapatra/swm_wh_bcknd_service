@@ -10,6 +10,7 @@ dependencies = [
   "openpyxl>=3.1.5",
   "reportlab>=4.2.2",
   "swm-common",
+  "swm-auth",
   "swm-db",
   "swm-redis"
 ]

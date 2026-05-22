@@ -173,8 +173,8 @@ async def watch_websocket(websocket_url: str, output_path: Path, duration_minute
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Watch realtime snapshot and websocket updates")
-    parser.add_argument("--admin-api-url", default="http://127.0.0.1:8003")
-    parser.add_argument("--websocket-url", default="ws://127.0.0.1:8002/ws/realtime")
+    parser.add_argument("--admin-api-url", default="http://127.0.0.1:9003")
+    parser.add_argument("--websocket-url", default="ws://127.0.0.1:9002/ws/realtime")
     parser.add_argument("--output-path", default="./realtime-watch.log")
     parser.add_argument("--duration-minutes", type=int, default=0)
     args = parser.parse_args()

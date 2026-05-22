@@ -39,6 +39,49 @@ class Settings(BaseSettings):
     jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
     jwt_expiry_minutes: int = Field(default=30, alias="JWT_EXPIRY_MINUTES")
 
+    auth_enforce_jwt: bool = Field(default=False, alias="AUTH_ENFORCE_JWT")
+    auth_allow_legacy_role_header: bool = Field(default=True, alias="AUTH_ALLOW_LEGACY_ROLE_HEADER")
+    auth_legacy_default_role: str = Field(default="admin", alias="AUTH_LEGACY_DEFAULT_ROLE")
+    auth_api_keys_json: str = Field(default="[]", alias="AUTH_API_KEYS_JSON")
+
+    ingestion_webhook_auth_enabled: bool = Field(default=False, alias="INGESTION_WEBHOOK_AUTH_ENABLED")
+    ingestion_webhook_secret: str = Field(default="", alias="INGESTION_WEBHOOK_SECRET")
+    ingestion_webhook_secret_header: str = Field(
+        default="X-Webhook-Secret",
+        alias="INGESTION_WEBHOOK_SECRET_HEADER",
+    )
+    ingestion_webhook_hmac_secret: str = Field(default="", alias="INGESTION_WEBHOOK_HMAC_SECRET")
+    ingestion_webhook_signature_header: str = Field(
+        default="X-Webhook-Signature",
+        alias="INGESTION_WEBHOOK_SIGNATURE_HEADER",
+    )
+    ingestion_webhook_allowed_ips: str = Field(default="", alias="INGESTION_WEBHOOK_ALLOWED_IPS")
+    ingestion_webhook_nonce_ttl_seconds: int = Field(default=0, alias="INGESTION_WEBHOOK_NONCE_TTL_SECONDS")
+    ingestion_webhook_nonce_header: str = Field(default="X-Webhook-Nonce", alias="INGESTION_WEBHOOK_NONCE_HEADER")
+    ingestion_webhook_vendor_header: str = Field(default="X-Vendor-Id", alias="INGESTION_WEBHOOK_VENDOR_HEADER")
+
+    ingestion_rate_limit_enabled: bool = Field(default=False, alias="INGESTION_RATE_LIMIT_ENABLED")
+    ingestion_rate_limit_prefix: str = Field(default="rl:ingestion", alias="INGESTION_RATE_LIMIT_PREFIX")
+    ingestion_rate_limit_global_limit: int = Field(default=2000, alias="INGESTION_RATE_LIMIT_GLOBAL_LIMIT")
+    ingestion_rate_limit_global_window_seconds: int = Field(
+        default=60,
+        alias="INGESTION_RATE_LIMIT_GLOBAL_WINDOW_SECONDS",
+    )
+    ingestion_rate_limit_vendor_limit: int = Field(default=1000, alias="INGESTION_RATE_LIMIT_VENDOR_LIMIT")
+    ingestion_rate_limit_vendor_window_seconds: int = Field(
+        default=60,
+        alias="INGESTION_RATE_LIMIT_VENDOR_WINDOW_SECONDS",
+    )
+    ingestion_rate_limit_ip_limit: int = Field(default=400, alias="INGESTION_RATE_LIMIT_IP_LIMIT")
+    ingestion_rate_limit_ip_window_seconds: int = Field(default=60, alias="INGESTION_RATE_LIMIT_IP_WINDOW_SECONDS")
+    ingestion_rate_limit_imei_limit: int = Field(default=180, alias="INGESTION_RATE_LIMIT_IMEI_LIMIT")
+    ingestion_rate_limit_imei_window_seconds: int = Field(
+        default=60,
+        alias="INGESTION_RATE_LIMIT_IMEI_WINDOW_SECONDS",
+    )
+
+    websocket_auth_required: bool = Field(default=False, alias="WEBSOCKET_AUTH_REQUIRED")
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

@@ -1,0 +1,66 @@
+name: Resilience Drill Gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  resilience-drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env
+          uv sync --all-packages --all-groups
+
+      - name: Start compose stack
+        run: docker compose -f infra/docker-compose.yml up -d --build
+
+      - name: Wait for services
+        run: |
+          timeout 240 bash -c 'until curl -fsS http://127.0.0.1:9001/healthz; do sleep 5; done'
+          timeout 240 bash -c 'until curl -fsS http://127.0.0.1:9002/healthz; do sleep 5; done'
+          timeout 240 bash -c 'until curl -fsS http://127.0.0.1:9003/healthz; do sleep 5; done'
+
+      - name: Run resilience drill gate
+        run: |
+          uv run python scripts/recovery/run_resilience_drill_suite.py \
+            --base-url http://127.0.0.1:9001 \
+            --admin-base-url http://127.0.0.1:9003 \
+            --websocket-base-url http://127.0.0.1:9002 \
+            --redis-url redis://127.0.0.1:6379/0 \
+            --target-eps 100 \
+            --duration-seconds 10 \
+            --concurrency 60 \
+            --report-dir scripts/loadtest/reports
+
+      - name: Upload drill reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resilience-drill-reports
+          path: scripts/loadtest/reports/
+          if-no-files-found: warn
+
+      - name: Dump compose logs
+        if: failure()
+        run: docker compose -f infra/docker-compose.yml logs --no-color
+
+      - name: Stop compose stack
+        if: always()
+        run: docker compose -f infra/docker-compose.yml down -v

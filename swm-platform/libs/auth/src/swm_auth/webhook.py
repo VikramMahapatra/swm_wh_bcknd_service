@@ -134,7 +134,11 @@ def _client_ip(request: Request) -> str:
         # X-Forwarded-For may be a comma-separated list; take the first
         return forwarded.split(",")[0].strip()
     if request.client:
-        return request.client.host
+        host = request.client.host
+        # Starlette TestClient can report a non-IP host sentinel.
+        if host == "testclient":
+            return "127.0.0.1"
+        return host
     return ""
 
 
