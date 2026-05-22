@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     auth_allow_legacy_role_header: bool = Field(default=True, alias="AUTH_ALLOW_LEGACY_ROLE_HEADER")
     auth_legacy_default_role: str = Field(default="admin", alias="AUTH_LEGACY_DEFAULT_ROLE")
     auth_api_keys_json: str = Field(default="[]", alias="AUTH_API_KEYS_JSON")
+    auth_users_json: str = Field(default="[]", alias="AUTH_USERS_JSON")
 
     ingestion_webhook_auth_enabled: bool = Field(default=False, alias="INGESTION_WEBHOOK_AUTH_ENABLED")
     ingestion_webhook_secret: str = Field(default="", alias="INGESTION_WEBHOOK_SECRET")

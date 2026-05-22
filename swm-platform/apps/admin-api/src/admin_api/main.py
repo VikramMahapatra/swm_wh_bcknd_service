@@ -12,6 +12,7 @@ from swm_common import (
 )
 
 from admin_api.routers import system as system_router
+from admin_api.routers import auth as auth_router
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -53,6 +54,7 @@ async def metrics_middleware(
 
 
 app.include_router(system_router.router)
+app.include_router(auth_router.router)
 
 # Imported here to avoid circular imports for routers that reference symbols from this module.
 from admin_api.routers import realtime as realtime_router  # noqa: PLC0415

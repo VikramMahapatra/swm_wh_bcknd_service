@@ -1,9 +1,11 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from starlette.responses import Response
 from swm_common import metrics_response
 from swm_common.logger import get_logger
+
+from admin_api.api_support import RoleContext, require_roles
 
 router = APIRouter()
 logger = get_logger("admin_api")
@@ -20,7 +22,7 @@ async def metrics() -> Response:
 
 
 @router.get("/v1/platform/status")
-async def platform_status() -> dict[str, str]:
+async def platform_status(_: RoleContext = Depends(require_roles("admin", "ops", "viewer"))) -> dict[str, str]:
     now = datetime.now(tz=UTC).isoformat()
     logger.info("platform_status_requested", ts=now)
     return {"status": "operational", "timestamp": now}

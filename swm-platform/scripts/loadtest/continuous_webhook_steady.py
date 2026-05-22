@@ -114,6 +114,7 @@ async def send_batch(
     payload: list[dict[str, Any]],
     webhook_secret: str,
     webhook_secret_header: str,
+    access_token: str,
     counters: dict[str, int],
     semaphore: asyncio.Semaphore,
 ) -> None:
@@ -123,6 +124,8 @@ async def send_batch(
             "X-Vendor-Id": vendor_id,
             "X-Request-Id": f"steady-{time.time_ns()}",
         }
+        if access_token:
+            headers["Authorization"] = f"Bearer {access_token}"
         if webhook_secret:
             headers[webhook_secret_header] = webhook_secret
         try:
@@ -204,7 +207,8 @@ async def run_steady(args: argparse.Namespace) -> None:
         (
             f"[steady] start minutes={args.duration_minutes} trucks={args.trucks} "
             f"events_per_second={args.trucks} endpoint={url} "
-            f"secret_enabled={'yes' if args.webhook_secret else 'no'}"
+            f"secret_enabled={'yes' if args.webhook_secret else 'no'} "
+            f"jwt_enabled={'yes' if args.access_token else 'no'}"
         ),
         flush=True,
     )
@@ -240,6 +244,7 @@ async def run_steady(args: argparse.Namespace) -> None:
                                 payload,
                                 args.webhook_secret,
                                 args.webhook_secret_header,
+                                args.access_token,
                                 counters,
                                 request_semaphore,
                             )
@@ -253,7 +258,9 @@ async def run_steady(args: argparse.Namespace) -> None:
                 print(
                     (
                         f"[steady] second={elapsed}/{seconds_total} "
-                        f"requests={counters['requests']} published={counters['published']} "
+                        f"requests={counters['requests']} 2xx={counters['http_2xx']} "
+                        f"4xx={counters['http_4xx']} 5xx={counters['http_5xx']} "
+                        f"published={counters['published']} "
                         f"rejected={counters['rejected']} "
                         f"rejected_validation={counters['rejected_validation']} "
                         f"rejected_normalization={counters['rejected_normalization']} "
@@ -304,6 +311,11 @@ def parse_args() -> argparse.Namespace:
         "--webhook-secret-header",
         default=os.getenv("INGESTION_WEBHOOK_SECRET_HEADER", "X-Webhook-Secret"),
         help="Webhook secret header name (default: INGESTION_WEBHOOK_SECRET_HEADER env or X-Webhook-Secret)",
+    )
+    p.add_argument(
+        "--access-token",
+        default=os.getenv("INGESTION_ACCESS_TOKEN", ""),
+        help="JWT bearer token for ingestion auth (default: INGESTION_ACCESS_TOKEN env)",
     )
     return p.parse_args()
 

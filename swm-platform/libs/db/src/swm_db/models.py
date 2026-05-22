@@ -17,6 +17,7 @@ from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
+    Column,
     JSON,
     Boolean,
     CheckConstraint,
@@ -27,6 +28,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Table,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -1095,4 +1097,185 @@ class AuditLogORM(Base):
         server_default=text("CURRENT_TIMESTAMP"),
         nullable=False,
     )
+
+
+auth_user_roles = Table(
+    "auth_user_roles",
+    Base.metadata,
+    Column("user_id", UUID(as_uuid=True), ForeignKey("auth_users.id", ondelete="CASCADE"), primary_key=True),
+    Column("role_id", UUID(as_uuid=True), ForeignKey("auth_roles.id", ondelete="CASCADE"), primary_key=True),
+    Column("assigned_at", DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+    Column("assigned_by", String(255), nullable=True),
+)
+
+
+auth_role_permissions = Table(
+    "auth_role_permissions",
+    Base.metadata,
+    Column("role_id", UUID(as_uuid=True), ForeignKey("auth_roles.id", ondelete="CASCADE"), primary_key=True),
+    Column(
+        "permission_id",
+        UUID(as_uuid=True),
+        ForeignKey("auth_permissions.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("granted_at", DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+    Column("granted_by", String(255), nullable=True),
+)
+
+
+class AuthRoleORM(AuditBase):
+    __tablename__ = "auth_roles"
+    __table_args__ = (
+        Index("ix_auth_roles_active", "active"),
+        Index("ix_auth_roles_role_name", "role_name"),
+    )
+
+    role_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    role_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+
+    permissions: Mapped[list["AuthPermissionORM"]] = relationship(
+        secondary=auth_role_permissions,
+        back_populates="roles",
+    )
+    users: Mapped[list["AuthUserORM"]] = relationship(
+        secondary=auth_user_roles,
+        back_populates="roles",
+    )
+
+    @validates("role_key")
+    def validate_role_key(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized or len(normalized) > 64:
+            raise ValueError("role_key must be 1-64 characters")
+        return normalized
+
+
+class AuthPermissionORM(AuditBase):
+    __tablename__ = "auth_permissions"
+    __table_args__ = (
+        Index("ix_auth_permissions_active", "active"),
+        Index("ix_auth_permissions_permission_name", "permission_name"),
+    )
+
+    permission_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    permission_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+
+    roles: Mapped[list[AuthRoleORM]] = relationship(
+        secondary=auth_role_permissions,
+        back_populates="permissions",
+    )
+
+    @validates("permission_key")
+    def validate_permission_key(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized or len(normalized) > 128:
+            raise ValueError("permission_key must be 1-128 characters")
+        return normalized
+
+
+class AuthUserORM(AuditBase):
+    __tablename__ = "auth_users"
+    __table_args__ = (
+        Index("ix_auth_users_username", "username"),
+        Index("ix_auth_users_email", "email"),
+        Index("ix_auth_users_active", "active"),
+    )
+
+    username: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True, unique=True)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default=text("1"))
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_login_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+
+    roles: Mapped[list[AuthRoleORM]] = relationship(
+        secondary=auth_user_roles,
+        back_populates="users",
+    )
+    refresh_tokens: Mapped[list["AuthRefreshTokenORM"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    @validates("username")
+    def validate_username(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized or len(normalized) > 128:
+            raise ValueError("username must be 1-128 characters")
+        return normalized
+
+    @validates("email")
+    def validate_email(self, _: str, value: str | None) -> str | None:
+        if value is None:
+            return None
+        email = value.strip().lower()
+        if not _EMAIL_RE.fullmatch(email):
+            raise ValueError("email is not valid")
+        return email
+
+    @validates("metadata_json")
+    def validate_metadata_json(self, _: str, value: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise ValueError("metadata_json must be a JSON object")
+        return value
+
+
+class AuthRefreshTokenORM(Base):
+    __tablename__ = "auth_refresh_tokens"
+    __table_args__ = (
+        Index("ix_auth_refresh_tokens_user_id", "user_id"),
+        Index("ix_auth_refresh_tokens_expires_at", "expires_at"),
+        Index("ix_auth_refresh_tokens_revoked_at", "revoked_at"),
+        Index("ix_auth_refresh_tokens_token_family_id", "token_family_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("auth_users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    token_family_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=False,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    replaced_by_token_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("auth_refresh_tokens.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    user: Mapped[AuthUserORM] = relationship(back_populates="refresh_tokens")
 

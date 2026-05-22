@@ -137,6 +137,78 @@ ws://127.0.0.1:9002/ws/realtime?token=<jwt>
 
 ## Admin API Endpoints
 
+### Authentication
+
+#### POST /v1/auth/login
+Purpose: Authenticate a database-backed user and issue JWT access + refresh tokens.
+Auth: Public endpoint (no prior token required).
+Body:
+- `username` (required)
+- `password` (required)
+
+Response:
+- `access_token`
+- `refresh_token`
+- `token_type` (`bearer`)
+- `expires_in` (seconds)
+- `refresh_expires_in` (seconds)
+- `subject`
+- `roles`
+- `permissions`
+
+Usage:
+```bash
+curl -X POST http://127.0.0.1:9003/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123"}'
+```
+
+#### GET /v1/auth/me
+Purpose: Return the current authenticated principal and claims from the access token.
+Auth: Requires a valid JWT in `Authorization: Bearer <jwt>` or the legacy admin auth header path.
+Response:
+- `active`
+- `subject`
+- `role`
+- `roles`
+- `permissions`
+
+Usage:
+```bash
+curl http://127.0.0.1:9003/v1/auth/me \
+  -H "Authorization: Bearer <jwt>"
+```
+
+#### POST /v1/auth/refresh
+Purpose: Rotate a refresh token and issue a new JWT + refresh pair.
+Body:
+- `refresh_token`
+
+#### POST /v1/auth/logout
+Purpose: Revoke a refresh token.
+Body:
+- `refresh_token`
+
+### User / Role Management
+
+These endpoints require an admin JWT.
+
+- `GET /v1/auth/users`
+- `POST /v1/auth/users`
+- `GET /v1/auth/users/{username}`
+- `PATCH /v1/auth/users/{username}`
+- `DELETE /v1/auth/users/{username}`
+- `POST /v1/auth/users/{username}/roles/{role_key}`
+- `DELETE /v1/auth/users/{username}/roles/{role_key}`
+- `GET /v1/auth/roles`
+- `POST /v1/auth/roles`
+- `PATCH /v1/auth/roles/{role_key}`
+- `DELETE /v1/auth/roles/{role_key}`
+- `POST /v1/auth/roles/{role_key}/permissions/{permission_key}`
+- `DELETE /v1/auth/roles/{role_key}/permissions/{permission_key}`
+- `GET /v1/auth/permissions`
+- `POST /v1/auth/permissions`
+
 ### System
 
 #### GET /healthz
@@ -492,12 +564,13 @@ Current endpoint guards in code use `admin`, `ops`, `viewer` aliases.
 | ingestion-api | `GET /healthz`, `GET /metrics`, `POST /v1/events`, `POST /webhook/gps` | Open by default; optional webhook auth and rate limit by feature flags |
 | websocket-api | `GET /healthz`, `GET /metrics` | Open |
 | websocket-api | `WS /ws/realtime` | Open by default; JWT required when `WEBSOCKET_AUTH_REQUIRED=true` |
-| admin-api | `GET /healthz`, `GET /metrics`, `GET /v1/platform/status` | Open (no role guard) |
+| admin-api | `GET /healthz`, `GET /metrics`, `GET /v1/platform/status`, `POST /v1/auth/login` | Open (no role guard) |
 
 ### Admin API exact endpoint matrix
 
 | Method | Endpoint | Allowed roles |
 |---|---|---|
+| POST | `/v1/auth/login` | Public (no role required) |
 | GET | `/v1/realtime/trucks` | `admin`, `ops`, `viewer` |
 | GET | `/v1/ingestion/failures` | `admin`, `ops`, `viewer` |
 | GET | `/v1/dashboard/kpis` | `admin`, `ops`, `viewer` |

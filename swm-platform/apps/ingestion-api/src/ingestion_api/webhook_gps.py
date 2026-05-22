@@ -33,7 +33,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 import orjson
-from fastapi import APIRouter, Header, Request, status
+from fastapi import APIRouter, Header, Request, Security, status
 from fastapi.responses import JSONResponse
 from prometheus_client import Counter, Histogram
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
@@ -284,6 +284,7 @@ def make_gps_webhook_router(
     *,
     redis_client: RedisClient,
     cache: RealtimeCacheService | None = None,
+    auth_dependency: Any | None = None,
 ) -> APIRouter:
     """
     Build and return the GPS webhook APIRouter.
@@ -292,7 +293,8 @@ def make_gps_webhook_router(
     ``redis_client`` with default config when not provided.
     """
     _cache = cache or RealtimeCacheService(redis_client)
-    router = APIRouter(prefix="/webhook", tags=["webhook"])
+    dependencies = [Security(auth_dependency)] if auth_dependency is not None else []
+    router = APIRouter(prefix="/webhook", tags=["webhook"], dependencies=dependencies)
 
     @router.post(
         "/gps",

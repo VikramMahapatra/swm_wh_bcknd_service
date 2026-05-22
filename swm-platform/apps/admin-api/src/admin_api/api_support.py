@@ -9,8 +9,9 @@ import secrets
 from typing import Any
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, Request
-from pydantic import BaseModel
+from fastapi import Depends, HTTPException, Request, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, Field
 from sqlalchemy import String, asc, cast, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
@@ -19,6 +20,9 @@ from swm_common import get_settings
 from swm_db import AuditLogORM
 
 from jwt import InvalidTokenError
+
+
+_bearer_scheme = HTTPBearer(auto_error=False)
 
 
 class PageResponse(BaseModel):
@@ -31,6 +35,7 @@ class PageResponse(BaseModel):
 class RoleContext(BaseModel):
     subject: str
     role: str
+    roles: list[str] = Field(default_factory=list)
     permissions: list[str]
     auth_type: str
 
@@ -133,6 +138,17 @@ def _normalize_permissions(values: Any, *, role: str) -> list[str]:
         if chunks:
             return sorted(set(chunks))
     return _ROLE_DEFAULT_PERMISSIONS.get(role, ["fleet.read"])
+
+
+def _normalize_roles(values: Any, *, fallback: str) -> list[str]:
+    roles: list[str] = []
+    if isinstance(values, list):
+        roles = [_canonical_role(str(item)) for item in values if str(item).strip()]
+    elif isinstance(values, str) and values.strip():
+        roles = [_canonical_role(part) for part in values.split(",") if part.strip()]
+    if not roles:
+        roles = [_canonical_role(fallback)]
+    return sorted(set(roles))
 
 
 def _parse_api_key_records(raw: str | None) -> list[_ApiKeyRecord]:
@@ -419,58 +435,44 @@ async def _write_audit_log(
     await session.flush()
 
 
-async def get_role_context(request: Request) -> RoleContext:
+async def get_role_context(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Security(_bearer_scheme),
+) -> RoleContext:
     sec = _get_security_settings()
 
-    bearer_token = _extract_bearer_token(request.headers.get("authorization"))
-    if bearer_token:
-        try:
-            claims = decode_access_token(bearer_token, sec.jwt_secret, sec.jwt_algorithm)
-        except InvalidTokenError as exc:
-            raise HTTPException(status_code=401, detail="invalid access token") from exc
-
-        role = _canonical_role(str(claims.get("role", claims.get("roles", "read_only"))))
-        permissions = _normalize_permissions(claims.get("permissions", []), role=role)
-        return RoleContext(
-            subject=str(claims.get("sub", "jwt-user")),
-            role=role,
-            permissions=permissions,
-            auth_type="jwt",
-        )
-
-    api_key = request.headers.get("x-api-key", "").strip()
-    if api_key:
-        match = _find_api_key_record(api_key, sec.auth_api_keys)
-        if match is None:
-            raise HTTPException(status_code=401, detail="invalid api key")
-        return RoleContext(
-            subject=match.subject,
-            role=match.role,
-            permissions=match.permissions,
-            auth_type="api_key",
-        )
-
-    if sec.auth_allow_legacy_role_header:
-        legacy_role = request.headers.get("x-role", sec.auth_legacy_default_role)
-        role = _canonical_role(legacy_role)
-        return RoleContext(
-            subject=request.headers.get("x-user", "legacy-user"),
-            role=role,
-            permissions=_ROLE_DEFAULT_PERMISSIONS.get(role, ["fleet.read"]),
-            auth_type="legacy_header",
-        )
-
-    if sec.auth_enforce_jwt:
+    bearer_token = credentials.credentials if credentials else _extract_bearer_token(request.headers.get("authorization"))
+    if not bearer_token:
         raise HTTPException(status_code=401, detail="authentication required")
 
-    raise HTTPException(status_code=401, detail="authentication required")
+    try:
+        claims = decode_access_token(bearer_token, sec.jwt_secret, sec.jwt_algorithm)
+    except InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail="invalid access token") from exc
+
+    raw_role = claims.get("role")
+    if isinstance(raw_role, list):
+        raw_role = raw_role[0] if raw_role else None
+    role = _canonical_role(str(raw_role)) if raw_role is not None else "read_only"
+    roles = _normalize_roles(claims.get("roles", []), fallback=role)
+    if role not in roles:
+        roles = _normalize_roles([*roles, role], fallback=role)
+    permissions = _normalize_permissions(claims.get("permissions", []), role=role)
+    return RoleContext(
+        subject=str(claims.get("sub", "jwt-user")),
+        role=role,
+        roles=roles,
+        permissions=permissions,
+        auth_type="jwt",
+    )
 
 
 def require_roles(*roles: str):
     allowed = {_canonical_role(role) for role in roles}
 
-    async def _require(ctx: RoleContext = Depends(get_role_context)) -> RoleContext:
-        if _canonical_role(ctx.role) not in allowed:
+    async def _require(ctx: RoleContext = Security(get_role_context)) -> RoleContext:
+        ctx_roles = {_canonical_role(ctx.role), *(_canonical_role(role) for role in ctx.roles)}
+        if ctx_roles.isdisjoint(allowed):
             raise HTTPException(status_code=403, detail="forbidden")
         return ctx
 

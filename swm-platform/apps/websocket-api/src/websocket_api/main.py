@@ -37,9 +37,6 @@ def _extract_websocket_token(websocket: WebSocket) -> str | None:
 
 
 def _is_websocket_authenticated(websocket: WebSocket) -> bool:
-    if not settings.websocket_auth_required:
-        return True
-
     token = _extract_websocket_token(websocket)
     if not token:
         return False
