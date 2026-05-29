@@ -9,12 +9,31 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
 import { useDrivers, useTrucks } from '@/hooks/useDataQueries';
+import { apiService } from '@/services/api';
+import { useQueryClient } from '@tanstack/react-query';
 import { Driver } from '@/data/masterData';
 import { Plus, Search, Edit, Trash2, Phone, Mail, User, Download, Loader2, UserCheck } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
 
+function normalizeDriver(driver: any): Driver {
+  return {
+    id: String(driver?.id ?? ''),
+    name: String(driver?.name ?? ''),
+    phone: String(driver?.phone ?? ''),
+    email: String(driver?.email ?? ''),
+    licenseNumber: String(driver?.licenseNumber ?? driver?.license_number ?? ''),
+    licenseExpiry: String(driver?.licenseExpiry ?? driver?.license_expiry ?? ''),
+    address: String(driver?.address ?? ''),
+    status: (driver?.status === 'inactive' || driver?.status === 'on_leave') ? driver.status : 'active',
+    assignedTruckId: driver?.assignedTruckId ?? driver?.assigned_truck_id,
+    joinDate: String(driver?.joinDate ?? new Date().toISOString().split('T')[0]),
+    emergencyContact: String(driver?.emergencyContact ?? driver?.emergency_contact ?? ''),
+  };
+}
+
 export default function MasterDrivers() {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   
   // Fetch drivers from API
   const { data: driversFromAPI = [], isLoading: isLoadingDrivers, error: driversError } = useDrivers();
@@ -29,7 +48,7 @@ export default function MasterDrivers() {
   
   // Initialize drivers from API
   useEffect(() => {
-    setDrivers(driversFromAPI);
+    setDrivers((driversFromAPI as any[]).map(normalizeDriver));
   }, [driversFromAPI]);
 
   // Initialize trucks from API
@@ -71,25 +90,53 @@ export default function MasterDrivers() {
     return truck ? truck.registrationNumber : 'Unknown';
   };
 
-  const handleSubmit = () => {
-    if (editingDriver) {
-      setDrivers(prev => prev.map(d => d.id === editingDriver.id ? { ...d, ...formData } as Driver : d));
-      toast({ title: "Driver Updated", description: "Driver information has been updated." });
-    } else {
-      const newDriver: Driver = {
-        ...formData as Driver,
-        id: `DRV${String(drivers.length + 1).padStart(3, '0')}`,
-        joinDate: new Date().toISOString().split('T')[0]
+  const handleSubmit = async () => {
+    try {
+      const payload = {
+        name: formData.name,
+        phone: formData.phone,
+        email: formData.email,
+        licenseNumber: formData.licenseNumber,
+        licenseExpiry: formData.licenseExpiry,
+        address: formData.address,
+        status: formData.status,
+        assignedTruckId: formData.assignedTruckId,
+        emergencyContact: formData.emergencyContact,
       };
-      setDrivers(prev => [...prev, newDriver]);
-      toast({ title: "Driver Added", description: "New driver has been added successfully." });
+
+      if (editingDriver) {
+        const updated = normalizeDriver(await apiService.updateDriver(editingDriver.id, payload));
+        setDrivers(prev => prev.map(d => d.id === editingDriver.id ? updated : d));
+        toast({ title: "Driver Updated", description: "Driver information has been updated." });
+      } else {
+        const created = normalizeDriver(await apiService.createDriver(payload));
+        setDrivers(prev => [...prev, created]);
+        toast({ title: "Driver Added", description: "New driver has been added successfully." });
+      }
+      await queryClient.invalidateQueries({ queryKey: ['drivers'] });
+      resetForm();
+    } catch (error) {
+      toast({
+        title: "Unable to save driver",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
     }
-    resetForm();
   };
 
-  const handleDelete = (id: string) => {
-    setDrivers(prev => prev.filter(d => d.id !== id));
-    toast({ title: "Driver Deleted", description: "Driver has been removed from the system." });
+  const handleDelete = async (id: string) => {
+    try {
+      await apiService.deleteDriver(id);
+      setDrivers(prev => prev.filter(d => d.id !== id));
+      await queryClient.invalidateQueries({ queryKey: ['drivers'] });
+      toast({ title: "Driver Deleted", description: "Driver has been removed from the system." });
+    } catch (error) {
+      toast({
+        title: "Unable to delete driver",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
   };
 
   const resetForm = () => {

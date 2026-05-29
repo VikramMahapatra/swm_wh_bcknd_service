@@ -56,9 +56,11 @@ export interface PickupPoint {
   address: string;
   latitude: number;
   longitude: number;
+  zoneId?: string;
   routeId: string;
   wardId: string;
   ward: string;
+  sequenceNo?: number;
   wasteType: 'dry' | 'wet' | 'mixed' | 'hazardous';
   type: 'residential' | 'commercial' | 'hospital' | 'market';
   expectedPickupTime: string;

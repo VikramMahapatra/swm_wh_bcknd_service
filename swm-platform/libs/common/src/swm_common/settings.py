@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     )
 
     websocket_auth_required: bool = Field(default=False, alias="WEBSOCKET_AUTH_REQUIRED")
+    pickup_cross_radius_m: float = Field(default=30.0, alias="PICKUP_CROSS_RADIUS_M")
+    pickup_cross_cooldown_seconds: int = Field(default=900, alias="PICKUP_CROSS_COOLDOWN_SECONDS")
+    gtc_trip_radius_m: float = Field(default=30.0, alias="GTC_TRIP_RADIUS_M")
+    gtc_trip_halt_seconds: int = Field(default=180, alias="GTC_TRIP_HALT_SECONDS")
+    first_pickup_grace_minutes: int = Field(default=15, alias="FIRST_PICKUP_GRACE_MINUTES")
 
 
 @lru_cache(maxsize=1)

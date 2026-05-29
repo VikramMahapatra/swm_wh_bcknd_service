@@ -13,17 +13,29 @@ from swm_common import (
 
 from admin_api.routers import system as system_router
 from admin_api.routers import auth as auth_router
+from admin_api.routers import compatibility as compatibility_router
 
 settings = get_settings()
 configure_logging(settings.log_level)
 
 app = FastAPI(title="SWM Admin API", version="0.1.0")
 
+def _normalize_origin(origin: str) -> str:
+    return origin.strip().rstrip("/")
+
+
 _cors_origins = [
-    origin.strip()
+    _normalize_origin(origin)
     for origin in os.getenv(
         "CORS_ORIGINS",
-        "http://localhost:8080,http://127.0.0.1:8080",
+        ",".join(
+            [
+                "http://localhost:8080",
+                "http://127.0.0.1:8080",
+                "http://localhost:5173",
+                "http://127.0.0.1:5173",
+            ]
+        ),
     ).split(",")
     if origin.strip()
 ]
@@ -55,6 +67,7 @@ async def metrics_middleware(
 
 app.include_router(system_router.router)
 app.include_router(auth_router.router)
+app.include_router(compatibility_router.router)
 
 # Imported here to avoid circular imports for routers that reference symbols from this module.
 from admin_api.routers import realtime as realtime_router  # noqa: PLC0415

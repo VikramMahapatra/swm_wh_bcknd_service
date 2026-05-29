@@ -40,7 +40,7 @@ class AlertIn(BaseModel):
     severity: str = "medium"
     vehicle_id: str | None = None
     imei: str | None = None
-    contractor_id: UUID | None = None
+    vendor_id: UUID | None = None
     route_id: UUID | None = None
     ward_id: UUID | None = None
     triggered_at: datetime | None = None
@@ -126,7 +126,7 @@ async def create_alert(
         status="open",
         vehicle_id=payload.vehicle_id,
         imei=payload.imei,
-        contractor_id=payload.contractor_id,
+        vendor_id=payload.vendor_id,
         route_id=payload.route_id,
         ward_id=payload.ward_id,
         triggered_at=payload.triggered_at or datetime.now(UTC),

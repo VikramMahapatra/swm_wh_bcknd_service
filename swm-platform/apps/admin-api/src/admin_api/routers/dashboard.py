@@ -36,7 +36,7 @@ router = APIRouter()
 async def dashboard_kpis(
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
-    contractor_id: UUID | None = Query(default=None),
+    vendor_id: UUID | None = Query(default=None),
     route_id: UUID | None = Query(default=None),
     ward_id: UUID | None = Query(default=None),
     zone_name: str | None = Query(default=None),
@@ -45,8 +45,8 @@ async def dashboard_kpis(
     session: AsyncSession = Depends(get_db_session),
 ) -> Any:
     vehicle_filters = []
-    if contractor_id is not None:
-        vehicle_filters.append(VehicleORM.contractor_id == contractor_id)
+    if vendor_id is not None:
+        vehicle_filters.append(VehicleORM.vendor_id == vendor_id)
     if route_id is not None:
         vehicle_filters.append(VehicleORM.route_id == route_id)
     if ward_id is not None:
@@ -254,7 +254,7 @@ async def search_vehicles(
     page_size: int = Query(default=20, ge=1, le=200),
     vehicle_number: str | None = Query(default=None),
     imei: str | None = Query(default=None),
-    contractor_id: UUID | None = Query(default=None),
+    vendor_id: UUID | None = Query(default=None),
     route_id: UUID | None = Query(default=None),
     zone_name: str | None = Query(default=None),
     ward_id: UUID | None = Query(default=None),
@@ -283,8 +283,8 @@ async def search_vehicles(
         stmt = stmt.where(VehicleORM.vehicle_number.ilike(f"%{vehicle_number.strip()}%"))
     if imei:
         stmt = stmt.where(DeviceORM.imei.ilike(f"%{imei.strip()}%"))
-    if contractor_id is not None:
-        stmt = stmt.where(VehicleORM.contractor_id == contractor_id)
+    if vendor_id is not None:
+        stmt = stmt.where(VehicleORM.vendor_id == vendor_id)
     if route_id is not None:
         stmt = stmt.where(VehicleORM.route_id == route_id)
     if zone_name:

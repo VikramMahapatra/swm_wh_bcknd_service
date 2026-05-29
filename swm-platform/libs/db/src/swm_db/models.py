@@ -1,12 +1,3 @@
-"""
-Application ORM models.
-
-All models should inherit from :class:`~swm_db.base.AuditBase` which provides:
-- UUID primary key
-- created_at / updated_at timestamps
-- deleted_at soft-delete
-- created_by / updated_by audit columns
-"""
 
 from __future__ import annotations
 
@@ -36,6 +27,53 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from swm_db.base import AuditBase, Base
 
+"""
+Application ORM models.
+
+All models should inherit from :class:`~swm_db.base.AuditBase` which provides:
+- UUID primary key
+- created_at / updated_at timestamps
+- deleted_at soft-delete
+- created_by / updated_by audit columns
+"""
+
+class ZoneORM(Base):
+    __tablename__ = "zones"
+    __table_args__ = (
+        Index("ix_zones_code", "zone_code", unique=True),
+        Index("ix_zones_active", "active"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    zone_code: Mapped[str] = mapped_column(String(24), nullable=False, unique=True)
+    zone_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    wards: Mapped[list["WardORM"]] = relationship("WardORM", back_populates="zone")
+
+    @validates("zone_code")
+    def validate_zone_code(self, _: str, value: str) -> str:
+        normalized = value.strip().upper()
+        if not _WARD_CODE_RE.fullmatch(normalized):
+            raise ValueError("zone_code must match ^[A-Z0-9_-]{2,24}$")
+        return normalized
+
 
 class DeviceEventORM(Base):
     __tablename__ = "device_events"
@@ -61,15 +99,26 @@ _VEHICLE_NO_RE = re.compile(r"^[A-Z0-9-]{4,24}$")
 _REG_NO_RE = re.compile(r"^[A-Z0-9-]{4,24}$")
 _FUEL_TYPES = {"diesel", "petrol", "cng", "electric", "lng"}
 _VEHICLE_STATUSES = {"operational", "maintenance", "breakdown", "retired"}
-_CONTRACTOR_CODE_RE = re.compile(r"^[A-Z0-9_-]{3,24}$")
 _WARD_CODE_RE = re.compile(r"^[A-Z0-9_-]{2,24}$")
 _ROUTE_CODE_RE = re.compile(r"^[A-Z0-9_-]{2,24}$")
 _GEOFENCE_CODE_RE = re.compile(r"^[A-Z0-9_-]{2,32}$")
 _GEOFENCE_TYPES = {"depot", "landfill", "zone", "parking", "maintenance"}
 _GEOMETRY_TYPES = {"circle", "polygon"}
+_GEOFENCE_FOR_TYPES = {"zone", "ward", "route"}
 _ALERT_STATUSES = {"open", "acknowledged", "resolved", "escalated"}
 _ALERT_SEVERITIES = {"low", "medium", "high", "critical"}
 _ALERT_ACTIONS = {"created", "acknowledged", "resolved", "escalated", "updated", "commented"}
+_TICKET_STATUSES = {"open", "in_progress", "pending", "resolved", "closed"}
+_TICKET_PRIORITIES = {"low", "medium", "high", "critical"}
+_TICKET_CATEGORIES = {
+    "complaint",
+    "maintenance",
+    "driver_issue",
+    "vehicle_issue",
+    "route_issue",
+    "pickup_issue",
+    "other",
+}
 _CONFIG_TYPES = {
     "speed_threshold",
     "geofence",
@@ -251,56 +300,9 @@ class DeviceORM(Base):
         return value
 
 
-class ContractorORM(Base):
-    __tablename__ = "contractors"
-    __table_args__ = (
-        Index("ix_contractors_contractor_name", "contractor_name"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-        server_default=text("gen_random_uuid()"),
-    )
-    contractor_code: Mapped[str] = mapped_column(String(24), nullable=False, unique=True)
-    contractor_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    contact: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    sla_details: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=text("CURRENT_TIMESTAMP"),
-        nullable=False,
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=text("CURRENT_TIMESTAMP"),
-        onupdate=text("CURRENT_TIMESTAMP"),
-        nullable=False,
-    )
-
-    vehicles: Mapped[list["VehicleORM"]] = relationship(back_populates="contractor")
-
-    @validates("contractor_code")
-    def validate_contractor_code(self, _: str, value: str) -> str:
-        normalized = value.strip().upper()
-        if not _CONTRACTOR_CODE_RE.fullmatch(normalized):
-            raise ValueError("contractor_code must match ^[A-Z0-9_-]{3,24}$")
-        return normalized
-
-    @validates("sla_details")
-    def validate_sla_details(self, _: str, value: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(value, dict):
-            raise ValueError("sla_details must be a JSON object")
-        return value
-
-
 class WardORM(Base):
     __tablename__ = "wards"
-    __table_args__ = (
-        Index("ix_wards_zone_name", "zone_name"),
-    )
+    __table_args__ = ()
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -310,7 +312,9 @@ class WardORM(Base):
     )
     ward_code: Mapped[str] = mapped_column(String(24), nullable=False, unique=True)
     ward_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    zone_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    zone_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("zones.id", ondelete="RESTRICT"), nullable=False)
+
+    zone: Mapped["ZoneORM"] = relationship("ZoneORM", back_populates="wards")
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -338,7 +342,8 @@ class WardORM(Base):
 class RouteORM(Base):
     __tablename__ = "routes"
     __table_args__ = (
-        Index("ix_routes_active", "active"),
+        Index("ix_routes_zone_id", "zone_id"),
+        Index("ix_routes_ward_id", "ward_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -347,13 +352,18 @@ class RouteORM(Base):
         default=uuid.uuid4,
         server_default=text("gen_random_uuid()"),
     )
-    route_code: Mapped[str] = mapped_column(String(24), nullable=False, unique=True)
     route_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    expected_distance_km: Mapped[float] = mapped_column(Float, nullable=False, default=0)
-    expected_duration_min: Mapped[int] = mapped_column(nullable=False, default=0)
-    start_point: Mapped[str] = mapped_column(String(255), nullable=False)
-    end_point: Mapped[str] = mapped_column(String(255), nullable=False)
-    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    zone_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("zones.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    ward_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("wards.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    polyline_coordinates: Mapped[list[list[float]]] = mapped_column(JSONB, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=text("CURRENT_TIMESTAMP"),
@@ -367,25 +377,23 @@ class RouteORM(Base):
     )
 
     vehicles: Mapped[list["VehicleORM"]] = relationship(back_populates="route")
+    zone: Mapped["ZoneORM"] = relationship("ZoneORM")
+    ward: Mapped["WardORM"] = relationship("WardORM")
 
-    @validates("route_code")
-    def validate_route_code(self, _: str, value: str) -> str:
-        normalized = value.strip().upper()
-        if not _ROUTE_CODE_RE.fullmatch(normalized):
-            raise ValueError("route_code must match ^[A-Z0-9_-]{2,24}$")
+    @validates("polyline_coordinates")
+    def validate_polyline_coordinates(self, _: str, value: list[list[float]]) -> list[list[float]]:
+        if not isinstance(value, list) or len(value) < 2:
+            raise ValueError("polyline_coordinates must include at least 2 points")
+        normalized: list[list[float]] = []
+        for point in value:
+            if not isinstance(point, list) or len(point) != 2:
+                raise ValueError("polyline point must be [lng, lat]")
+            lng = float(point[0])
+            lat = float(point[1])
+            if lng < -180 or lng > 180 or lat < -90 or lat > 90:
+                raise ValueError("polyline point coordinates out of range")
+            normalized.append([lng, lat])
         return normalized
-
-    @validates("expected_distance_km")
-    def validate_expected_distance(self, _: str, value: float) -> float:
-        if value < 0:
-            raise ValueError("expected_distance_km must be non-negative")
-        return value
-
-    @validates("expected_duration_min")
-    def validate_expected_duration(self, _: str, value: int) -> int:
-        if value < 0:
-            raise ValueError("expected_duration_min must be non-negative")
-        return value
 
 
 class GeofenceORM(Base):
@@ -399,7 +407,19 @@ class GeofenceORM(Base):
             "geometry_type IN ('circle','polygon')",
             name="ck_geofences_geometry_type",
         ),
+        CheckConstraint(
+            "geofence_for IN ('zone','ward','route')",
+            name="ck_geofences_geofence_for",
+        ),
+        CheckConstraint(
+            "scope_type IN ('ward','zone')",
+            name="ck_geofences_scope_type",
+        ),
+        Index("ix_geofences_zone_id", "zone_id"),
         Index("ix_geofences_ward_id", "ward_id"),
+        Index("ix_geofences_route_id", "route_id"),
+        Index("ix_geofences_scope", "scope_type", "scope_id"),
+        Index("ix_geofences_for_hierarchy", "geofence_for", "zone_id", "ward_id", "route_id"),
         Index("ix_geofences_active", "active"),
     )
 
@@ -417,6 +437,19 @@ class GeofenceORM(Base):
     center_lng: Mapped[float | None] = mapped_column(Float, nullable=True)
     radius_meter: Mapped[float | None] = mapped_column(Float, nullable=True)
     polygon: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    geofence_for: Mapped[str] = mapped_column(String(16), nullable=False, default="ward", server_default=text("'ward'"))
+    zone_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("zones.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    route_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("routes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    scope_type: Mapped[str] = mapped_column(String(16), nullable=False, default="ward", server_default=text("'ward'"))
+    scope_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     ward_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("wards.id", ondelete="SET NULL"),
@@ -445,6 +478,13 @@ class GeofenceORM(Base):
         normalized = value.strip().lower()
         if normalized not in _GEOMETRY_TYPES:
             raise ValueError("geometry_type must be one of: circle, polygon")
+        return normalized
+
+    @validates("geofence_for")
+    def validate_geofence_for(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in _GEOFENCE_FOR_TYPES:
+            raise ValueError("geofence_for must be one of: zone, ward, route")
         return normalized
 
     @validates("center_lat")
@@ -505,7 +545,7 @@ class VehicleORM(Base):
             "manufacture_year >= 1950 AND manufacture_year <= 2100",
             name="ck_vehicles_manufacture_year_range",
         ),
-        Index("ix_vehicles_contractor_id", "contractor_id"),
+        Index("ix_vehicles_vendor_id", "vendor_id"),
         Index("ix_vehicles_ward_id", "ward_id"),
         Index("ix_vehicles_route_id", "route_id"),
         Index("ix_vehicles_active", "active"),
@@ -522,9 +562,9 @@ class VehicleORM(Base):
     truck_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     capacity_kg: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     capacity_cubic_meter: Mapped[float] = mapped_column(Float, nullable=False, default=0)
-    contractor_id: Mapped[uuid.UUID] = mapped_column(
+    vendor_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("contractors.id", ondelete="RESTRICT"),
+        ForeignKey("vendors.id", ondelete="RESTRICT"),
         nullable=False,
     )
     ward_id: Mapped[uuid.UUID] = mapped_column(
@@ -556,7 +596,7 @@ class VehicleORM(Base):
         nullable=False,
     )
 
-    contractor: Mapped[ContractorORM] = relationship(back_populates="vehicles")
+    vendor: Mapped[VendorORM] = relationship()
     ward: Mapped[WardORM] = relationship(back_populates="vehicles")
     route: Mapped[RouteORM | None] = relationship(back_populates="vehicles")
     assignments: Mapped[list["DeviceVehicleAssignmentORM"]] = relationship(
@@ -678,6 +718,257 @@ class DeviceVehicleAssignmentORM(Base):
         self.active = False
         if remarks is not None:
             self.remarks = remarks
+
+
+class DriverORM(Base):
+    __tablename__ = "drivers"
+    __table_args__ = (
+        Index("ix_drivers_name", "name"),
+        Index("ix_drivers_vendor_id", "vendor_id"),
+        Index("ix_drivers_active", "active"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    license_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    license_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
+    vendor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    assigned_vehicle_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class GtcCheckpointORM(Base):
+    __tablename__ = "gtc_checkpoints"
+    __table_args__ = (
+        Index("ix_gtc_checkpoints_truck_arrived", "truck_id", "arrived_at"),
+        Index("ix_gtc_checkpoints_arrived_at", "arrived_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    truck_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    arrived_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    is_dry: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    is_wet: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    is_metal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    is_plastic: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    is_sanitary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    truck_cleanliness_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gtc_cleanliness_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    remarks: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class PickupPointORM(Base):
+    __tablename__ = "pickup_points"
+    __table_args__ = (
+        Index("ix_pickup_points_zone_id", "zone_id"),
+        Index("ix_pickup_points_route_id", "route_id"),
+        Index("ix_pickup_points_ward_id", "ward_id"),
+        Index("ix_pickup_points_route_sequence", "route_id", "sequence_no"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    pickup_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    zone_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("zones.id", ondelete="RESTRICT"), nullable=True)
+    ward_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("wards.id", ondelete="RESTRICT"), nullable=True)
+    route_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("routes.id", ondelete="CASCADE"), nullable=True)
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default=text("1"))
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lng: Mapped[float | None] = mapped_column(Float, nullable=True)
+    expected_pickup_time: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    pickup_radius_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class PickupPointCrossingORM(Base):
+    __tablename__ = "pickup_point_crossings"
+    __table_args__ = (
+        Index("ix_pickup_point_crossings_crossed_at", "crossed_at"),
+        Index("ix_pickup_point_crossings_vehicle_crossed", "vehicle_id", "crossed_at"),
+        Index("ix_pickup_point_crossings_route_crossed", "route_id", "crossed_at"),
+        Index("ix_pickup_point_crossings_pickup_crossed", "pickup_point_id", "crossed_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    vehicle_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    route_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("routes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    pickup_point_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("pickup_points.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    crossed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    lng: Mapped[float] = mapped_column(Float, nullable=False)
+    distance_m: Mapped[float] = mapped_column(Float, nullable=False)
+    radius_m: Mapped[float] = mapped_column(Float, nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="telemetry")
+    imei: Mapped[str | None] = mapped_column(String(17), nullable=True)
+    vendor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class TicketORM(Base):
+    __tablename__ = "tickets"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('open','in_progress','pending','resolved','closed')",
+            name="ck_tickets_status",
+        ),
+        CheckConstraint(
+            "priority IN ('low','medium','high','critical')",
+            name="ck_tickets_priority",
+        ),
+        CheckConstraint(
+            "category IN ('complaint','maintenance','driver_issue','vehicle_issue','route_issue','pickup_issue','other')",
+            name="ck_tickets_category",
+        ),
+        CheckConstraint("escalation_level >= 0", name="ck_tickets_escalation_non_negative"),
+        Index("ix_tickets_status", "status"),
+        Index("ix_tickets_priority", "priority"),
+        Index("ix_tickets_category", "category"),
+        Index("ix_tickets_created_at", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    category: Mapped[str] = mapped_column(String(32), nullable=False, default="complaint")
+    priority: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    assigned_to: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    related_alert_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    related_truck_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    related_driver_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    escalation_level: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    sla_breached: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    comments: Mapped[list["TicketCommentORM"]] = relationship(
+        back_populates="ticket",
+        cascade="all, delete-orphan",
+    )
+
+    @validates("status")
+    def validate_ticket_status(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in _TICKET_STATUSES:
+            raise ValueError("status must be one of: open, in_progress, pending, resolved, closed")
+        return normalized
+
+    @validates("priority")
+    def validate_ticket_priority(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in _TICKET_PRIORITIES:
+            raise ValueError("priority must be one of: low, medium, high, critical")
+        return normalized
+
+    @validates("category")
+    def validate_ticket_category(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in _TICKET_CATEGORIES:
+            raise ValueError(
+                "category must be one of: complaint, maintenance, driver_issue, vehicle_issue, route_issue, pickup_issue, other"
+            )
+        return normalized
+
+
+class TicketCommentORM(Base):
+    __tablename__ = "ticket_comments"
+    __table_args__ = (
+        Index("ix_ticket_comments_ticket_id", "ticket_id"),
+        Index("ix_ticket_comments_created_at", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    ticket_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tickets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    author: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    content: Mapped[str] = mapped_column(String(4000), nullable=False)
+    is_internal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    ticket: Mapped[TicketORM] = relationship(back_populates="comments")
 
 
 class AnalyticsVehicleStateORM(Base):
@@ -941,7 +1232,7 @@ class AlertORM(Base):
 
     vehicle_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     imei: Mapped[str | None] = mapped_column(String(17), nullable=True)
-    contractor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    vendor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     route_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     ward_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
@@ -1278,4 +1569,3 @@ class AuthRefreshTokenORM(Base):
     )
 
     user: Mapped[AuthUserORM] = relationship(back_populates="refresh_tokens")
-

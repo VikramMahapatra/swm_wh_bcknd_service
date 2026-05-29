@@ -1,3 +1,9 @@
+// Local imports for dashboard summary
+import { zones as mockZones, wards as mockWards } from './zones';
+import { vendors as mockVendors } from './vendors';
+import { drivers as mockDrivers } from './drivers';
+import { trucksMaster as mockTrucks, trucksLive as trucks } from './trucks';
+import { routes as mockRoutes, pickupPoints as mockPickupPoints, gtpLocations } from './routes';
 // Unified Data Exports - All mock data with proper relationships
 // This file serves as the central export point for all mock data
 
@@ -14,7 +20,7 @@ export { drivers, getDriverById, getDriverByTruckId, getActiveDrivers } from './
 export type { Driver } from './drivers';
 
 // Truck data (master and live)
-export { 
+export {
   trucksMaster, 
   trucksLive, 
   getTruckMasterById, 
@@ -25,43 +31,9 @@ export {
   getActiveTrucks, 
   getSpareTrucks 
 } from './trucks';
-export type { 
-  TruckMaster, 
-  TruckLive, 
-  TruckType, 
-  RouteType, 
-  TruckStatus, 
-  TruckMasterStatus, 
-  DeviceStatus, 
-  GPSDevice 
-} from './trucks';
+// Data summary for dashboard
 
-// Routes, Pickup Points, GTPs, Dumping Sites
-export { 
-  routes, 
-  pickupPoints, 
-  gtpLocations, 
-  finalDumpingSites,
-  getRoutesByZone,
-  getRoutesByWard,
-  getRouteById,
-  getPickupPointsByRoute,
-  getPickupPointsByWard,
-  getGTPByZone,
-  GOOGLE_MAPS_API_KEY,
-  KHARADI_CENTER
-} from './routes';
-export type { Route, RoutePoint, PickupPoint, GTPLocation, FinalDumpingSite } from './routes';
-
-// Tickets and Escalation
-export { 
-  tickets, 
-  escalationConfig, 
-  slaConfig,
-  getTicketsByTruck,
-  getTicketsByDriver,
-  getOpenTickets
-} from './tickets';
+// Data summary for dashboard (must be after all mock* exports)
 export type { 
   Ticket, 
   TicketComment, 
@@ -84,6 +56,7 @@ export {
 } from './alerts';
 export type { Alert, AlertSeverity, AlertType } from './alerts';
 
+
 // Legacy exports for backward compatibility
 // These map the old names to new data structures
 export { zones as mockZones } from './zones';
@@ -97,56 +70,51 @@ export { tickets as mockTickets } from './tickets';
 export { escalationConfig as defaultEscalationConfig } from './tickets';
 export { slaConfig as defaultSLAConfig } from './tickets';
 export { trucksLive as trucks } from './trucks';
+export { gtpLocations } from './routes';
+
 
 // Data summary for dashboard
 export const getDataSummary = () => {
-  const { zones } = require('./zones');
-  const { wards } = require('./zones');
-  const { vendors } = require('./vendors');
-  const { drivers } = require('./drivers');
-  const { trucksMaster, trucksLive } = require('./trucks');
-  const { routes, pickupPoints, gtpLocations } = require('./routes');
-  
   return {
     zones: {
-      total: zones.length,
-      active: zones.filter((z: any) => z.status === 'active').length
+      total: mockZones.length,
+      active: mockZones.filter((z: any) => z.status === 'active').length
     },
     wards: {
-      total: wards.length,
-      active: wards.filter((w: any) => w.status === 'active').length
+      total: mockWards.length,
+      active: mockWards.filter((w: any) => w.status === 'active').length
     },
     vendors: {
-      total: vendors.length,
-      active: vendors.filter((v: any) => v.status === 'active').length
+      total: mockVendors.length,
+      active: mockVendors.filter((v: any) => v.status === 'active').length
     },
     drivers: {
-      total: drivers.length,
-      active: drivers.filter((d: any) => d.status === 'active').length,
-      onLeave: drivers.filter((d: any) => d.status === 'on_leave').length
+      total: mockDrivers.length,
+      active: mockDrivers.filter((d: any) => d.status === 'active').length,
+      onLeave: mockDrivers.filter((d: any) => d.status === 'on_leave').length
     },
     trucks: {
-      total: trucksMaster.length,
-      active: trucksMaster.filter((t: any) => t.status === 'active' && !t.isSpare).length,
-      maintenance: trucksMaster.filter((t: any) => t.status === 'maintenance').length,
-      spare: trucksMaster.filter((t: any) => t.isSpare).length
+      total: mockTrucks.length,
+      active: mockTrucks.filter((t: any) => t.status === 'active' && !t.isSpare).length,
+      maintenance: mockTrucks.filter((t: any) => t.status === 'maintenance').length,
+      spare: mockTrucks.filter((t: any) => t.isSpare).length
     },
     trucksLive: {
-      total: trucksLive.length,
-      moving: trucksLive.filter((t: any) => t.status === 'moving').length,
-      idle: trucksLive.filter((t: any) => t.status === 'idle').length,
-      dumping: trucksLive.filter((t: any) => t.status === 'dumping').length,
-      offline: trucksLive.filter((t: any) => t.status === 'offline').length
+      total: trucks.length,
+      moving: trucks.filter((t: any) => t.status === 'moving').length,
+      idle: trucks.filter((t: any) => t.status === 'idle').length,
+      dumping: trucks.filter((t: any) => t.status === 'dumping').length,
+      offline: trucks.filter((t: any) => t.status === 'offline').length
     },
     routes: {
-      total: routes.length,
-      active: routes.filter((r: any) => r.status === 'active').length,
-      primary: routes.filter((r: any) => r.type === 'primary').length,
-      secondary: routes.filter((r: any) => r.type === 'secondary').length
+      total: mockRoutes.length,
+      active: mockRoutes.filter((r: any) => r.status === 'active').length,
+      primary: mockRoutes.filter((r: any) => r.type === 'primary').length,
+      secondary: mockRoutes.filter((r: any) => r.type === 'secondary').length
     },
     pickupPoints: {
-      total: pickupPoints.length,
-      active: pickupPoints.filter((p: any) => p.status === 'active').length
+      total: mockPickupPoints.length,
+      active: mockPickupPoints.filter((p: any) => p.status === 'active').length
     },
     gtpLocations: gtpLocations.length
   };

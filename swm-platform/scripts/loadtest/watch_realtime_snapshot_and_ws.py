@@ -94,12 +94,16 @@ def normalize_payload(payload: Any) -> list[Any]:
     return [payload]
 
 
-async def fetch_snapshot(admin_api_url: str, output_path: Path) -> None:
+async def fetch_snapshot(admin_api_url: str, output_path: Path, access_token: str | None = None) -> None:
     url = f"{admin_api_url.rstrip('/')}/v1/realtime/trucks"
     write_log_line(output_path, f"Fetching snapshot from {url}")
 
+    headers = {"x-role": "viewer"}
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+
     async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.get(url, headers={"x-role": "viewer"})
+        response = await client.get(url, headers=headers)
         response.raise_for_status()
         payload = response.json()
 
@@ -114,14 +118,23 @@ async def fetch_snapshot(admin_api_url: str, output_path: Path) -> None:
             write_log_line(output_path, f"SNAPSHOT raw={item}")
 
 
-async def watch_websocket(websocket_url: str, output_path: Path, duration_minutes: int) -> None:
+async def watch_websocket(
+    websocket_url: str,
+    output_path: Path,
+    duration_minutes: int,
+    access_token: str | None = None,
+) -> None:
     deadline = None
     if duration_minutes > 0:
         deadline = asyncio.get_running_loop().time() + (duration_minutes * 60)
 
     write_log_line(output_path, f"Connecting websocket to {websocket_url}")
 
-    async with connect(websocket_url) as websocket:
+    connect_kwargs: dict[str, Any] = {}
+    if access_token:
+        connect_kwargs["additional_headers"] = {"Authorization": f"Bearer {access_token}"}
+
+    async with connect(websocket_url, **connect_kwargs) as websocket:
         write_log_line(output_path, "WebSocket connected")
 
         while True:
@@ -177,6 +190,7 @@ async def main() -> None:
     parser.add_argument("--websocket-url", default="ws://127.0.0.1:9002/ws/realtime")
     parser.add_argument("--output-path", default="./realtime-watch.log")
     parser.add_argument("--duration-minutes", type=int, default=0)
+    parser.add_argument("--access-token", default=None, help="JWT access token for admin/websocket auth")
     args = parser.parse_args()
 
     output_path = Path(args.output_path)
@@ -185,8 +199,8 @@ async def main() -> None:
         output_path.unlink()
 
     write_log_line(output_path, "Starting realtime watcher")
-    await fetch_snapshot(args.admin_api_url, output_path)
-    await watch_websocket(args.websocket_url, output_path, args.duration_minutes)
+    await fetch_snapshot(args.admin_api_url, output_path, args.access_token)
+    await watch_websocket(args.websocket_url, output_path, args.duration_minutes, args.access_token)
     write_log_line(output_path, "Watcher finished")
 
 

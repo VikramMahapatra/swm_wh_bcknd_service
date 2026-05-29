@@ -9,7 +9,6 @@ from swm_db.base_model import (
     UUIDPrimaryKeyMixin,
     VersionMixin,
 )
-from swm_db.contractor_repository import ContractorRepository
 from swm_db.device_vehicle_assignment_repository import DeviceVehicleAssignmentRepository
 from swm_db.device_vehicle_assignment_service import AssignmentCreateInput, DeviceVehicleAssignmentService
 from swm_db.device_repository import DeviceRepository
@@ -32,13 +31,19 @@ from swm_db.models import (
     AnalyticsTripRecordORM,
     AnalyticsVehicleStateORM,
     AuditLogORM,
-    ContractorORM,
+    DriverORM,
     DeviceEventORM,
     DeviceORM,
     DeviceVehicleAssignmentORM,
+    GtcCheckpointORM,
     GeofenceORM,
     OperationalCategoryORM,
     RouteORM,
+    PickupPointORM,
+    PickupPointCrossingORM,
+    ZoneORM,
+    TicketCommentORM,
+    TicketORM,
     SystemConfigurationORM,
     VehicleORM,
     VendorORM,
@@ -76,14 +81,19 @@ __all__ = [
     "OperationalCategoryORM",
     "AuditLogORM",
     "DeviceEventORM",
+    "DriverORM",
     "DeviceORM",
     "DeviceVehicleAssignmentORM",
+    "GtcCheckpointORM",
     "VehicleORM",
-    "ContractorORM",
+    "ZoneORM",
     "WardORM",
     "RouteORM",
+    "PickupPointORM",
+    "PickupPointCrossingORM",
+    "TicketORM",
+    "TicketCommentORM",
     "GeofenceORM",
-    "ContractorRepository",
     "WardRepository",
     "RouteRepository",
     "GeofenceRepository",
@@ -121,4 +131,3 @@ __all__ = [
     "override_session_manager",
     "session_manager",
 ]
-

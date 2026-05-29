@@ -89,7 +89,7 @@ export function SpareVehicleManagement() {
       const normalizedWards = flattened.map((ward: any) => ({
         ...ward,
         zoneId: ward.zoneId ?? ward.zone_id,
-        totalPickupPoints: ward.totalPickupPoints ?? ward.total_pickup_points,
+        totalPickupPoints: ward.totalPickupPoints ?? ward.total_pickup_points ?? 0,
       }));
       const uniqueById = Array.from(
         new Map(normalizedWards.map((ward: any) => [ward.id, ward])).values()

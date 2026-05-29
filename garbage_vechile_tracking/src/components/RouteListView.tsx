@@ -142,14 +142,14 @@ export default function RouteListView({
                       >
                         {route.type}
                       </Badge>
-                      <span className="text-xs text-muted-foreground">{route.totalPickupPoints || route.total_pickup_points || 0} points</span>
+                      <span className="text-xs text-muted-foreground">{route.totalPickupPoints || 0} points</span>
                     </div>
                     <div className="flex items-center gap-4 text-xs text-muted-foreground">
                       <span className="flex items-center gap-1">
-                        <Route className="h-3 w-3" /> {route.distance || `${route.estimated_distance || route.estimatedDistance || 0} km`}
+                        <Route className="h-3 w-3" /> {route.distance || `${route.estimatedDistance || 0} km`}
                       </span>
                       <span className="flex items-center gap-1">
-                        <Clock className="h-3 w-3" /> {route.estimated_time || route.estimatedTime || 0} min
+                        <Clock className="h-3 w-3" /> {route.estimatedTime || 0} min
                       </span>
                     </div>
                     {truck && (
@@ -204,15 +204,15 @@ export default function RouteListView({
             <CardContent>
               <div className="grid md:grid-cols-3 gap-4 mb-6">
                 <div className="text-center p-4 bg-muted/50 rounded-lg">
-                  <p className="text-2xl font-bold text-primary">{selectedRoute.distance || `${selectedRoute.estimated_distance || selectedRoute.estimatedDistance || 0} km`}</p>
+                  <p className="text-2xl font-bold text-primary">{selectedRoute.distance || `${selectedRoute.estimatedDistance || 0} km`}</p>
                   <p className="text-sm text-muted-foreground">Total Distance</p>
                 </div>
                 <div className="text-center p-4 bg-muted/50 rounded-lg">
-                  <p className="text-2xl font-bold text-primary">{selectedRoute.estimated_time || selectedRoute.estimatedTime || 0} min</p>
+                  <p className="text-2xl font-bold text-primary">{selectedRoute.estimatedTime || 0} min</p>
                   <p className="text-sm text-muted-foreground">Estimated Time</p>
                 </div>
                 <div className="text-center p-4 bg-muted/50 rounded-lg">
-                  <p className="text-2xl font-bold text-primary">{selectedRoute.totalPickupPoints || selectedRoute.total_pickup_points || 0}</p>
+                  <p className="text-2xl font-bold text-primary">{selectedRoute.totalPickupPoints || 0}</p>
                   <p className="text-sm text-muted-foreground">Total Points</p>
                 </div>
               </div>

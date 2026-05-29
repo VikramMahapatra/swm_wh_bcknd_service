@@ -11,6 +11,7 @@ from swm_db import (
     AnalyticsOverspeedEventORM,
     AnalyticsTripRecordORM,
     AnalyticsVehicleStateORM,
+    PickupPointCrossingORM,
     get_db_session,
 )
 
@@ -590,4 +591,34 @@ async def idle_summary(
     rows = _rows_from_result(await session.execute(stmt))
     if export == "csv":
         return _csv_response(rows, "idle-summary.csv")
+    return {"items": rows, "total": len(rows)}
+
+
+@router.get("/analytics/pickup-point-crossings")
+async def list_pickup_point_crossings(
+    from_ts: datetime | None = Query(default=None),
+    to_ts: datetime | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    route_id: str | None = Query(default=None),
+    pickup_point_id: str | None = Query(default=None),
+    limit: int = Query(default=500, ge=1, le=5000),
+    export: str = Query(default="json", pattern="^(json|csv)$"),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> Any:
+    stmt = select(PickupPointCrossingORM).order_by(PickupPointCrossingORM.crossed_at.desc()).limit(limit)
+    if from_ts is not None:
+        stmt = stmt.where(PickupPointCrossingORM.crossed_at >= from_ts)
+    if to_ts is not None:
+        stmt = stmt.where(PickupPointCrossingORM.crossed_at <= to_ts)
+    if vehicle_id:
+        stmt = stmt.where(PickupPointCrossingORM.vehicle_id == vehicle_id)
+    if route_id:
+        stmt = stmt.where(cast(PickupPointCrossingORM.route_id, String) == route_id)
+    if pickup_point_id:
+        stmt = stmt.where(cast(PickupPointCrossingORM.pickup_point_id, String) == pickup_point_id)
+
+    rows = [_to_dict(row) for row in (await session.execute(stmt)).scalars().all()]
+    if export == "csv":
+        return _csv_response(rows, "pickup-point-crossings.csv")
     return {"items": rows, "total": len(rows)}

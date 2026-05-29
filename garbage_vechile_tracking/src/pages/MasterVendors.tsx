@@ -8,14 +8,19 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
-import { useVendors } from '@/hooks/useDataQueries';
+import { useVendors, useVehicles } from '@/hooks/useDataQueries';
+import { apiService } from '@/services/api';
+import { useQueryClient } from '@tanstack/react-query';
+import { useMemo } from 'react';
 import { Vendor } from '@/data/masterData';
 import { Plus, Search, Edit, Trash2, Phone, Mail, Building2, Download, Truck, Loader2 } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
 
 export default function MasterVendors() {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const { data: vendorsData = [], isLoading: isLoadingVendors } = useVendors();
+  const { data: vehiclesData = [] } = useVehicles();
   
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -64,6 +69,16 @@ export default function MasterVendors() {
     return matchesSearch && matchesStatus;
   });
 
+  const vendorTruckCount = useMemo(() => {
+    const map = new Map<string, number>();
+    (vehiclesData as any[]).forEach((vehicle) => {
+      const vendorId = String(vehicle.vendor_id || vehicle.vendorId || '').trim();
+      if (!vendorId) return;
+      map.set(vendorId, (map.get(vendorId) || 0) + 1);
+    });
+    return map;
+  }, [vehiclesData]);
+
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'active': return <Badge className="bg-success/20 text-success border-success/30">Active</Badge>;
@@ -73,25 +88,99 @@ export default function MasterVendors() {
     }
   };
 
-  const handleSubmit = () => {
-    if (editingVendor) {
-      setVendors(prev => prev.map(v => v.id === editingVendor.id ? { ...v, ...formData } as Vendor : v));
-      toast({ title: "Vendor Updated", description: "Vendor information has been updated." });
-    } else {
-      const newVendor: Vendor = {
-        ...formData as Vendor,
-        id: `VND${String(vendors.length + 1).padStart(3, '0')}`,
-        trucksOwned: []
-      };
-      setVendors(prev => [...prev, newVendor]);
-      toast({ title: "Vendor Added", description: "New vendor has been added successfully." });
-    }
-    resetForm();
+  const buildVendorCode = (seed?: string) => {
+    const normalized = (seed || 'VENDOR')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+    const base = normalized.length >= 3 ? normalized.slice(0, 24) : `VND_${normalized}`;
+    return base.length >= 3 ? base : 'VND_VENDOR';
   };
 
-  const handleDelete = (id: string) => {
-    setVendors(prev => prev.filter(v => v.id !== id));
-    toast({ title: "Vendor Deleted", description: "Vendor has been removed from the system." });
+  const handleSubmit = async () => {
+    try {
+      const vendorName = (formData.companyName || formData.name || '').trim();
+      if (!vendorName) {
+        toast({ title: "Company name is required", description: "Please provide vendor company name.", variant: "destructive" });
+        return;
+      }
+
+      if (editingVendor) {
+        const existing = await apiService.getVendor(editingVendor.id);
+        const updated = await apiService.updateVendor(editingVendor.id, {
+          vendor_code: existing?.vendor_code || buildVendorCode(vendorName),
+          vendor_name: vendorName,
+          contact_person: formData.name || null,
+          phone: formData.phone || null,
+          email: formData.email || null,
+          active: formData.status !== 'inactive' && formData.status !== 'suspended',
+          auth_type: existing?.auth_type || 'header',
+          allowed_ips: Array.isArray(existing?.allowed_ips) ? existing.allowed_ips : [],
+          callback_format: existing?.callback_format || {},
+          metadata: existing?.metadata_json || existing?.metadata || {},
+          webhook_secret: existing?.webhook_secret || null,
+          signature_key: existing?.signature_key || null,
+        });
+
+        setVendors(prev => prev.map(v => v.id === editingVendor.id ? {
+          ...v,
+          ...formData,
+          id: String(updated?.id || editingVendor.id),
+          companyName: updated?.vendor_name || vendorName,
+          name: updated?.contact_person || formData.name || '',
+          status: updated?.active === false ? 'inactive' : 'active',
+        } as Vendor : v));
+        toast({ title: "Vendor Updated", description: "Vendor information has been updated." });
+      } else {
+        const created = await apiService.createVendor({
+          vendor_code: buildVendorCode(vendorName),
+          vendor_name: vendorName,
+          contact_person: formData.name || null,
+          phone: formData.phone || null,
+          email: formData.email || null,
+          active: formData.status !== 'inactive' && formData.status !== 'suspended',
+          auth_type: 'header',
+          allowed_ips: [],
+          callback_format: {},
+          metadata: {},
+        });
+
+        const newVendor: Vendor = {
+          ...formData as Vendor,
+          id: String(created?.id || ''),
+          companyName: created?.vendor_name || vendorName,
+          name: created?.contact_person || formData.name || '',
+          status: created?.active === false ? 'inactive' : 'active',
+          trucksOwned: []
+        };
+        setVendors(prev => [...prev, newVendor]);
+        toast({ title: "Vendor Added", description: "New vendor has been added successfully." });
+      }
+
+      await queryClient.invalidateQueries({ queryKey: ['vendors'] });
+      resetForm();
+    } catch (error) {
+      toast({
+        title: "Unable to save vendor",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await apiService.deleteVendor(id);
+      setVendors(prev => prev.filter(v => v.id !== id));
+      await queryClient.invalidateQueries({ queryKey: ['vendors'] });
+      toast({ title: "Vendor Deleted", description: "Vendor has been removed from the system." });
+    } catch (error) {
+      toast({
+        title: "Unable to delete vendor",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
   };
 
   const resetForm = () => {
@@ -108,7 +197,7 @@ export default function MasterVendors() {
 
   const exportToCSV = () => {
     const headers = ['ID', 'Name', 'Company', 'Phone', 'Email', 'GST Number', 'Contract Start', 'Contract End', 'Status', 'Trucks Owned'];
-    const rows = filteredVendors.map(v => [v.id, v.name || '', v.companyName || v.name || '', v.phone || '', v.email || '', v.gstNumber || '', v.contractStart || '', v.contractEnd || '', v.status || '', v.trucksOwned?.length || 0]);
+    const rows = filteredVendors.map(v => [v.id, v.name || '', v.companyName || v.name || '', v.phone || '', v.email || '', v.gstNumber || '', v.contractStart || '', v.contractEnd || '', v.status || '', vendorTruckCount.get(String(v.id)) || 0]);
     const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -117,6 +206,16 @@ export default function MasterVendors() {
     a.download = 'vendors.csv';
     a.click();
   };
+
+  const expiringSoonCount = vendors.filter((v) => {
+    if (!v.contractEnd) return false;
+    const endDate = new Date(v.contractEnd);
+    if (Number.isNaN(endDate.getTime())) return false;
+    const now = new Date();
+    const diffMs = endDate.getTime() - now.getTime();
+    const diffDays = diffMs / (1000 * 60 * 60 * 24);
+    return diffDays >= 0 && diffDays <= 30;
+  }).length;
 
   return (
     <div className="container mx-auto px-4 py-6 space-y-6">
@@ -235,7 +334,7 @@ export default function MasterVendors() {
             <CardTitle className="text-sm font-medium text-warning">Expiring Soon</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-warning">1</div>
+            <div className="text-2xl font-bold text-warning">{expiringSoonCount}</div>
           </CardContent>
         </Card>
         <Card className="bg-primary/10 border-primary/30">
@@ -243,7 +342,7 @@ export default function MasterVendors() {
             <CardTitle className="text-sm font-medium text-primary">Total Trucks</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-primary">{vendors.reduce((acc, v) => acc + (v.trucksOwned?.length || 0), 0)}</div>
+            <div className="text-2xl font-bold text-primary">{vendors.reduce((acc, v) => acc + (vendorTruckCount.get(String(v.id)) || 0), 0)}</div>
           </CardContent>
         </Card>
       </div>
@@ -310,7 +409,7 @@ export default function MasterVendors() {
                   <TableCell>
                     <div className="flex items-center gap-1">
                       <Truck className="h-4 w-4 text-muted-foreground" />
-                      <span className="font-medium">{vendor.trucksOwned?.length || 0}</span>
+                      <span className="font-medium">{vendorTruckCount.get(String(vendor.id)) || 0}</span>
                     </div>
                   </TableCell>
                   <TableCell>{getStatusBadge(vendor.status)}</TableCell>

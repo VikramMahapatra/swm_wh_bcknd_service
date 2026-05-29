@@ -26,18 +26,8 @@ class RouteRepository:
         result = await self._session.execute(select(RouteORM).where(RouteORM.id == route_id))
         return result.scalar_one_or_none()
 
-    async def get_by_code(self, route_code: str) -> RouteORM | None:
-        result = await self._session.execute(
-            select(RouteORM).where(RouteORM.route_code == route_code.strip().upper())
-        )
-        return result.scalar_one_or_none()
-
     async def list(self, *, active_only: bool | None = None) -> list[RouteORM]:
         stmt = select(RouteORM)
-        if active_only is True:
-            stmt = stmt.where(RouteORM.active.is_(True))
-        elif active_only is False:
-            stmt = stmt.where(RouteORM.active.is_(False))
         stmt = stmt.order_by(RouteORM.route_name)
         result = await self._session.execute(stmt)
         return list(result.scalars().all())

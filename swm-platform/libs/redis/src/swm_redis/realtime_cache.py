@@ -87,7 +87,7 @@ class TruckTrip:
     trip_id: str
     started_at: datetime
     route_id: str | None = None
-    contractor_id: str | None = None
+    vendor_id: str | None = None
     ward_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -220,7 +220,7 @@ class RealtimeCacheService:
             trip_id=payload["trip_id"],
             started_at=self._dt(payload["started_at"]),
             route_id=payload.get("route_id"),
-            contractor_id=payload.get("contractor_id"),
+            vendor_id=payload.get("vendor_id") or payload.get("contractor_id"),
             ward_id=payload.get("ward_id"),
             metadata=dict(payload.get("metadata") or {}),
         )

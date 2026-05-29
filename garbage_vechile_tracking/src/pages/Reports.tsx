@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { Fragment, useState, useEffect, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -45,7 +45,9 @@ import {
   ArrowRightLeft,
   Wrench,
   Mail,
-  Send
+  Send,
+  CheckCircle2,
+  ChevronRight
 } from "lucide-react";
 import {
   Dialog,
@@ -56,9 +58,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { useTrucks, useDrivers, useReportsData } from "@/hooks/useDataQueries";
+import { useTrucks, useDrivers, useReportsData, useZones, useWards, useVehicles } from "@/hooks/useDataQueries";
 import { differenceInDays, parseISO, format } from "date-fns";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from "recharts";
+import { Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 
 // Reports data is loaded from the backend.
 
@@ -86,7 +88,9 @@ export default function Reports() {
   // API Hooks
   const { data: trucksData = [] } = useTrucks();
   const { data: driversData = [] } = useDrivers();
-  const { data: reportsData = {}, isLoading: isLoadingReports } = useReportsData();
+  const { data: zonesData = [] } = useZones();
+  const { data: wardsData = [] } = useWards();
+  const { data: vehiclesData = [] } = useVehicles();
   
   // State for API data
   const [trucks, setTrucks] = useState<any[]>([]);
@@ -108,20 +112,58 @@ export default function Reports() {
   const [selectedZone, setSelectedZone] = useState("all");
   const [selectedWard, setSelectedWard] = useState("all");
   const [selectedTruck, setSelectedTruck] = useState("all");
+  const [appliedFilters, setAppliedFilters] = useState({
+    dateFrom: today,
+    dateTo: today,
+    selectedZone: "all",
+    selectedWard: "all",
+    selectedTruck: "all",
+  });
+  const wardOptions = useMemo(() => {
+    if (selectedZone === "all") return wardsData;
+    return wardsData.filter((ward: any) => String(ward.zoneId ?? ward.zone_id ?? "") === selectedZone);
+  }, [selectedZone, wardsData]);
+  const truckOptions = useMemo(() => {
+    const zoneByWardId = new Map(
+      wardsData.map((ward: any) => [String(ward.id), String(ward.zoneId ?? ward.zone_id ?? "")])
+    );
+    return vehiclesData.filter((truck: any) => {
+      const wardId = String(truck.ward_id ?? truck.wardId ?? "");
+      const zoneId = String(truck.zone_id ?? truck.zoneId ?? zoneByWardId.get(wardId) ?? "");
+      if (selectedZone !== "all" && zoneId !== selectedZone) return false;
+      if (selectedWard !== "all" && wardId !== selectedWard) return false;
+      return true;
+    });
+  }, [selectedZone, selectedWard, vehiclesData, wardsData]);
+  const { data: reportsData = {}, isLoading: isLoadingReports } = useReportsData({
+    date_from: appliedFilters.dateFrom,
+    date_to: appliedFilters.dateTo,
+    zone_id: appliedFilters.selectedZone === "all" ? undefined : appliedFilters.selectedZone,
+    ward_id: appliedFilters.selectedWard === "all" ? undefined : appliedFilters.selectedWard,
+    vehicle_id: appliedFilters.selectedTruck === "all" ? undefined : appliedFilters.selectedTruck,
+  });
 
   const dailyPickupCoverageData: any[] = (reportsData as any).daily_pickup_coverage || [];
   const routePerformanceData: any[] = (reportsData as any).route_performance || [];
   const truckUtilizationData: any[] = (reportsData as any).truck_utilization || [];
+  const tripCompletedData: any[] = (reportsData as any).trip_completed || [];
   const fuelConsumptionData: any[] = (reportsData as any).fuel_consumption || [];
   const driverAttendanceData: any[] = (reportsData as any).driver_attendance || [];
   const complaintsData: any[] = (reportsData as any).complaints || [];
   const dumpYardData: any[] = (reportsData as any).dump_yard || [];
-  const weeklyTrendData: any[] = (reportsData as any).weekly_trend || [];
   const zoneWiseData: any[] = (reportsData as any).zone_wise || [];
   const lateArrivalData: any[] = (reportsData as any).late_arrival || [];
   const driverBehaviorData: any[] = (reportsData as any).driver_behavior || [];
   const vehicleStatusData: any[] = (reportsData as any).vehicle_status || [];
   const spareUsageData: any[] = (reportsData as any).spare_usage || [];
+  const dailyTotalPoints = dailyPickupCoverageData.reduce((sum, row) => sum + (Number(row.totalPoints) || 0), 0);
+  const dailyCoveredPoints = dailyPickupCoverageData.reduce((sum, row) => sum + (Number(row.covered) || 0), 0);
+  const dailyMissedPoints = Math.max(dailyTotalPoints - dailyCoveredPoints, 0);
+  const dailyCompletionPct = dailyTotalPoints > 0 ? (dailyCoveredPoints / dailyTotalPoints) * 100 : 0;
+  const tripTotalCompleted = tripCompletedData.length;
+  const tripTotalPickupPoints = tripCompletedData.reduce((sum, row) => sum + (Number(row.pickups) || 0), 0);
+  const tripTotalMinutes = tripCompletedData.reduce((sum, row) => sum + (Number(row.durationMinutes) || 0), 0);
+  const tripAvgMinutes = tripTotalCompleted > 0 ? Math.round(tripTotalMinutes / tripTotalCompleted) : 0;
   
   // Email export dialog state
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
@@ -131,8 +173,11 @@ export default function Reports() {
   
   // Pagination states for each report
   const [dailyPage, setDailyPage] = useState(1);
+  const [expandedDailyRows, setExpandedDailyRows] = useState<Record<string, boolean>>({});
   const [routePage, setRoutePage] = useState(1);
   const [truckPage, setTruckPage] = useState(1);
+  const [tripPage, setTripPage] = useState(1);
+  const [expandedTripRows, setExpandedTripRows] = useState<Record<string, boolean>>({});
   const [fuelPage, setFuelPage] = useState(1);
   const [driverPage, setDriverPage] = useState(1);
   const [lateArrivalPage, setLateArrivalPage] = useState(1);
@@ -143,6 +188,51 @@ export default function Reports() {
   const [dumpYardPage, setDumpYardPage] = useState(1);
   const [expiryTruckPage, setExpiryTruckPage] = useState(1);
   const [expiryDriverPage, setExpiryDriverPage] = useState(1);
+
+  useEffect(() => {
+    if (selectedZone !== "all" && selectedWard !== "all") {
+      const wardBelongsToZone = wardOptions.some((ward: any) => String(ward.id) === selectedWard);
+      if (!wardBelongsToZone) {
+        setSelectedWard("all");
+      }
+    }
+  }, [selectedZone, selectedWard, wardOptions]);
+
+  useEffect(() => {
+    if (selectedTruck === "all") return;
+    const truckStillVisible = truckOptions.some((truck: any) => String(truck.id) === selectedTruck);
+    if (!truckStillVisible) {
+      setSelectedTruck("all");
+    }
+  }, [selectedTruck, truckOptions]);
+
+  const handleApplyFilters = () => {
+    setAppliedFilters({
+      dateFrom,
+      dateTo,
+      selectedZone,
+      selectedWard,
+      selectedTruck,
+    });
+    setDailyPage(1);
+    setTripPage(1);
+    setExpandedDailyRows({});
+    setExpandedTripRows({});
+  };
+
+  const toggleDailyRow = (rowId: string) => {
+    setExpandedDailyRows((current) => ({
+      ...current,
+      [rowId]: !current[rowId],
+    }));
+  };
+
+  const toggleTripRow = (rowId: string) => {
+    setExpandedTripRows((current) => ({
+      ...current,
+      [rowId]: !current[rowId],
+    }));
+  };
 
   // Filter states for each report
   const [dailyStatusFilter, setDailyStatusFilter] = useState("all");
@@ -240,7 +330,398 @@ export default function Reports() {
     );
   };
 
+  type ExportColumn = {
+    key: string;
+    label: string;
+    width?: number;
+    align?: "Left" | "Center" | "Right";
+  };
+
+  type ExportSection = {
+    title: string;
+    columns: ExportColumn[];
+    rows: any[];
+    childKey?: string;
+    childTitle?: string;
+    childColumns?: ExportColumn[];
+  };
+
+  const excelEscape = (value: unknown) =>
+    String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+
+  const getValue = (row: any, key: string) =>
+    key.split(".").reduce((current, part) => (current == null ? undefined : current[part]), row);
+
+  const normalizeSheetName = (value: string) =>
+    value.replace(/[\\/?*[\]:]/g, " ").replace(/\s+/g, " ").trim().slice(0, 31) || "Report";
+
+  const isNumericExcelValue = (value: unknown) =>
+    typeof value === "number" || (typeof value === "string" && value.trim() !== "" && !Number.isNaN(Number(value)) && !/^0\d+/.test(value.trim()));
+
+  const excelCell = (value: unknown, style = "Cell", mergeAcross = 0, align?: ExportColumn["align"]) => {
+    const actualValue = value ?? "-";
+    const isNumber = isNumericExcelValue(actualValue);
+    const styleId = align === "Center" ? `${style}Center` : align === "Right" ? `${style}Right` : style;
+    return `<Cell ss:StyleID="${styleId}"${mergeAcross ? ` ss:MergeAcross="${mergeAcross}"` : ""}><Data ss:Type="${isNumber ? "Number" : "String"}">${excelEscape(actualValue)}</Data></Cell>`;
+  };
+
+  const excelRow = (cells: string[], height?: number) =>
+    `<Row${height ? ` ss:Height="${height}"` : ""}>${cells.join("")}</Row>`;
+
+  const excelColumnsXml = (sections: ExportSection[]) => {
+    const maxColumns = Math.max(
+      1,
+      ...sections.map((section) => Math.max(section.columns.length, section.childColumns?.length || 0))
+    );
+    const widths = Array.from({ length: maxColumns }, (_, index) => {
+      const width = Math.max(
+        70,
+        ...sections.flatMap((section) => [
+          section.columns[index]?.width || 0,
+          section.childColumns?.[index]?.width || 0,
+        ])
+      );
+      return `<Column ss:Width="${width}"/>`;
+    });
+    return widths.join("");
+  };
+
+  const buildExcelWorkbook = (reportTitle: string, sections: ExportSection[]) => {
+    const generatedAt = format(new Date(), "yyyy-MM-dd HH:mm:ss");
+    const filterText = `Filters: ${appliedFilters.dateFrom} to ${appliedFilters.dateTo}, Zone ${appliedFilters.selectedZone}, Ward ${appliedFilters.selectedWard}, Truck ${appliedFilters.selectedTruck}`;
+    const maxColumns = Math.max(
+      1,
+      ...sections.map((section) => Math.max(section.columns.length, section.childColumns?.length || 0))
+    );
+    const rows: string[] = [
+      excelRow([excelCell(reportTitle, "Title", Math.max(maxColumns - 1, 0))], 28),
+      excelRow([excelCell(filterText, "Meta", Math.max(maxColumns - 1, 0))]),
+      excelRow([excelCell(`Generated: ${generatedAt}`, "Meta", Math.max(maxColumns - 1, 0))]),
+      excelRow(Array.from({ length: maxColumns }, () => excelCell("", "Blank"))),
+    ];
+
+    sections.forEach((section) => {
+      rows.push(excelRow([excelCell(section.title, "Section", Math.max(maxColumns - 1, 0))], 22));
+      rows.push(excelRow(section.columns.map((column) => excelCell(column.label, "Header", 0, column.align))));
+
+      if (section.rows.length === 0) {
+        rows.push(excelRow([excelCell("No records found for selected filters.", "Muted", Math.max(section.columns.length - 1, 0))]));
+      }
+
+      section.rows.forEach((row) => {
+        const rowStyle = row.isLate || row.status === "late" ? "LateCell" : "Cell";
+        rows.push(
+          excelRow(
+            section.columns.map((column) => excelCell(getValue(row, column.key), rowStyle, 0, column.align))
+          )
+        );
+
+        const childRows = section.childKey ? getValue(row, section.childKey) : undefined;
+        if (Array.isArray(childRows) && childRows.length > 0 && section.childColumns?.length) {
+          rows.push(
+            excelRow([
+              excelCell(
+                `${section.childTitle || "Details"} - ${row.truck || row.route || row.date || row.id || ""}`,
+                "SubSection",
+                Math.max(section.childColumns.length - 1, 0)
+              ),
+            ])
+          );
+          rows.push(excelRow(section.childColumns.map((column) => excelCell(column.label, "SubHeader", 0, column.align))));
+          childRows.forEach((child) => {
+            const childStyle = child.status === "missed" ? "MissedCell" : child.isGtcPoint ? "GtcCell" : "ChildCell";
+            rows.push(
+              excelRow(section.childColumns!.map((column) => excelCell(getValue(child, column.key), childStyle, 0, column.align)))
+            );
+          });
+          rows.push(excelRow(Array.from({ length: section.childColumns.length }, () => excelCell("", "Blank"))));
+        }
+      });
+
+      rows.push(excelRow(Array.from({ length: maxColumns }, () => excelCell("", "Blank"))));
+    });
+
+    return `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:html="http://www.w3.org/TR/REC-html40">
+ <Styles>
+  <Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Center"/><Font ss:FontName="Calibri" ss:Size="11"/></Style>
+  <Style ss:ID="Title"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:FontName="Calibri" ss:Size="16" ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#1F4E78" ss:Pattern="Solid"/></Style>
+  <Style ss:ID="Meta"><Font ss:Color="#666666"/><Interior ss:Color="#F3F6FA" ss:Pattern="Solid"/></Style>
+  <Style ss:ID="Section"><Font ss:Bold="1" ss:Size="13" ss:Color="#FFFFFF"/><Interior ss:Color="#305496" ss:Pattern="Solid"/></Style>
+  <Style ss:ID="SubSection"><Font ss:Bold="1" ss:Color="#1F4E78"/><Interior ss:Color="#D9EAF7" ss:Pattern="Solid"/></Style>
+  <Style ss:ID="Header"><Alignment ss:Horizontal="Center"/><Font ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#4472C4" ss:Pattern="Solid"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
+  <Style ss:ID="HeaderCenter" ss:Parent="Header"><Alignment ss:Horizontal="Center"/></Style>
+  <Style ss:ID="HeaderRight" ss:Parent="Header"><Alignment ss:Horizontal="Right"/></Style>
+  <Style ss:ID="SubHeader"><Alignment ss:Horizontal="Center"/><Font ss:Bold="1" ss:Color="#1F4E78"/><Interior ss:Color="#BFD7EA" ss:Pattern="Solid"/></Style>
+  <Style ss:ID="SubHeaderCenter" ss:Parent="SubHeader"><Alignment ss:Horizontal="Center"/></Style>
+  <Style ss:ID="SubHeaderRight" ss:Parent="SubHeader"><Alignment ss:Horizontal="Right"/></Style>
+  <Style ss:ID="Cell"><Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E5E7EB"/></Borders></Style>
+  <Style ss:ID="CellCenter" ss:Parent="Cell"><Alignment ss:Horizontal="Center"/></Style>
+  <Style ss:ID="CellRight" ss:Parent="Cell"><Alignment ss:Horizontal="Right"/></Style>
+  <Style ss:ID="ChildCell" ss:Parent="Cell"><Interior ss:Color="#F8FBFD" ss:Pattern="Solid"/></Style>
+  <Style ss:ID="ChildCellCenter" ss:Parent="ChildCell"><Alignment ss:Horizontal="Center"/></Style>
+  <Style ss:ID="ChildCellRight" ss:Parent="ChildCell"><Alignment ss:Horizontal="Right"/></Style>
+  <Style ss:ID="LateCell" ss:Parent="Cell"><Font ss:Color="#B91C1C" ss:Bold="1"/><Interior ss:Color="#FEE2E2" ss:Pattern="Solid"/></Style>
+  <Style ss:ID="LateCellCenter" ss:Parent="LateCell"><Alignment ss:Horizontal="Center"/></Style>
+  <Style ss:ID="LateCellRight" ss:Parent="LateCell"><Alignment ss:Horizontal="Right"/></Style>
+  <Style ss:ID="MissedCell" ss:Parent="ChildCell"><Font ss:Color="#B91C1C"/><Interior ss:Color="#FFF1F2" ss:Pattern="Solid"/></Style>
+  <Style ss:ID="MissedCellCenter" ss:Parent="MissedCell"><Alignment ss:Horizontal="Center"/></Style>
+  <Style ss:ID="MissedCellRight" ss:Parent="MissedCell"><Alignment ss:Horizontal="Right"/></Style>
+  <Style ss:ID="GtcCell" ss:Parent="ChildCell"><Font ss:Color="#1D4ED8" ss:Bold="1"/><Interior ss:Color="#DBEAFE" ss:Pattern="Solid"/></Style>
+  <Style ss:ID="GtcCellCenter" ss:Parent="GtcCell"><Alignment ss:Horizontal="Center"/></Style>
+  <Style ss:ID="GtcCellRight" ss:Parent="GtcCell"><Alignment ss:Horizontal="Right"/></Style>
+  <Style ss:ID="Muted"><Font ss:Color="#6B7280" ss:Italic="1"/></Style>
+  <Style ss:ID="Blank"><Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/></Style>
+ </Styles>
+ <Worksheet ss:Name="${excelEscape(normalizeSheetName(reportTitle))}">
+  <Table>${excelColumnsXml(sections)}${rows.join("")}</Table>
+  <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>5</SplitHorizontal><TopRowBottomPane>5</TopRowBottomPane><ProtectObjects>False</ProtectObjects><ProtectScenarios>False</ProtectScenarios></WorksheetOptions>
+ </Worksheet>
+</Workbook>`;
+  };
+
+  const downloadExcelWorkbook = (reportTitle: string, sections: ExportSection[]) => {
+    const workbookXml = buildExcelWorkbook(reportTitle, sections);
+    const blob = new Blob([workbookXml], { type: "application/vnd.ms-excel;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${reportTitle.replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "").toLowerCase()}_${format(new Date(), "yyyyMMdd_HHmmss")}.xls`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const makeSectionsForReport = (reportType: string): { title: string; sections: ExportSection[] } => {
+    const commonColumns: Record<string, ExportColumn[]> = {
+      daily_collection: [
+        { key: "date", label: "Date", width: 95 },
+        { key: "ward", label: "Ward", width: 130 },
+        { key: "zone", label: "Zone", width: 130 },
+        { key: "truck", label: "Truck", width: 130 },
+        { key: "driver", label: "Driver", width: 120 },
+        { key: "route", label: "Route", width: 140 },
+        { key: "totalPoints", label: "Total Points", width: 90, align: "Center" },
+        { key: "covered", label: "Covered", width: 80, align: "Center" },
+        { key: "missed", label: "Missed", width: 80, align: "Center" },
+        { key: "status", label: "Status", width: 100, align: "Center" },
+      ],
+      pickup_details: [
+        { key: "sequenceNo", label: "Seq", width: 55, align: "Center" },
+        { key: "pickupName", label: "Pickup Point", width: 260 },
+        { key: "expectedTime", label: "Expected", width: 90, align: "Center" },
+        { key: "actualTime", label: "First Crossed", width: 100, align: "Center" },
+        { key: "lastCrossedTime", label: "Last Crossed", width: 100, align: "Center" },
+        { key: "crossingCount", label: "Count", width: 70, align: "Center" },
+        { key: "nearestDistanceM", label: "Nearest (m)", width: 90, align: "Right" },
+        { key: "status", label: "Status", width: 90, align: "Center" },
+      ],
+      trips_completed: [
+        { key: "date", label: "Date", width: 95 },
+        { key: "truck", label: "Truck", width: 130 },
+        { key: "route", label: "Route", width: 140 },
+        { key: "zone", label: "Zone", width: 120 },
+        { key: "ward", label: "Ward", width: 120 },
+        { key: "startTime", label: "Start", width: 80, align: "Center" },
+        { key: "endTime", label: "GTC Entry", width: 90, align: "Center" },
+        { key: "duration", label: "Duration", width: 90, align: "Center" },
+        { key: "gtcPoint", label: "GTC Point", width: 230 },
+        { key: "status", label: "Status", width: 90, align: "Center" },
+      ],
+      late_arrival: [
+        { key: "date", label: "Date", width: 95 },
+        { key: "zone", label: "Zone", width: 120 },
+        { key: "truck", label: "Truck", width: 130 },
+        { key: "route", label: "Route", width: 130 },
+        { key: "firstPickupPoint", label: "First Pickup", width: 240 },
+        { key: "scheduledTime", label: "Expected", width: 90, align: "Center" },
+        { key: "allowedUntil", label: "Allowed Until", width: 100, align: "Center" },
+        { key: "actualTime", label: "Actual Entry", width: 100, align: "Center" },
+        { key: "lateByMinutes", label: "Late By (min)", width: 95, align: "Center" },
+        { key: "status", label: "Status", width: 90, align: "Center" },
+      ],
+    };
+
+    const simpleReport = (title: string, rows: any[], columns: ExportColumn[]): { title: string; sections: ExportSection[] } => ({
+      title,
+      sections: [{ title, rows, columns }],
+    });
+
+    switch (reportType) {
+      case "daily_collection":
+        return {
+          title: "Daily Pickup Coverage Report",
+          sections: [{
+            title: "Daily Pickup Coverage",
+            rows: dailyStatusFilter === "all" ? dailyPickupCoverageData : dailyPickupCoverageData.filter(row => row.status === dailyStatusFilter),
+            columns: commonColumns.daily_collection,
+            childKey: "pickupDetails",
+            childTitle: "Pickup Point Details",
+            childColumns: commonColumns.pickup_details,
+          }],
+        };
+      case "trips_completed":
+        return {
+          title: "Trips Completed Report",
+          sections: [{
+            title: "Completed Trips",
+            rows: tripCompletedData,
+            columns: commonColumns.trips_completed,
+            childKey: "tripDetails",
+            childTitle: "Trip Pickup Details",
+            childColumns: commonColumns.pickup_details,
+          }],
+        };
+      case "late_arrival":
+        return simpleReport(
+          "First Pickup Entry Report",
+          lateArrivalData.filter(row => lateStatusFilter === "all" ? true : lateStatusFilter === "late" ? row.isLate : !row.isLate),
+          commonColumns.late_arrival
+        );
+      case "route_performance":
+        return simpleReport("Route Performance Report", routePerformanceData, [
+          { key: "route", label: "Route", width: 160 },
+          { key: "zone", label: "Zone", width: 120 },
+          { key: "ward", label: "Ward", width: 120 },
+          { key: "assignedTrucks", label: "Assigned Trucks", width: 110, align: "Center" },
+          { key: "completedTrips", label: "Completed Trips", width: 110, align: "Center" },
+          { key: "avgTime", label: "Average Time", width: 110, align: "Center" },
+          { key: "efficiency", label: "Efficiency %", width: 100, align: "Center" },
+        ]);
+      case "truck_utilization":
+        return simpleReport("Truck Utilization Report", truckUtilizationData, [
+          { key: "truck", label: "Truck", width: 130 },
+          { key: "type", label: "Type", width: 120 },
+          { key: "trips", label: "Trips", width: 80, align: "Center" },
+          { key: "operatingHours", label: "Operating Hours", width: 120, align: "Right" },
+          { key: "idleTime", label: "Idle Time", width: 100, align: "Right" },
+          { key: "distance", label: "Distance", width: 100, align: "Right" },
+          { key: "utilization", label: "Utilization %", width: 110, align: "Center" },
+        ]);
+      case "fuel_consumption":
+        return simpleReport("Fuel Consumption Report", fuelConsumptionData, [
+          { key: "date", label: "Date", width: 95 },
+          { key: "truck", label: "Truck", width: 130 },
+          { key: "fuel", label: "Fuel", width: 90, align: "Right" },
+          { key: "distance", label: "Distance", width: 100, align: "Right" },
+          { key: "efficiency", label: "Efficiency", width: 100, align: "Right" },
+          { key: "cost", label: "Cost", width: 100, align: "Right" },
+          { key: "anomaly", label: "Anomaly", width: 100, align: "Center" },
+        ]);
+      case "driver_attendance":
+        return simpleReport("Driver Attendance Report", driverAttendanceData, [
+          { key: "date", label: "Date", width: 95 },
+          { key: "driver", label: "Driver", width: 150 },
+          { key: "truck", label: "Truck", width: 130 },
+          { key: "shift", label: "Shift", width: 100 },
+          { key: "checkIn", label: "Check In", width: 90, align: "Center" },
+          { key: "checkOut", label: "Check Out", width: 90, align: "Center" },
+          { key: "hours", label: "Hours", width: 80, align: "Right" },
+          { key: "status", label: "Status", width: 100, align: "Center" },
+        ]);
+      case "driver_behavior":
+        return simpleReport("Driver Behavior Report", driverBehaviorData, [
+          { key: "date", label: "Date", width: 95 },
+          { key: "driver", label: "Driver", width: 150 },
+          { key: "truck", label: "Truck", width: 130 },
+          { key: "type", label: "Type", width: 150 },
+          { key: "location", label: "Location", width: 180 },
+          { key: "time", label: "Time", width: 80, align: "Center" },
+          { key: "severity", label: "Severity", width: 90, align: "Center" },
+          { key: "action", label: "Action", width: 150 },
+        ]);
+      case "vehicle_status":
+        return simpleReport("Vehicle Status Report", vehicleStatusData, [
+          { key: "truck", label: "Truck", width: 130 },
+          { key: "status", label: "Status", width: 100, align: "Center" },
+          { key: "lastSeen", label: "Last Seen", width: 130 },
+          { key: "location", label: "Location", width: 180 },
+          { key: "battery", label: "Battery", width: 90, align: "Center" },
+          { key: "signal", label: "Signal", width: 90, align: "Center" },
+        ]);
+      case "complaints":
+        return simpleReport("Complaints Report", complaintsData, [
+          { key: "id", label: "Complaint ID", width: 120 },
+          { key: "date", label: "Date", width: 95 },
+          { key: "type", label: "Type", width: 150 },
+          { key: "location", label: "Location", width: 180 },
+          { key: "status", label: "Status", width: 110, align: "Center" },
+          { key: "assignedTo", label: "Assigned To", width: 150 },
+          { key: "resolutionTime", label: "Resolution Time", width: 120 },
+        ]);
+      case "dumpyard_log":
+        return simpleReport("Dump Yard Log Report", dumpYardData, [
+          { key: "date", label: "Date", width: 95 },
+          { key: "truck", label: "Truck", width: 130 },
+          { key: "site", label: "Site", width: 180 },
+          { key: "entryTime", label: "Entry Time", width: 90, align: "Center" },
+          { key: "exitTime", label: "Exit Time", width: 90, align: "Center" },
+          { key: "weight", label: "Weight", width: 90, align: "Right" },
+          { key: "capacity", label: "Capacity %", width: 100, align: "Center" },
+        ]);
+      case "spare_usage":
+        return simpleReport("Spare Vehicle Usage Report", spareUsageData, [
+          { key: "date", label: "Date", width: 95 },
+          { key: "spareTruck", label: "Spare Truck", width: 130 },
+          { key: "originalTruck", label: "Original Truck", width: 130 },
+          { key: "reason", label: "Reason", width: 180 },
+          { key: "duration", label: "Duration", width: 100 },
+          { key: "status", label: "Status", width: 100, align: "Center" },
+        ]);
+      case "expiry_report":
+        return {
+          title: "Expiry Report",
+          sections: [
+            {
+              title: "Truck Expiry",
+              rows: trucks,
+              columns: [
+                { key: "vehicle_number", label: "Truck", width: 130 },
+                { key: "registration_number", label: "Registration", width: 140 },
+                { key: "insuranceExpiry", label: "Insurance Expiry", width: 130 },
+                { key: "fitnessExpiry", label: "Fitness Expiry", width: 130 },
+                { key: "status", label: "Status", width: 100, align: "Center" },
+              ],
+            },
+            {
+              title: "Driver License Expiry",
+              rows: drivers,
+              columns: [
+                { key: "name", label: "Driver", width: 150 },
+                { key: "license_number", label: "License No.", width: 140 },
+                { key: "licenseExpiry", label: "License Expiry", width: 130 },
+                { key: "phone", label: "Phone", width: 120 },
+                { key: "status", label: "Status", width: 100, align: "Center" },
+              ],
+            },
+          ],
+        };
+      default:
+        return simpleReport(reportType.replace(/_/g, " "), [], [{ key: "message", label: "Message", width: 240 }]);
+    }
+  };
+
   const handleDownload = (reportType: string, format: string) => {
+    if (format === "excel") {
+      const exportConfig = makeSectionsForReport(reportType);
+      downloadExcelWorkbook(exportConfig.title, exportConfig.sections);
+      toast({
+        title: "Excel Download Started",
+        description: `${exportConfig.title} has been exported with formatted grids and subgrids.`,
+      });
+      return;
+    }
+
     toast({
       title: "Download Started",
       description: `Downloading ${reportType.replace(/_/g, ' ')} report as ${format.toUpperCase()} (with current filters applied)`,
@@ -337,7 +818,7 @@ export default function Reports() {
         description="Generate, filter and download comprehensive fleet reports"
         icon={FileText}
         badge={{
-          label: "12 Report Types",
+          label: "13 Report Types",
           variant: "outline",
           className: "bg-primary/10 text-primary border-primary/20",
         }}
@@ -352,7 +833,7 @@ export default function Reports() {
           </div>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
             <div className="space-y-2">
               <label className="text-sm font-medium">From Date</label>
               <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
@@ -369,9 +850,11 @@ export default function Reports() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Zones</SelectItem>
-                  <SelectItem value="zone-a">Zone A</SelectItem>
-                  <SelectItem value="zone-b">Zone B</SelectItem>
-                  <SelectItem value="zone-c">Zone C</SelectItem>
+                  {zonesData.map((zone: any) => (
+                    <SelectItem key={String(zone.id)} value={String(zone.id)}>
+                      {zone.name || zone.zone_name || zone.code || zone.zone_code || zone.id}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -383,10 +866,11 @@ export default function Reports() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Wards</SelectItem>
-                  <SelectItem value="kharadi-east">Kharadi East</SelectItem>
-                  <SelectItem value="kharadi-west">Kharadi West</SelectItem>
-                  <SelectItem value="viman-nagar">Viman Nagar</SelectItem>
-                  <SelectItem value="kalyani-nagar">Kalyani Nagar</SelectItem>
+                  {wardOptions.map((ward: any) => (
+                    <SelectItem key={String(ward.id)} value={String(ward.id)}>
+                      {ward.name || ward.ward_name || ward.code || ward.ward_code || ward.id}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -398,11 +882,20 @@ export default function Reports() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Trucks</SelectItem>
-                  <SelectItem value="MH-12-AB-1234">MH-12-AB-1234</SelectItem>
-                  <SelectItem value="MH-12-CD-5678">MH-12-CD-5678</SelectItem>
-                  <SelectItem value="MH-12-EF-9012">MH-12-EF-9012</SelectItem>
+                  {truckOptions.map((truck: any) => (
+                    <SelectItem key={String(truck.id)} value={String(truck.id)}>
+                      {truck.vehicle_number || truck.vehicleNumber || truck.registration_number || truck.id}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium opacity-0">Apply</label>
+              <Button className="w-full" onClick={handleApplyFilters} disabled={isLoadingReports}>
+                <Filter className="h-4 w-4 mr-2" />
+                Apply
+              </Button>
             </div>
           </div>
         </CardContent>
@@ -423,6 +916,10 @@ export default function Reports() {
             <Truck className="h-3 w-3 md:h-4 md:w-4" />
             Truck
           </TabsTrigger>
+          <TabsTrigger value="trips-completed" className="flex items-center gap-1 text-xs md:text-sm">
+            <CheckCircle2 className="h-3 w-3 md:h-4 md:w-4" />
+            Trips
+          </TabsTrigger>
           <TabsTrigger value="fuel" className="flex items-center gap-1 text-xs md:text-sm">
             <Fuel className="h-3 w-3 md:h-4 md:w-4" />
             Fuel
@@ -433,7 +930,7 @@ export default function Reports() {
           </TabsTrigger>
           <TabsTrigger value="late-arrival" className="flex items-center gap-1 text-xs md:text-sm">
             <Clock className="h-3 w-3 md:h-4 md:w-4" />
-            Late Arrival
+            First Pickup
           </TabsTrigger>
           <TabsTrigger value="behavior" className="flex items-center gap-1 text-xs md:text-sm">
             <Gauge className="h-3 w-3 md:h-4 md:w-4" />
@@ -473,9 +970,8 @@ export default function Reports() {
                 <CardDescription>Pickup points coverage by ward, zone, and truck with completion status</CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => handleDownload("daily_collection", "csv")}>
-                  <FileSpreadsheet className="h-4 w-4 mr-1" /> CSV
-                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleDownload("daily_collection", "excel")}>
+                  <FileSpreadsheet className="h-4 w-4 mr-1" /> Excel</Button>
                 <Button variant="outline" size="sm" onClick={() => handleDownload("daily_collection", "pdf")}>
                   <Download className="h-4 w-4 mr-1" /> PDF
                 </Button>
@@ -509,47 +1005,34 @@ export default function Reports() {
               <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                 <Card className="bg-emerald-500/10 border-emerald-500/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-emerald-600">211</p>
+                    <p className="text-2xl font-bold text-emerald-600">{dailyTotalPoints}</p>
                     <p className="text-xs text-muted-foreground">Total Pickup Points</p>
                   </CardContent>
                 </Card>
                 <Card className="bg-green-500/10 border-green-500/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-green-600">201</p>
+                    <p className="text-2xl font-bold text-green-600">{dailyCoveredPoints}</p>
                     <p className="text-xs text-muted-foreground">Covered</p>
                   </CardContent>
                 </Card>
                 <Card className="bg-red-500/10 border-red-500/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-red-600">10</p>
+                    <p className="text-2xl font-bold text-red-600">{dailyMissedPoints}</p>
                     <p className="text-xs text-muted-foreground">Missed</p>
                   </CardContent>
                 </Card>
                 <Card className="bg-blue-500/10 border-blue-500/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-blue-600">10.9</p>
+                    <p className="text-2xl font-bold text-blue-600">-</p>
                     <p className="text-xs text-muted-foreground">Total Tons</p>
                   </CardContent>
                 </Card>
                 <Card className="bg-purple-500/10 border-purple-500/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-purple-600">95.3%</p>
+                    <p className="text-2xl font-bold text-purple-600">{dailyCompletionPct.toFixed(1)}%</p>
                     <p className="text-xs text-muted-foreground">Completion</p>
                   </CardContent>
                 </Card>
-              </div>
-
-              {/* Chart */}
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={weeklyTrendData}>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                    <XAxis dataKey="day" className="text-xs" />
-                    <YAxis className="text-xs" />
-                    <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--background))', border: '1px solid hsl(var(--border))' }} />
-                    <Bar dataKey="collected" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} name="Collected (tons)" />
-                  </BarChart>
-                </ResponsiveContainer>
               </div>
 
               {/* Table */}
@@ -557,6 +1040,7 @@ export default function Reports() {
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-muted/50">
+                      <TableHead className="w-10"></TableHead>
                       <TableHead>Date</TableHead>
                       <TableHead>Ward</TableHead>
                       <TableHead>Zone</TableHead>
@@ -574,25 +1058,112 @@ export default function Reports() {
                       const filteredData = dailyStatusFilter === "all" 
                         ? dailyPickupCoverageData 
                         : dailyPickupCoverageData.filter(d => d.status === dailyStatusFilter);
-                      return paginate(filteredData, dailyPage).map((row) => (
-                        <TableRow key={row.id}>
-                          <TableCell className="font-medium">{row.date}</TableCell>
-                          <TableCell>{row.ward}</TableCell>
-                          <TableCell>{row.zone}</TableCell>
-                          <TableCell className="font-mono text-xs">{row.truck}</TableCell>
-                          <TableCell>{row.driver}</TableCell>
-                          <TableCell className="text-center">{row.totalPoints}</TableCell>
-                          <TableCell className="text-center text-green-600 font-medium">{row.covered}</TableCell>
-                          <TableCell className="text-center text-red-600 font-medium">{row.missed}</TableCell>
-                          <TableCell className="text-right">{row.weight}</TableCell>
-                          <TableCell>
-                            <Badge variant={row.status === "completed" ? "default" : "secondary"} 
-                                   className={row.status === "completed" ? "bg-green-500/20 text-green-700 border-green-500/30" : "bg-yellow-500/20 text-yellow-700 border-yellow-500/30"}>
-                              {row.status}
-                            </Badge>
-                          </TableCell>
-                        </TableRow>
-                      ));
+                      return paginate(filteredData, dailyPage).map((row) => {
+                        const pickupDetails = Array.isArray(row.pickupDetails) ? row.pickupDetails : [];
+                        const isExpanded = Boolean(expandedDailyRows[row.id]);
+
+                        return (
+                          <Fragment key={row.id}>
+                            <TableRow>
+                              <TableCell>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8"
+                                  onClick={() => toggleDailyRow(row.id)}
+                                  disabled={pickupDetails.length === 0}
+                                  aria-label={isExpanded ? "Hide pickup point details" : "Show pickup point details"}
+                                >
+                                  <ChevronRight className={`h-4 w-4 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
+                                </Button>
+                              </TableCell>
+                              <TableCell className="font-medium">{row.date}</TableCell>
+                              <TableCell>{row.ward}</TableCell>
+                              <TableCell>{row.zone}</TableCell>
+                              <TableCell className="font-mono text-xs">{row.truck}</TableCell>
+                              <TableCell>{row.driver}</TableCell>
+                              <TableCell className="text-center">{row.totalPoints}</TableCell>
+                              <TableCell className="text-center text-green-600 font-medium">{row.covered}</TableCell>
+                              <TableCell className="text-center text-red-600 font-medium">{row.missed}</TableCell>
+                              <TableCell className="text-right">{row.weight}</TableCell>
+                              <TableCell>
+                                <Badge variant={row.status === "completed" ? "default" : "secondary"} 
+                                       className={row.status === "completed" ? "bg-green-500/20 text-green-700 border-green-500/30" : "bg-yellow-500/20 text-yellow-700 border-yellow-500/30"}>
+                                  {row.status}
+                                </Badge>
+                              </TableCell>
+                            </TableRow>
+                            {isExpanded && (
+                              <TableRow className="bg-muted/20 hover:bg-muted/20">
+                                <TableCell colSpan={11} className="p-0">
+                                  <div className="p-4">
+                                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                      <div>
+                                        <p className="text-sm font-semibold">Pickup Point Details</p>
+                                        <p className="text-xs text-muted-foreground">
+                                          Route: {row.route || "-"} | Truck: {row.truck} | Date: {row.date}
+                                        </p>
+                                      </div>
+                                      <Badge variant="outline">{pickupDetails.length} points</Badge>
+                                    </div>
+                                    <div className="rounded-md border bg-background">
+                                      <Table>
+                                        <TableHeader>
+                                          <TableRow className="bg-muted/50">
+                                            <TableHead className="w-16 text-center">Seq</TableHead>
+                                            <TableHead>Pickup Point</TableHead>
+                                            <TableHead className="text-center">Expected</TableHead>
+                                            <TableHead className="text-center">First Crossed</TableHead>
+                                            <TableHead className="text-center">Last Crossed</TableHead>
+                                            <TableHead className="text-center">Count</TableHead>
+                                            <TableHead className="text-center">Nearest (m)</TableHead>
+                                            <TableHead>Status</TableHead>
+                                          </TableRow>
+                                        </TableHeader>
+                                        <TableBody>
+                                          {pickupDetails.length === 0 ? (
+                                            <TableRow>
+                                              <TableCell colSpan={8} className="py-6 text-center text-sm text-muted-foreground">
+                                                No pickup point details available for this row.
+                                              </TableCell>
+                                            </TableRow>
+                                          ) : (
+                                            pickupDetails.map((point: any) => (
+                                              <TableRow key={point.id}>
+                                                <TableCell className="text-center font-mono text-xs">{point.sequenceNo || "-"}</TableCell>
+                                                <TableCell className="font-medium">{point.pickupName || "-"}</TableCell>
+                                                <TableCell className="text-center">{point.expectedTime || "-"}</TableCell>
+                                                <TableCell className="text-center">{point.actualTime || "-"}</TableCell>
+                                                <TableCell className="text-center">{point.lastCrossedTime || "-"}</TableCell>
+                                                <TableCell className="text-center">{point.crossingCount || 0}</TableCell>
+                                                <TableCell className="text-center">
+                                                  {point.nearestDistanceM === null || point.nearestDistanceM === undefined
+                                                    ? "-"
+                                                    : Number(point.nearestDistanceM).toFixed(1)}
+                                                </TableCell>
+                                                <TableCell>
+                                                  <Badge
+                                                    variant={point.status === "covered" ? "default" : "secondary"}
+                                                    className={point.status === "covered"
+                                                      ? "bg-green-500/20 text-green-700 border-green-500/30"
+                                                      : "bg-red-500/20 text-red-700 border-red-500/30"}
+                                                  >
+                                                    {point.status}
+                                                  </Badge>
+                                                </TableCell>
+                                              </TableRow>
+                                            ))
+                                          )}
+                                        </TableBody>
+                                      </Table>
+                                    </div>
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                            )}
+                          </Fragment>
+                        );
+                      });
                     })()}
                   </TableBody>
                 </Table>
@@ -619,9 +1190,8 @@ export default function Reports() {
                 <CardDescription>Route completion rates, deviations, and efficiency metrics</CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => handleDownload("route_performance", "csv")}>
-                  <FileSpreadsheet className="h-4 w-4 mr-1" /> CSV
-                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleDownload("route_performance", "excel")}>
+                  <FileSpreadsheet className="h-4 w-4 mr-1" /> Excel</Button>
                 <Button variant="outline" size="sm" onClick={() => handleDownload("route_performance", "pdf")}>
                   <Download className="h-4 w-4 mr-1" /> PDF
                 </Button>
@@ -750,9 +1320,8 @@ export default function Reports() {
                 <CardDescription>Trips, operating hours, idle time, and vehicle utilization</CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => handleDownload("truck_utilization", "csv")}>
-                  <FileSpreadsheet className="h-4 w-4 mr-1" /> CSV
-                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleDownload("truck_utilization", "excel")}>
+                  <FileSpreadsheet className="h-4 w-4 mr-1" /> Excel</Button>
                 <Button variant="outline" size="sm" onClick={() => handleDownload("truck_utilization", "pdf")}>
                   <Download className="h-4 w-4 mr-1" /> PDF
                 </Button>
@@ -859,6 +1428,201 @@ export default function Reports() {
           </Card>
         </TabsContent>
 
+        {/* Trips Completed Report */}
+        <TabsContent value="trips-completed" className="space-y-4">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <CheckCircle2 className="h-5 w-5 text-primary" />
+                  Trips Completed Report
+                </CardTitle>
+                <CardDescription>Completed trips by truck using route visit, GTC entry, and halt-time logic</CardDescription>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => handleDownload("trips_completed", "excel")}>
+                  <FileSpreadsheet className="h-4 w-4 mr-1" /> Excel</Button>
+                <Button variant="outline" size="sm" onClick={() => handlePrint("trips_completed")}>
+                  <Printer className="h-4 w-4 mr-1" /> Print
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <Card className="bg-green-500/10 border-green-500/20">
+                  <CardContent className="p-4 text-center">
+                    <p className="text-2xl font-bold text-green-600">{tripTotalCompleted}</p>
+                    <p className="text-xs text-muted-foreground">Trips Completed</p>
+                  </CardContent>
+                </Card>
+                <Card className="bg-primary/10 border-primary/20">
+                  <CardContent className="p-4 text-center">
+                    <p className="text-2xl font-bold text-primary">{new Set(tripCompletedData.map(row => row.truck)).size}</p>
+                    <p className="text-xs text-muted-foreground">Trucks Completed</p>
+                  </CardContent>
+                </Card>
+                <Card className="bg-blue-500/10 border-blue-500/20">
+                  <CardContent className="p-4 text-center">
+                    <p className="text-2xl font-bold text-blue-600">{tripAvgMinutes}m</p>
+                    <p className="text-xs text-muted-foreground">Avg Trip Time</p>
+                  </CardContent>
+                </Card>
+                <Card className="bg-amber-500/10 border-amber-500/20">
+                  <CardContent className="p-4 text-center">
+                    <p className="text-2xl font-bold text-amber-600">{tripTotalPickupPoints}</p>
+                    <p className="text-xs text-muted-foreground">Route Points</p>
+                  </CardContent>
+                </Card>
+              </div>
+
+              <div className="rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/50">
+                      <TableHead className="w-10"></TableHead>
+                      <TableHead>Date</TableHead>
+                      <TableHead>Truck</TableHead>
+                      <TableHead>Route</TableHead>
+                      <TableHead>Zone</TableHead>
+                      <TableHead>Ward</TableHead>
+                      <TableHead className="text-center">Start</TableHead>
+                      <TableHead className="text-center">GTC Entry</TableHead>
+                      <TableHead className="text-center">Duration</TableHead>
+                      <TableHead className="text-center">GTC Point</TableHead>
+                      <TableHead>Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {paginate(tripCompletedData, tripPage).map((row, idx) => {
+                      const rowId = row.id || `trip-${idx}`;
+                      const tripDetails = Array.isArray(row.tripDetails) ? row.tripDetails : [];
+                      const isExpanded = Boolean(expandedTripRows[rowId]);
+
+                      return (
+                        <Fragment key={rowId}>
+                          <TableRow>
+                            <TableCell>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8"
+                                onClick={() => toggleTripRow(rowId)}
+                                disabled={tripDetails.length === 0}
+                                aria-label={isExpanded ? "Hide trip details" : "Show trip details"}
+                              >
+                                <ChevronRight className={`h-4 w-4 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
+                              </Button>
+                            </TableCell>
+                            <TableCell className="font-medium">{row.date}</TableCell>
+                            <TableCell className="font-mono text-xs">{row.truck}</TableCell>
+                            <TableCell>{row.route}</TableCell>
+                            <TableCell>{row.zone}</TableCell>
+                            <TableCell>{row.ward}</TableCell>
+                            <TableCell className="text-center">{row.startTime}</TableCell>
+                            <TableCell className="text-center">{row.endTime}</TableCell>
+                            <TableCell className="text-center">{row.duration}</TableCell>
+                            <TableCell className="text-center">{row.gtcPoint || "-"}</TableCell>
+                            <TableCell>
+                              <Badge className="bg-green-500/20 text-green-700 border-green-500/30">
+                                completed
+                              </Badge>
+                            </TableCell>
+                          </TableRow>
+                          {isExpanded && (
+                            <TableRow className="bg-muted/20 hover:bg-muted/20">
+                              <TableCell colSpan={11} className="p-0">
+                                <div className="p-4">
+                                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                    <div>
+                                      <p className="text-sm font-semibold">Trip Details</p>
+                                      <p className="text-xs text-muted-foreground">
+                                        Trip: {row.id || "-"} | Truck: {row.truck} | Route: {row.route || "-"} | Halt rule: {row.haltSeconds || 0}s inside {row.gtcRadiusM || 0}m GTC
+                                      </p>
+                                    </div>
+                                    <Badge variant="outline">{tripDetails.length} route points</Badge>
+                                  </div>
+                                  <div className="rounded-md border bg-background">
+                                    <Table>
+                                      <TableHeader>
+                                        <TableRow className="bg-muted/50">
+                                          <TableHead className="w-16 text-center">Seq</TableHead>
+                                          <TableHead>Pickup Point</TableHead>
+                                          <TableHead className="text-center">Expected</TableHead>
+                                          <TableHead className="text-center">First Crossed</TableHead>
+                                          <TableHead className="text-center">Last Crossed</TableHead>
+                                          <TableHead className="text-center">Count</TableHead>
+                                          <TableHead className="text-center">Nearest (m)</TableHead>
+                                          <TableHead>Status</TableHead>
+                                        </TableRow>
+                                      </TableHeader>
+                                      <TableBody>
+                                        {tripDetails.length === 0 ? (
+                                          <TableRow>
+                                            <TableCell colSpan={8} className="py-6 text-center text-sm text-muted-foreground">
+                                              No detail rows available for this trip.
+                                            </TableCell>
+                                          </TableRow>
+                                        ) : (
+                                          tripDetails.map((point: any) => (
+                                            <TableRow key={point.id}>
+                                              <TableCell className="text-center font-mono text-xs">{point.sequenceNo || "-"}</TableCell>
+                                              <TableCell className="font-medium">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                  <span>{point.pickupName || "-"}</span>
+                                                  {point.isGtcPoint && (
+                                                    <Badge variant="outline" className="border-blue-500/30 bg-blue-500/10 text-blue-700">
+                                                      GTC
+                                                    </Badge>
+                                                  )}
+                                                </div>
+                                              </TableCell>
+                                              <TableCell className="text-center">{point.expectedTime || "-"}</TableCell>
+                                              <TableCell className="text-center">{point.actualTime || "-"}</TableCell>
+                                              <TableCell className="text-center">{point.lastCrossedTime || "-"}</TableCell>
+                                              <TableCell className="text-center">{point.crossingCount || 0}</TableCell>
+                                              <TableCell className="text-center">
+                                                {point.nearestDistanceM === null || point.nearestDistanceM === undefined
+                                                  ? "-"
+                                                  : Number(point.nearestDistanceM).toFixed(1)}
+                                              </TableCell>
+                                              <TableCell>
+                                                <Badge
+                                                  variant={point.status === "covered" ? "default" : "secondary"}
+                                                  className={point.status === "covered"
+                                                    ? "bg-green-500/20 text-green-700 border-green-500/30"
+                                                    : "bg-red-500/20 text-red-700 border-red-500/30"}
+                                                >
+                                                  {point.status}
+                                                </Badge>
+                                              </TableCell>
+                                            </TableRow>
+                                          ))
+                                        )}
+                                      </TableBody>
+                                    </Table>
+                                  </div>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                    {tripCompletedData.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={11} className="text-center text-muted-foreground">
+                          No completed trips found for the selected filters.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+              {renderPagination(tripPage, tripCompletedData.length, setTripPage)}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         {/* Fuel Consumption Report */}
         <TabsContent value="fuel" className="space-y-4">
           <Card>
@@ -871,9 +1635,8 @@ export default function Reports() {
                 <CardDescription>Fuel usage, efficiency metrics, anomaly detection, and costs</CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => handleDownload("fuel_consumption", "csv")}>
-                  <FileSpreadsheet className="h-4 w-4 mr-1" /> CSV
-                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleDownload("fuel_consumption", "excel")}>
+                  <FileSpreadsheet className="h-4 w-4 mr-1" /> Excel</Button>
                 <Button variant="outline" size="sm" onClick={() => handleDownload("fuel_consumption", "pdf")}>
                   <Download className="h-4 w-4 mr-1" /> PDF
                 </Button>
@@ -1012,9 +1775,8 @@ export default function Reports() {
                 <CardDescription>Shift timings, routes completed, violations, and driver scores</CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => handleDownload("driver_attendance", "csv")}>
-                  <FileSpreadsheet className="h-4 w-4 mr-1" /> CSV
-                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleDownload("driver_attendance", "excel")}>
+                  <FileSpreadsheet className="h-4 w-4 mr-1" /> Excel</Button>
                 <Button variant="outline" size="sm" onClick={() => handleDownload("driver_attendance", "pdf")}>
                   <Download className="h-4 w-4 mr-1" /> PDF
                 </Button>
@@ -1137,21 +1899,22 @@ export default function Reports() {
           </Card>
         </TabsContent>
 
-        {/* Late Arrival Report */}
+        {/* First Pickup Entry Report */}
         <TabsContent value="late-arrival" className="space-y-4">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <div>
                 <CardTitle className="flex items-center gap-2">
                   <Clock className="h-5 w-5 text-primary" />
-                  Late Arrival Report
+                  First Pickup Entry Report
                 </CardTitle>
-                <CardDescription>Trucks that did not reach first pickup point on time (Buffer: {localStorage.getItem('lateArrivalBuffer') || '10'} min)</CardDescription>
+                <CardDescription>
+                  First pickup point entry by date, route, and truck. Late means actual entry is after expected time + grace.
+                </CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => handleDownload("late_arrival", "csv")}>
-                  <FileSpreadsheet className="h-4 w-4 mr-1" /> CSV
-                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleDownload("late_arrival", "excel")}>
+                  <FileSpreadsheet className="h-4 w-4 mr-1" /> Excel</Button>
                 <Button variant="outline" size="sm" onClick={() => handleDownload("late_arrival", "pdf")}>
                   <Download className="h-4 w-4 mr-1" /> PDF
                 </Button>
@@ -1159,7 +1922,6 @@ export default function Reports() {
             </CardHeader>
             <CardContent className="space-y-6">
               {(() => {
-                const buffer = parseInt(localStorage.getItem('lateArrivalBuffer') || '10');
                 const allData = lateArrivalData.filter(row => {
                   const zoneMatch = lateZoneFilter === "all" || row.zone === lateZoneFilter;
                   const wardMatch = lateWardFilter === "all" || row.ward === lateWardFilter;
@@ -1169,17 +1931,19 @@ export default function Reports() {
                 });
                 const filteredByStatus = allData.filter(row => {
                   if (lateStatusFilter === "all") return true;
-                  const isLate = row.delay > buffer;
+                  const isLate = Boolean(row.isLate);
                   if (lateStatusFilter === "late") return isLate;
                   return !isLate;
                 });
-                const lateCount = allData.filter(d => d.delay > buffer).length;
-                const onTimeCount = allData.filter(d => d.delay <= buffer).length;
-                const avgDelay = Math.round(allData.filter(d => d.delay > buffer).reduce((sum, d) => sum + d.delay, 0) / Math.max(lateCount, 1));
+                const lateCount = allData.filter(d => d.isLate).length;
+                const onTimeCount = allData.filter(d => !d.isLate).length;
+                const avgDelay = Math.round(allData.filter(d => d.isLate).reduce((sum, d) => sum + (Number(d.lateByMinutes) || 0), 0) / Math.max(lateCount, 1));
+                const graceMinutes = allData.find(d => d.graceMinutes !== undefined)?.graceMinutes ?? 15;
 
                 const uniqueZones = [...new Set(lateArrivalData.map(d => d.zone))];
                 const uniqueWards = [...new Set(lateArrivalData.filter(d => lateZoneFilter === "all" || d.zone === lateZoneFilter).map(d => d.ward))];
                 const uniqueVendors = [...new Set(lateArrivalData.map(d => d.vendor))];
+                const uniqueRouteTypes = [...new Set(lateArrivalData.map(d => d.routeType).filter(Boolean))];
 
                 return (
                   <>
@@ -1218,8 +1982,7 @@ export default function Reports() {
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="all">All Types</SelectItem>
-                          <SelectItem value="primary">Primary</SelectItem>
-                          <SelectItem value="secondary">Secondary</SelectItem>
+                          {uniqueRouteTypes.map(type => <SelectItem key={type} value={type}>{type}</SelectItem>)}
                         </SelectContent>
                       </Select>
                     </div>
@@ -1231,12 +1994,12 @@ export default function Reports() {
                         {[
                           { key: "all", label: "All" },
                           { key: "on-time", label: "On Time" },
-                          { key: "late", label: "Late" }
+                          { key: "late", label: `Late > ${graceMinutes} min grace` }
                         ].map((filter) => (
                           <Badge
                             key={filter.key}
                             variant={lateStatusFilter === filter.key ? "default" : "outline"}
-                            className={`cursor-pointer ${lateStatusFilter === filter.key ? "" : "hover:bg-muted"}`}
+                            className={`cursor-pointer ${filter.key === "late" ? "text-red-600 border-red-500/40" : ""} ${lateStatusFilter === filter.key ? "" : "hover:bg-muted"}`}
                             onClick={() => { setLateStatusFilter(filter.key); setLateArrivalPage(1); }}
                           >
                             {filter.label}
@@ -1281,17 +2044,19 @@ export default function Reports() {
                             <TableHead>Truck</TableHead>
                             <TableHead>Driver</TableHead>
                             <TableHead>Route</TableHead>
+                            <TableHead>First Pickup</TableHead>
                             <TableHead>Type</TableHead>
-                            <TableHead className="text-center">Scheduled</TableHead>
-                            <TableHead className="text-center">Actual</TableHead>
-                            <TableHead className="text-center">Delay</TableHead>
+                            <TableHead className="text-center">Expected</TableHead>
+                            <TableHead className="text-center">Allowed Until</TableHead>
+                            <TableHead className="text-center">Actual Entry</TableHead>
+                            <TableHead className="text-center">Late By</TableHead>
                             <TableHead>Reason</TableHead>
                             <TableHead>Status</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
                           {paginate(filteredByStatus, lateArrivalPage).map((row) => {
-                            const isLate = row.delay > buffer;
+                            const isLate = Boolean(row.isLate);
                             return (
                               <TableRow key={row.id} className={isLate ? "bg-red-500/5" : ""}>
                                 <TableCell className="font-medium">{row.date}</TableCell>
@@ -1300,15 +2065,20 @@ export default function Reports() {
                                 <TableCell>{row.driver}</TableCell>
                                 <TableCell>{row.route}</TableCell>
                                 <TableCell>
+                                  <div className="text-sm font-medium">{row.firstPickupPoint || "-"}</div>
+                                  <div className="text-xs text-muted-foreground">Seq {row.firstPickupSequence || "-"}</div>
+                                </TableCell>
+                                <TableCell>
                                   <Badge variant="outline" className="text-xs">
-                                    {row.routeType === "primary" ? "P" : "S"}
+                                    {row.routeType || "-"}
                                   </Badge>
                                 </TableCell>
                                 <TableCell className="text-center">{row.scheduledTime}</TableCell>
+                                <TableCell className="text-center">{row.allowedUntil || "-"}</TableCell>
                                 <TableCell className="text-center">{row.actualTime}</TableCell>
                                 <TableCell className="text-center">
-                                  <span className={`font-medium ${isLate ? "text-red-600" : row.delay <= 0 ? "text-green-600" : "text-yellow-600"}`}>
-                                    {row.delay > 0 ? `+${row.delay}` : row.delay} min
+                                  <span className={`font-medium ${isLate ? "text-red-600" : "text-green-600"}`}>
+                                    {isLate ? `${row.lateByMinutes || 0} min` : "0 min"}
                                   </span>
                                 </TableCell>
                                 <TableCell className="text-xs text-muted-foreground">{row.reason || "-"}</TableCell>
@@ -1320,6 +2090,13 @@ export default function Reports() {
                               </TableRow>
                             );
                           })}
+                          {filteredByStatus.length === 0 && (
+                            <TableRow>
+                              <TableCell colSpan={13} className="py-6 text-center text-sm text-muted-foreground">
+                                No first pickup entry records found for the selected filters.
+                              </TableCell>
+                            </TableRow>
+                          )}
                         </TableBody>
                       </Table>
                     </div>
@@ -1343,9 +2120,8 @@ export default function Reports() {
                 <CardDescription>Overspeeding, harsh braking, and rapid acceleration incidents</CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => handleDownload("driver_behavior", "csv")}>
-                  <FileSpreadsheet className="h-4 w-4 mr-1" /> CSV
-                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleDownload("driver_behavior", "excel")}>
+                  <FileSpreadsheet className="h-4 w-4 mr-1" /> Excel</Button>
                 <Button variant="outline" size="sm" onClick={() => handleDownload("driver_behavior", "pdf")}>
                   <Download className="h-4 w-4 mr-1" /> PDF
                 </Button>
@@ -1511,9 +2287,8 @@ export default function Reports() {
                 <CardDescription>Live status of all vehicles including inactive and failed devices</CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => handleDownload("vehicle_status", "csv")}>
-                  <FileSpreadsheet className="h-4 w-4 mr-1" /> CSV
-                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleDownload("vehicle_status", "excel")}>
+                  <FileSpreadsheet className="h-4 w-4 mr-1" /> Excel</Button>
                 <Button variant="outline" size="sm" onClick={() => handleDownload("vehicle_status", "pdf")}>
                   <Download className="h-4 w-4 mr-1" /> PDF
                 </Button>
@@ -1678,9 +2453,8 @@ export default function Reports() {
                 <CardDescription>Complaints mapped to truck movements and response times</CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => handleDownload("complaints", "csv")}>
-                  <FileSpreadsheet className="h-4 w-4 mr-1" /> CSV
-                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleDownload("complaints", "excel")}>
+                  <FileSpreadsheet className="h-4 w-4 mr-1" /> Excel</Button>
                 <Button variant="outline" size="sm" onClick={() => handleDownload("complaints", "pdf")}>
                   <Download className="h-4 w-4 mr-1" /> PDF
                 </Button>
@@ -1832,9 +2606,8 @@ export default function Reports() {
                 <CardDescription>Entry counts, weight per trip, and site capacity utilization</CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => handleDownload("dumpyard_log", "csv")}>
-                  <FileSpreadsheet className="h-4 w-4 mr-1" /> CSV
-                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleDownload("dumpyard_log", "excel")}>
+                  <FileSpreadsheet className="h-4 w-4 mr-1" /> Excel</Button>
                 <Button variant="outline" size="sm" onClick={() => handleDownload("dumpyard_log", "pdf")}>
                   <Download className="h-4 w-4 mr-1" /> PDF
                 </Button>
@@ -1943,9 +2716,8 @@ export default function Reports() {
                 <CardDescription>Track truck insurance, fitness certificates, and driver license expiration dates</CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => handleDownload("expiry_report", "csv")}>
-                  <FileSpreadsheet className="h-4 w-4 mr-1" /> CSV
-                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleDownload("expiry_report", "excel")}>
+                  <FileSpreadsheet className="h-4 w-4 mr-1" /> Excel</Button>
                 <Button variant="outline" size="sm" onClick={() => handleDownload("expiry_report", "pdf")}>
                   <Download className="h-4 w-4 mr-1" /> PDF
                 </Button>
@@ -2177,9 +2949,8 @@ export default function Reports() {
                 <CardDescription>Track spare truck deployments and breakdown replacements</CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => handleDownload("spare_usage", "csv")}>
-                  <FileSpreadsheet className="h-4 w-4 mr-1" /> CSV
-                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleDownload("spare_usage", "excel")}>
+                  <FileSpreadsheet className="h-4 w-4 mr-1" /> Excel</Button>
                 <Button variant="outline" size="sm" onClick={() => handleDownload("spare_usage", "pdf")}>
                   <Download className="h-4 w-4 mr-1" /> PDF
                 </Button>
@@ -2304,3 +3075,4 @@ export default function Reports() {
     </div>
   );
 }
+

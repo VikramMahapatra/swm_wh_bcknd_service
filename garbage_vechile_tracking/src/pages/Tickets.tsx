@@ -13,6 +13,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { useToast } from '@/hooks/use-toast';
 import { useTickets } from '@/hooks/useDataQueries';
+import { apiService } from '@/services/api';
+import { useQueryClient } from '@tanstack/react-query';
 import type { Ticket, TicketStatus, TicketPriority, TicketCategory, TicketComment } from '@/data/tickets';
 import { slaConfig } from '@/data/tickets';
 import { PageHeader } from '@/components/PageHeader';
@@ -25,8 +27,36 @@ const getDateValue = (value: unknown): string | undefined =>
 
 const safeParseISO = (value?: string) => (value ? parseISO(value) : null);
 
+const normalizeTicket = (ticket: any): Ticket => ({
+  id: ticket.id || ticket.ticket_number || 'UNKNOWN',
+  title: ticket.title || 'Untitled',
+  description: ticket.description || '',
+  category: ticket.category || 'complaint',
+  priority: ticket.priority || 'medium',
+  status: ticket.status || 'open',
+  createdAt: ticket.createdAt || ticket.created_at || new Date().toISOString(),
+  updatedAt: ticket.updatedAt || ticket.updated_at || new Date().toISOString(),
+  dueDate: ticket.dueDate || ticket.due_date || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+  assignedTo: ticket.assignedTo || ticket.assigned_to || '',
+  createdBy: ticket.createdBy || ticket.created_by || ticket.reporter_name || 'System',
+  relatedAlertId: ticket.relatedAlertId || ticket.related_alert_id,
+  relatedTruckId: ticket.relatedTruckId || ticket.related_truck_id,
+  relatedDriverId: ticket.relatedDriverId || ticket.related_driver_id,
+  escalationLevel: ticket.escalationLevel ?? ticket.escalation_level ?? 0,
+  slaBreached: ticket.slaBreached ?? ticket.sla_breached ?? false,
+  comments: (ticket.comments || []).map((comment: any) => ({
+    id: comment.id,
+    ticketId: comment.ticketId || comment.ticket_id || ticket.id,
+    author: comment.author || 'System',
+    content: comment.content || comment.comment || '',
+    createdAt: comment.createdAt || comment.created_at || new Date().toISOString(),
+    isInternal: comment.isInternal ?? comment.is_internal ?? false,
+  })),
+});
+
 export default function Tickets() {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const { data: ticketsData = [], isLoading: isLoadingTickets, error: ticketsError } = useTickets();
   
   const [tickets, setTickets] = useState<Ticket[]>([]);
@@ -38,22 +68,7 @@ export default function Tickets() {
   const [newComment, setNewComment] = useState('');
 
   useEffect(() => {
-    const normalizedTickets = (ticketsData as any[]).map((ticket) => ({
-      id: ticket.id || ticket.ticket_number || 'UNKNOWN',
-      title: ticket.title || 'Untitled',
-      description: ticket.description || '',
-      category: ticket.category || 'complaint',
-      priority: ticket.priority || 'medium',
-      status: ticket.status || 'open',
-      createdAt: ticket.createdAt || ticket.created_at || new Date().toISOString(),
-      updatedAt: ticket.updatedAt || ticket.updated_at || new Date().toISOString(),
-      dueDate: ticket.dueDate || ticket.due_date || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-      assignedTo: ticket.assignedTo || ticket.assigned_to || '',
-      createdBy: ticket.createdBy || ticket.reporter_name || 'System',
-      escalationLevel: ticket.escalationLevel ?? 0,
-      slaBreached: ticket.slaBreached ?? ticket.sla_breached ?? false,
-      comments: ticket.comments || [],
-    })) as Ticket[];
+    const normalizedTickets = (ticketsData as any[]).map(normalizeTicket) as Ticket[];
 
     setTickets(normalizedTickets);
     if (ticketsError) {
@@ -134,64 +149,102 @@ export default function Tickets() {
     return matchesSearch && matchesStatus && matchesPriority;
   });
 
-  const handleCreateTicket = () => {
-    const newTicket: Ticket = {
-      id: `TKT${String(tickets.length + 1).padStart(3, '0')}`,
-      title: formData.title || '',
-      description: formData.description || '',
-      category: formData.category as TicketCategory || 'complaint',
-      priority: formData.priority as TicketPriority || 'medium',
-      status: 'open',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      dueDate: formData.dueDate || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-      assignedTo: formData.assignedTo,
-      createdBy: 'Current User',
-      escalationLevel: 0,
-      slaBreached: false,
-      comments: []
-    };
-    setTickets(prev => [newTicket, ...prev]);
-    toast({ title: "Ticket Created", description: `Ticket ${newTicket.id} has been created.` });
-    setIsCreateDialogOpen(false);
-    setFormData({ title: '', description: '', category: 'complaint', priority: 'medium', dueDate: '', assignedTo: '' });
-  };
-
-  const handleStatusChange = (ticketId: string, newStatus: TicketStatus) => {
-    setTickets(prev => prev.map(t => t.id === ticketId ? { ...t, status: newStatus, updatedAt: new Date().toISOString() } : t));
-    if (selectedTicket?.id === ticketId) {
-      setSelectedTicket(prev => prev ? { ...prev, status: newStatus } : null);
+  const handleCreateTicket = async () => {
+    try {
+      const created = await apiService.createTicket({
+        title: formData.title || '',
+        description: formData.description || '',
+        category: formData.category || 'complaint',
+        priority: formData.priority || 'medium',
+        status: 'open',
+        dueDate: formData.dueDate || null,
+        assignedTo: formData.assignedTo || null,
+        createdBy: 'Current User',
+      });
+      const newTicket = normalizeTicket(created);
+      setTickets(prev => [newTicket, ...prev]);
+      await queryClient.invalidateQueries({ queryKey: ['tickets'] });
+      toast({ title: "Ticket Created", description: `Ticket ${newTicket.id} has been created.` });
+      setIsCreateDialogOpen(false);
+      setFormData({ title: '', description: '', category: 'complaint', priority: 'medium', dueDate: '', assignedTo: '' });
+    } catch (error) {
+      toast({
+        title: "Unable to create ticket",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
     }
-    toast({ title: "Status Updated", description: `Ticket status changed to ${newStatus}.` });
   };
 
-  const handleAddComment = () => {
+  const handleStatusChange = async (ticketId: string, newStatus: TicketStatus) => {
+    try {
+      const updated = normalizeTicket(await apiService.updateTicket(ticketId, { status: newStatus }));
+      setTickets(prev => prev.map(t => t.id === ticketId ? { ...t, ...updated } : t));
+      if (selectedTicket?.id === ticketId) {
+        setSelectedTicket(updated);
+      }
+      await queryClient.invalidateQueries({ queryKey: ['tickets'] });
+      toast({ title: "Status Updated", description: `Ticket status changed to ${newStatus}.` });
+    } catch (error) {
+      toast({
+        title: "Unable to update ticket",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleAddComment = async () => {
     if (!selectedTicket || !newComment.trim()) return;
-    
-    const comment: TicketComment = {
-      id: `CMT${Date.now()}`,
-      ticketId: selectedTicket.id,
-      author: 'Current User',
-      content: newComment,
-      createdAt: new Date().toISOString(),
-      isInternal: false
-    };
-    
-    setTickets(prev => prev.map(t => t.id === selectedTicket.id 
-      ? { ...t, comments: [...t.comments, comment], updatedAt: new Date().toISOString() } 
-      : t
-    ));
-    setSelectedTicket(prev => prev ? { ...prev, comments: [...prev.comments, comment] } : null);
-    setNewComment('');
-    toast({ title: "Comment Added", description: "Your comment has been added to the ticket." });
+
+    try {
+      await apiService.addTicketComment(selectedTicket.id, newComment);
+      const refreshed = normalizeTicket(await apiService.getTicket(selectedTicket.id));
+      setTickets(prev => prev.map(t => t.id === selectedTicket.id ? refreshed : t));
+      setSelectedTicket(refreshed);
+      setNewComment('');
+      await queryClient.invalidateQueries({ queryKey: ['tickets'] });
+      toast({ title: "Comment Added", description: "Your comment has been added to the ticket." });
+    } catch (error) {
+      toast({
+        title: "Unable to add comment",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
   };
 
-  const handleEscalate = (ticketId: string) => {
-    setTickets(prev => prev.map(t => t.id === ticketId 
-      ? { ...t, escalationLevel: Math.min(t.escalationLevel + 1, 3), updatedAt: new Date().toISOString() } 
-      : t
-    ));
-    toast({ title: "Ticket Escalated", description: "Ticket has been escalated to the next level." });
+  const handleEscalate = async (ticketId: string) => {
+    const ticket = tickets.find(t => t.id === ticketId);
+    if (!ticket) return;
+
+    try {
+      const nextLevel = Math.min(ticket.escalationLevel + 1, 3);
+      const updated = normalizeTicket(await apiService.updateTicket(ticketId, { escalationLevel: nextLevel }));
+      setTickets(prev => prev.map(t => t.id === ticketId ? { ...t, ...updated } : t));
+      if (selectedTicket?.id === ticketId) {
+        setSelectedTicket(updated);
+      }
+      await queryClient.invalidateQueries({ queryKey: ['tickets'] });
+      toast({ title: "Ticket Escalated", description: "Ticket has been escalated to the next level." });
+    } catch (error) {
+      toast({
+        title: "Unable to escalate ticket",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleSelectTicket = async (ticket: Ticket) => {
+    setSelectedTicket(ticket);
+    try {
+      const detailed = normalizeTicket(await apiService.getTicket(ticket.id));
+      setTickets(prev => prev.map(t => t.id === ticket.id ? detailed : t));
+      setSelectedTicket(detailed);
+    } catch {
+      // Keep current ticket selection even if detail fetch fails.
+    }
   };
 
   const ticketCounts = {
@@ -418,7 +471,7 @@ export default function Tickets() {
               </TableHeader>
               <TableBody>
                 {filteredTickets.map((ticket) => (
-                  <TableRow key={ticket.id} className={`cursor-pointer ${selectedTicket?.id === ticket.id ? 'bg-muted/50' : ''}`} onClick={() => setSelectedTicket(ticket)}>
+                  <TableRow key={ticket.id} className={`cursor-pointer ${selectedTicket?.id === ticket.id ? 'bg-muted/50' : ''}`} onClick={() => handleSelectTicket(ticket)}>
                     <TableCell>
                       <div className="space-y-1">
                         <div className="font-medium text-sm">{ticket.id}</div>

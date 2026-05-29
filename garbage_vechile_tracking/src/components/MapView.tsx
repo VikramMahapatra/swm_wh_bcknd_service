@@ -17,7 +17,9 @@ interface MapViewProps {
 const MapView = ({ selectedTruck: propSelectedTruck, allowFullscreen = false }: MapViewProps) => {
   const { data: liveTrucksData = [] } = useLiveTrucks();
   const { data: zonesData = [] } = useZones();
-  const { data: wardsData = [] } = useZoneWards();
+  // Use first zone as default for demo; in real app, use user selection or all zones aggregation
+  const defaultZoneId = zonesData[0]?.id || "";
+  const { data: wardsData = [] } = useZoneWards(defaultZoneId);
   const { data: vendorsData = [] } = useVendors();
 
   const [zones, setZones] = useState([]);
@@ -55,6 +57,7 @@ const MapView = ({ selectedTruck: propSelectedTruck, allowFullscreen = false }: 
       vehicleType: t.vehicleType || "compactor",
       zoneId: t.zoneId || "ZN003",
       wardId: t.wardId || "WD001",
+      bearing: t.bearing || 0,
     }));
   }, [liveTrucks]);
 

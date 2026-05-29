@@ -1,4 +1,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { apiService } from '@/services/api';
+import { clearAuthTokens, getAccessToken, getRefreshToken, saveAuthTokens } from '@/lib/authStorage';
 
 export type UserRole = 'admin' | 'user';
 
@@ -24,40 +26,63 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // Check for existing session - but don't auto-login
-    // User must explicitly login each time for security
-    const savedUser = localStorage.getItem('mockUser');
-    if (savedUser) {
-      try {
-        const parsed = JSON.parse(savedUser);
-        // Validate session is still valid (optional: add expiry check)
-        if (parsed && parsed.id && parsed.email && parsed.role) {
-          setUser(parsed);
-        } else {
-          localStorage.removeItem('mockUser');
-        }
-      } catch {
-        localStorage.removeItem('mockUser');
+    const restoreSession = async () => {
+      const token = getAccessToken();
+      if (!token) {
+        setIsLoading(false);
+        return;
       }
-    }
-    setIsLoading(false);
+
+      try {
+        const me = await apiService.getCurrentUser(token);
+        const roles = Array.isArray(me?.roles) ? me.roles : [];
+        const email = typeof me?.subject === 'string' ? me.subject : 'user';
+        const normalizedUser: User = {
+          id: email,
+          email,
+          name: email.split('@')[0] || email,
+          role: roles.includes('admin') ? 'admin' : 'user',
+        };
+        setUser(normalizedUser);
+      } catch {
+        clearAuthTokens();
+        setUser(null);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    void restoreSession();
   }, []);
 
-  const login = async (email: string, password: string, role: UserRole) => {
-    // Mock login - in production this would call your backend with proper authentication
-    const mockUser: User = {
-      id: role === 'admin' ? 'admin-1' : 'user-1',
+  const login = async (email: string, password: string, _role: UserRole) => {
+    const payload = await apiService.login(email, password);
+    const accessToken = String(payload?.access_token || '');
+    const refreshToken = String(payload?.refresh_token || '');
+    if (!accessToken) {
+      throw new Error('Missing access token from login response');
+    }
+
+    saveAuthTokens(accessToken, refreshToken || undefined);
+
+    const me = await apiService.getCurrentUser(accessToken);
+    const roles = Array.isArray(me?.roles) ? me.roles : [];
+    const subject = typeof me?.subject === 'string' && me.subject ? me.subject : email;
+    const normalizedUser: User = {
+      id: subject,
       email,
-      name: email.split('@')[0],
-      role,
+      name: subject.split('@')[0] || subject,
+      role: roles.includes('admin') ? 'admin' : 'user',
     };
-    
-    localStorage.setItem('mockUser', JSON.stringify(mockUser));
-    setUser(mockUser);
+    setUser(normalizedUser);
   };
 
   const logout = () => {
-    localStorage.removeItem('mockUser');
+    const refreshToken = getRefreshToken();
+    if (refreshToken) {
+      void apiService.logout(refreshToken).catch(() => undefined);
+    }
+    clearAuthTokens();
     setUser(null);
   };
 

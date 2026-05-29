@@ -89,7 +89,7 @@ async def run(args: argparse.Namespace) -> None:
             elif isinstance(obj, dict):
                 print_payload(obj)
             else:
-                log(f"raw={obj}")
+                log(f"raw={obj}")                alembic upgrade head
 
 
 def parse_args() -> argparse.Namespace:

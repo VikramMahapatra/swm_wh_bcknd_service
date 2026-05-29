@@ -1,5 +1,5 @@
-import { useState, useCallback, useEffect, useMemo } from "react";
-import { GoogleMap, Marker, InfoWindow, Polygon } from "@react-google-maps/api";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { GoogleMap, Marker, InfoWindow, Polygon, Polyline } from "@react-google-maps/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ import {
 import { createTruckMarkerIcon } from "@/components/TruckIcon";
 import { useSwmLiveFleet } from "@/hooks/useSwmLiveFleet";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { apiService } from "@/services/api";
 
 const containerStyle = { width: '100%', height: '100%' };
 
@@ -38,126 +39,382 @@ export default function Fleet() {
   const [searchTerm, setSearchTerm] = useState("");
   const [filterZone, setFilterZone] = useState<string>("all");
   const [filterWard, setFilterWard] = useState<string>("all");
+  const [filterRoute, setFilterRoute] = useState<string>("all");
   const [filterType, setFilterType] = useState<"all" | "primary" | "secondary">("all");
   const [filterStatus, setFilterStatus] = useState<"all" | TruckStatus>("all");
   const [wardPolygons, setWardPolygons] = useState<Array<Array<{ lat: number; lng: number }>>>([]);
   const [wardMatchLabel, setWardMatchLabel] = useState<string | null>(null);
-  const { trucks: liveMapTrucks, isConnected: isLiveFeedConnected } = useSwmLiveFleet();
+  const [selectedTruckRoutePath, setSelectedTruckRoutePath] = useState<Array<{ lat: number; lng: number }>>([]);
+  const [selectedRoutePickupPoints, setSelectedRoutePickupPoints] = useState<Array<{ id: string; name: string; lat: number; lng: number; sequence: number }>>([]);
+  const [zones, setZones] = useState<any[]>([]);
+  const [wards, setWards] = useState<any[]>([]);
+  const [routes, setRoutes] = useState<any[]>([]);
+  const [vehicles, setVehicles] = useState<any[]>([]);
+  const [devices, setDevices] = useState<any[]>([]);
+  const [deviceAssignments, setDeviceAssignments] = useState<any[]>([]);
+  const [isFiltersLoading, setIsFiltersLoading] = useState(false);
+  const [isOverlayLoading, setIsOverlayLoading] = useState(false);
+  const [isRouteDetailsLoading, setIsRouteDetailsLoading] = useState(false);
+  const [crossedPickupPointIds, setCrossedPickupPointIds] = useState<Set<string>>(new Set());
+  const mapRef = useRef<google.maps.Map | null>(null);
+  const routeCycleResetIndexRef = useRef<Record<string, number>>({});
+  const gtcInsideRef = useRef<Record<string, boolean>>({});
+  const { trucks: liveMapTrucks, isConnected: isLiveFeedConnected, trails } = useSwmLiveFleet();
 
   const availableZones = useMemo(() => {
-    const seen = new Set<string>();
-    const zones: Array<{ id: string; name: string }> = [];
-    for (const truck of liveMapTrucks) {
-      const id = (truck.zoneId || "").trim();
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      zones.push({ id, name: id });
-    }
-    return zones;
-  }, [liveMapTrucks]);
+    return zones.map((zone) => ({ id: String(zone.id), name: String(zone.name || zone.zone_name || zone.id) }));
+  }, [zones]);
 
   const availableWards = useMemo(() => {
-    if (filterZone === "all") return [] as Array<{ id: string; name: string; zoneId: string }>;
-    const seen = new Set<string>();
-    const wards: Array<{ id: string; name: string; zoneId: string }> = [];
-    for (const truck of liveMapTrucks) {
-      if ((truck.zoneId || "") !== filterZone) continue;
-      const id = (truck.wardId || "").trim();
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      wards.push({ id, name: id, zoneId: filterZone });
-    }
-    return wards;
-  }, [liveMapTrucks, filterZone]);
+    return wards
+      .filter((ward) => filterZone === "all" || String(ward.zoneId || ward.zone_id || "") === filterZone)
+      .map((ward) => ({
+        id: String(ward.id),
+        name: String(ward.name || ward.ward_name || ward.id),
+        zoneId: String(ward.zoneId || ward.zone_id || ""),
+      }));
+  }, [wards, filterZone]);
+
+  const availableRoutes = useMemo(() => {
+    return routes.map((route) => ({
+      id: String(route.id),
+      name: String(route.route_name || route.name || route.id),
+      zoneId: String(route.zone_id || route.zoneId || ""),
+      wardId: String(route.ward_id || route.wardId || ""),
+      polyline: Array.isArray(route.polyline_coordinates) ? route.polyline_coordinates : [],
+    }));
+  }, [routes]);
 
   useEffect(() => {
-    setFilterWard("all");
-  }, [filterZone]);
-
-  // Load KML ward boundaries when zone/ward filter changes
-  useEffect(() => {
-    if (filterZone === "all" || filterWard === "all") {
-      setWardPolygons([]);
-      setWardMatchLabel(null);
-      return;
-    }
-
-    const selectedWard = availableWards.find((ward) => ward.id === filterWard);
-    if (!selectedWard) {
-      setWardPolygons([]);
-      setWardMatchLabel(null);
-      return;
-    }
-
-    const normalizeText = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
-    const parseCoordinates = (value: string) => value
-      .trim()
-      .split(/\s+/)
-      .map((pair) => {
-        const [lng, lat] = pair.split(",").map(Number);
-        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-        return { lat, lng };
-      })
-      .filter((point): point is { lat: number; lng: number } => point !== null);
-
-    const loadWardBoundary = async () => {
+    const loadMasterData = async () => {
+      setIsFiltersLoading(true);
       try {
-        const response = await fetch("/ward-boundaries.kml");
-        if (!response.ok) {
-          setWardPolygons([]);
-          setWardMatchLabel(null);
-          return;
-        }
-        const kmlText = await response.text();
-        const parser = new DOMParser();
-        const xml = parser.parseFromString(kmlText, "application/xml");
-        const placemarks = Array.from(xml.getElementsByTagName("Placemark"));
-        const target = normalizeText(selectedWard.name);
+        const [zoneRows, wardRows, vehicleRows, deviceRows, assignmentRows] = await Promise.all([
+          apiService.getZones(),
+          apiService.getWards(),
+          apiService.getVehicles(),
+          apiService.getDevices(),
+          apiService.getDeviceAssignments(),
+        ]);
+        setZones(Array.isArray(zoneRows) ? zoneRows : []);
+        setWards(Array.isArray(wardRows) ? wardRows : []);
+        setVehicles(Array.isArray(vehicleRows) ? vehicleRows : []);
+        setDevices(Array.isArray(deviceRows) ? deviceRows : []);
+        setDeviceAssignments(Array.isArray(assignmentRows) ? assignmentRows : []);
+      } finally {
+        setIsFiltersLoading(false);
+      }
+    };
+    loadMasterData();
+  }, []);
 
-        const extractSimpleData = (placemark: Element, name: string) => {
-          const entries = Array.from(placemark.getElementsByTagName("SimpleData"));
-          const match = entries.find((entry) => entry.getAttribute("name") === name);
-          return match?.textContent?.trim() || "";
-        };
+  useEffect(() => {
+    const loadRoutes = async () => {
+      try {
+        const routeRows = await apiService.getRoutes({
+          zone_id: filterZone === "all" ? undefined : filterZone,
+          ward_id: filterWard === "all" ? undefined : filterWard,
+        });
+        setRoutes(Array.isArray(routeRows) ? routeRows : []);
+      } catch {
+        setRoutes([]);
+      }
+    };
+    loadRoutes();
+  }, [filterZone, filterWard]);
 
-        const matchPlacemark = placemarks.find((placemark) => {
-          const wardName = normalizeText(extractSimpleData(placemark, "ward"));
-          const prabhagName = normalizeText(extractSimpleData(placemark, "prabhag"));
-          return wardName.includes(target) || prabhagName.includes(target) || target.includes(wardName) || target.includes(prabhagName);
+  const routePolylineById = useMemo(() => {
+    const map = new Map<string, Array<{ lat: number; lng: number }>>();
+    for (const route of availableRoutes) {
+      const path = route.polyline
+        .map((point: any) => {
+          if (!Array.isArray(point) || point.length < 2) return null;
+          const lng = Number(point[0]);
+          const lat = Number(point[1]);
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+          return { lat, lng };
+        })
+        .filter((point: any) => point !== null);
+      map.set(route.id, path);
+    }
+    return map;
+  }, [availableRoutes]);
+
+  const selectedRouteFilterPath = useMemo(() => {
+    if (filterRoute === "all") return [];
+    return routePolylineById.get(filterRoute) || [];
+  }, [filterRoute, routePolylineById]);
+
+  const vehicleByTruckNumber = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const vehicle of vehicles) {
+      const keys = [
+        String(vehicle.vehicle_number || vehicle.registration_number || "").trim().toLowerCase(),
+        String(vehicle.id || "").trim().toLowerCase(),
+      ].filter(Boolean);
+      keys.forEach((key) => map.set(key, vehicle));
+    }
+    return map;
+  }, [vehicles]);
+
+  const vehicleByDeviceIdentity = useMemo(() => {
+    const map = new Map<string, any>();
+    const deviceById = new Map<string, any>();
+    for (const device of devices) {
+      const id = String(device.id || "").trim().toLowerCase();
+      if (id) deviceById.set(id, device);
+    }
+    for (const assignment of deviceAssignments) {
+      const vehicleId = String(assignment.vehicle_id || "").trim().toLowerCase();
+      const deviceId = String(assignment.device_id || "").trim().toLowerCase();
+      if (!vehicleId || !deviceId) continue;
+      const vehicle = vehicles.find((row) => String(row.id || "").trim().toLowerCase() === vehicleId);
+      if (!vehicle) continue;
+      map.set(deviceId, vehicle);
+      const device = deviceById.get(deviceId);
+      const imei = String(device?.imei || "").trim().toLowerCase();
+      if (imei) map.set(imei, vehicle);
+    }
+    return map;
+  }, [vehicles, devices, deviceAssignments]);
+
+  const getLinkedVehicle = useCallback((truck: TruckData | null) => {
+    if (!truck) return null;
+    const truckNumberKey = truck.truckNumber.trim().toLowerCase();
+    const truckIdKey = truck.id.trim().toLowerCase();
+    return (
+      vehicleByTruckNumber.get(truckNumberKey) ||
+      vehicleByTruckNumber.get(truckIdKey) ||
+      vehicleByDeviceIdentity.get(truckIdKey) ||
+      null
+    );
+  }, [vehicleByTruckNumber, vehicleByDeviceIdentity]);
+
+  const activeRouteId = useMemo(() => {
+    if (filterRoute !== "all") return filterRoute;
+    if (!selectedTruck) return "";
+    const matchedVehicle = getLinkedVehicle(selectedTruck);
+    return matchedVehicle?.route_id ? String(matchedVehicle.route_id) : "";
+  }, [filterRoute, selectedTruck, getLinkedVehicle]);
+
+  const routeTrackingTrucks = useMemo(() => {
+    if (!activeRouteId) return [] as TruckData[];
+    if (filterRoute !== "all") {
+      return liveMapTrucks.filter((truck) => {
+        const matchedVehicle = getLinkedVehicle(truck);
+        return matchedVehicle?.route_id && String(matchedVehicle.route_id) === activeRouteId;
+      });
+    }
+    if (!selectedTruck) return [] as TruckData[];
+    return [liveMapTrucks.find((truck) => truck.id === selectedTruck.id) || selectedTruck];
+  }, [activeRouteId, filterRoute, liveMapTrucks, selectedTruck, getLinkedVehicle]);
+
+  // Load geofence overlays based on selected filters
+  useEffect(() => {
+    if (filterZone === "all" && filterWard === "all" && filterRoute === "all") {
+      setWardPolygons([]);
+      setWardMatchLabel(null);
+      return;
+    }
+
+    const loadOverlays = async () => {
+      setIsOverlayLoading(true);
+      try {
+        const [zoneGeofences, wardGeofences, routeGeofences] = await Promise.all([
+          filterZone !== "all"
+            ? apiService.getGeofences({ geofence_for: "zone", zone_id: filterZone, page: 1, page_size: 200 })
+            : Promise.resolve([]),
+          filterWard !== "all"
+            ? apiService.getGeofences({ geofence_for: "ward", ward_id: filterWard, page: 1, page_size: 200 })
+            : Promise.resolve([]),
+          filterRoute !== "all"
+            ? apiService.getGeofences({ geofence_for: "route", route_id: filterRoute, page: 1, page_size: 200 })
+            : Promise.resolve([]),
+        ]);
+
+        const unique = new Map<string, any>();
+        [...zoneGeofences, ...wardGeofences, ...routeGeofences].forEach((g: any) => {
+          if (g?.id) unique.set(String(g.id), g);
         });
 
-        if (!matchPlacemark) {
-          console.warn('No KML placemark found for ward:', selectedWard.name);
-          setWardPolygons([]);
-          setWardMatchLabel(null);
-          return;
-        }
+        const polygons = Array.from(unique.values())
+          .map((geofence: any) => {
+            const rings = geofence?.polygon?.coordinates?.[0];
+            if (!Array.isArray(rings)) return [];
+            return rings
+              .map((pair: any) => {
+                if (!Array.isArray(pair) || pair.length < 2) return null;
+                const lng = Number(pair[0]);
+                const lat = Number(pair[1]);
+                if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+                return { lat, lng };
+              })
+              .filter((point: any) => point !== null);
+          })
+          .filter((path: Array<{ lat: number; lng: number }>) => path.length > 2);
 
-        const wardName = extractSimpleData(matchPlacemark, "ward");
-        const prabhagName = extractSimpleData(matchPlacemark, "prabhag");
-        setWardMatchLabel(prabhagName ? `${wardName} (${prabhagName})` : wardName || selectedWard.name);
-
-        const boundaries = Array.from(matchPlacemark.getElementsByTagName("outerBoundaryIs"));
-        const polygons = boundaries
-          .map((boundary) => boundary.getElementsByTagName("coordinates")[0]?.textContent || "")
-          .map((coords) => parseCoordinates(coords))
-          .filter((path) => path.length > 0);
-
-        console.log('Ward boundary loaded:', wardName, 'polygons:', polygons.length);
         setWardPolygons(polygons);
+        const zoneLabel = availableZones.find((z) => z.id === filterZone)?.name;
+        const wardLabel = availableWards.find((w) => w.id === filterWard)?.name;
+        const routeLabel = availableRoutes.find((r) => r.id === filterRoute)?.name;
+        setWardMatchLabel(routeLabel || wardLabel || zoneLabel || null);
       } catch (error) {
-        console.error('Error loading ward boundary:', error);
+        console.error("Error loading geofence boundaries:", error);
         setWardPolygons([]);
         setWardMatchLabel(null);
+      } finally {
+        setIsOverlayLoading(false);
       }
     };
 
-    loadWardBoundary();
-  }, [filterZone, filterWard, availableWards]);
+    loadOverlays();
+  }, [filterZone, filterWard, filterRoute, availableZones, availableWards, availableRoutes]);
 
-  const onMapLoad = useCallback(() => {
+  const onMapLoad = useCallback((map: google.maps.Map) => {
+    mapRef.current = map;
     setIsMapLoaded(true);
   }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !window.google || wardPolygons.length === 0) return;
+    const bounds = new window.google.maps.LatLngBounds();
+    wardPolygons.forEach((path) => path.forEach((point) => bounds.extend(point)));
+    if (!bounds.isEmpty()) {
+      map.fitBounds(bounds, 80);
+    }
+  }, [wardPolygons]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !window.google || selectedRouteFilterPath.length === 0) return;
+    const bounds = new window.google.maps.LatLngBounds();
+    selectedRouteFilterPath.forEach((point) => bounds.extend(point));
+    if (!bounds.isEmpty()) {
+      map.fitBounds(bounds, 80);
+    }
+  }, [selectedRouteFilterPath]);
+
+
+  useEffect(() => {
+    if (!selectedTruck) {
+      setSelectedTruckRoutePath([]);
+      return;
+    }
+    const matchedVehicle = getLinkedVehicle(selectedTruck);
+    const routeId = matchedVehicle?.route_id ? String(matchedVehicle.route_id) : "";
+    if (!routeId) {
+      setSelectedTruckRoutePath([]);
+      return;
+    }
+    setSelectedTruckRoutePath(routePolylineById.get(routeId) || []);
+  }, [selectedTruck, getLinkedVehicle, routePolylineById]);
+
+  useEffect(() => {
+    const loadRouteDetails = async () => {
+      if (!activeRouteId) {
+        setSelectedRoutePickupPoints([]);
+        setCrossedPickupPointIds(new Set());
+        routeCycleResetIndexRef.current = {};
+        gtcInsideRef.current = {};
+        return;
+      }
+      setIsRouteDetailsLoading(true);
+      try {
+        const points = await apiService.getRoutePickupPoints(activeRouteId);
+        const normalized = (Array.isArray(points) ? points : [])
+          .map((point: any) => {
+            const lat = Number(point.latitude ?? point.lat);
+            const lng = Number(point.longitude ?? point.lng);
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+            return {
+              id: String(point.id ?? `${lat}-${lng}`),
+              name: String(point.pickup_name || point.name || "Pickup Point"),
+              lat,
+              lng,
+              sequence: Number(point.sequence_no ?? point.sequence ?? point.order_no ?? point.order ?? 0) || 0,
+            };
+          })
+          .filter((point: any) => point !== null)
+          .sort((a: any, b: any) => {
+            if (a.sequence && b.sequence) return a.sequence - b.sequence;
+            return a.name.localeCompare(b.name);
+          })
+          .map((point: any, index: number) => ({
+            ...point,
+            sequence: point.sequence || index + 1,
+          }));
+        setSelectedRoutePickupPoints(normalized);
+      } catch {
+        setSelectedRoutePickupPoints([]);
+        setCrossedPickupPointIds(new Set());
+      } finally {
+        setIsRouteDetailsLoading(false);
+      }
+    };
+    loadRouteDetails();
+  }, [activeRouteId]);
+
+  useEffect(() => {
+    if (routeTrackingTrucks.length === 0 || selectedRoutePickupPoints.length === 0) {
+      setCrossedPickupPointIds(new Set());
+      return;
+    }
+
+    const toRadians = (value: number) => (value * Math.PI) / 180;
+    const distanceMeters = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => {
+      const R = 6371000;
+      const dLat = toRadians(b.lat - a.lat);
+      const dLng = toRadians(b.lng - a.lng);
+      const lat1 = toRadians(a.lat);
+      const lat2 = toRadians(b.lat);
+      const h =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+      return 2 * R * Math.asin(Math.sqrt(h));
+    };
+
+    const thresholdMeters = 30;
+    const lastPickupPoint = selectedRoutePickupPoints[selectedRoutePickupPoints.length - 1];
+
+    for (const trackingTruck of routeTrackingTrucks) {
+      const trailPoints = trails[trackingTruck.id] || [];
+      const trackPoints = [...trailPoints, trackingTruck.position];
+      const cycleKey = `${trackingTruck.id}:${activeRouteId || "route"}`;
+
+      // Reaching the last pickup point means the truck reached the GTC and the route cycle is complete.
+      // Once reset, the next trip starts from the next GPS point after this GTC entry.
+      const isLatestAtGtc =
+        lastPickupPoint &&
+        distanceMeters(trackingTruck.position, { lat: lastPickupPoint.lat, lng: lastPickupPoint.lng }) <= thresholdMeters;
+      if (isLatestAtGtc) {
+        routeCycleResetIndexRef.current[cycleKey] = trackPoints.length - 1;
+        if (!gtcInsideRef.current[cycleKey]) {
+          gtcInsideRef.current[cycleKey] = true;
+          setCrossedPickupPointIds(new Set());
+        }
+        return;
+      }
+
+      gtcInsideRef.current[cycleKey] = false;
+    }
+
+    const crossedNow = new Set<string>();
+    for (const trackingTruck of routeTrackingTrucks) {
+      const trailPoints = trails[trackingTruck.id] || [];
+      const trackPoints = [...trailPoints, trackingTruck.position];
+      const cycleKey = `${trackingTruck.id}:${activeRouteId || "route"}`;
+      const resetIndex = routeCycleResetIndexRef.current[cycleKey] ?? -1;
+      const currentTripTrackPoints = trackPoints.slice(resetIndex + 1);
+
+      for (const pickup of selectedRoutePickupPoints) {
+        const wasCrossed = currentTripTrackPoints.some((point) => distanceMeters(point, { lat: pickup.lat, lng: pickup.lng }) <= thresholdMeters);
+        if (wasCrossed) crossedNow.add(pickup.id);
+      }
+    }
+
+    setCrossedPickupPointIds(crossedNow);
+  }, [routeTrackingTrucks, activeRouteId, selectedRoutePickupPoints, trails]);
 
   // Filter trucks based on all filter criteria
   const filteredTrucks = useMemo(() => {
@@ -165,13 +422,11 @@ export default function Fleet() {
       const matchesSearch = truck.truckNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
                            truck.driver.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesType = filterType === "all" || truck.truckType === filterType;
-      const matchesZone = filterZone === "all" || truck.zoneId === filterZone;
-      const matchesWard = filterWard === "all" || truck.wardId === filterWard;
       const matchesStatus = filterStatus === "all" || truck.status === filterStatus;
       
-      return matchesSearch && matchesType && matchesZone && matchesWard && matchesStatus;
+      return matchesSearch && matchesType && matchesStatus;
     });
-  }, [liveMapTrucks, searchTerm, filterType, filterZone, filterWard, filterStatus]);
+  }, [liveMapTrucks, searchTerm, filterType, filterStatus]);
 
   // Update selected truck data when filters change
   const currentSelectedTruck = selectedTruck 
@@ -181,6 +436,48 @@ export default function Fleet() {
   const handleTruckSelect = (truck: TruckData) => {
     setSelectedTruck(truck);
     setSelectedMarker(truck.id);
+    const linkedVehicle = getLinkedVehicle(truck);
+    const routeId = linkedVehicle?.route_id ? String(linkedVehicle.route_id) : "";
+    const routeRecord = routeId ? routes.find((route) => String(route.id) === routeId) : null;
+    const zoneId = String(
+      linkedVehicle?.zone_id ??
+      linkedVehicle?.zoneId ??
+      routeRecord?.zone_id ??
+      routeRecord?.zoneId ??
+      truck.zoneId ??
+      ""
+    );
+    const wardId = String(
+      linkedVehicle?.ward_id ??
+      linkedVehicle?.wardId ??
+      routeRecord?.ward_id ??
+      routeRecord?.wardId ??
+      truck.wardId ??
+      ""
+    );
+
+    if (zoneId) {
+      setFilterZone(zoneId);
+      setFilterWard(wardId || "all");
+      setFilterRoute(routeId || "all");
+    } else {
+      setFilterZone("all");
+      setFilterWard("all");
+      setFilterRoute(routeId || "all");
+    }
+  };
+
+  const handleClearFilters = () => {
+    setFilterZone("all");
+    setFilterWard("all");
+    setFilterRoute("all");
+    setWardPolygons([]);
+    setWardMatchLabel(null);
+    setSelectedTruck(null);
+    setSelectedMarker(null);
+    setSelectedTruckRoutePath([]);
+    setSelectedRoutePickupPoints([]);
+    setCrossedPickupPointIds(new Set());
   };
 
   // Calculate online/offline status based on live truck status
@@ -253,12 +550,16 @@ export default function Fleet() {
                     onChange={(e) => setSearchTerm(e.target.value)}
                   />
                 </div>
+                {isFiltersLoading && (
+                  <p className="text-[11px] text-muted-foreground">Loading filters...</p>
+                )}
                 
                 {/* Zone Filter */}
                 <div className="mt-2">
                   <Select value={filterZone} onValueChange={(value) => {
                     setFilterZone(value);
                     setFilterWard("all");
+                    setFilterRoute("all");
                   }}>
                     <SelectTrigger className="text-xs">
                       <SelectValue placeholder="Select zone" />
@@ -277,7 +578,10 @@ export default function Fleet() {
                 {/* Ward Filter (only show when zone is selected) */}
                 {filterZone !== "all" && availableWards.length > 0 && (
                   <div className="mt-2">
-                    <Select value={filterWard} onValueChange={setFilterWard}>
+                    <Select value={filterWard} onValueChange={(value) => {
+                      setFilterWard(value);
+                      setFilterRoute("all");
+                    }}>
                       <SelectTrigger className="text-xs">
                         <SelectValue placeholder="Select ward" />
                       </SelectTrigger>
@@ -292,6 +596,23 @@ export default function Fleet() {
                     </Select>
                   </div>
                 )}
+
+                {/* Route Filter */}
+                <div className="mt-2">
+                  <Select value={filterRoute} onValueChange={setFilterRoute}>
+                    <SelectTrigger className="text-xs">
+                      <SelectValue placeholder="Select route" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Routes</SelectItem>
+                      {availableRoutes.map((route) => (
+                        <SelectItem key={route.id} value={route.id}>
+                          {route.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 
                 {/* Route Type Filter */}
                 <div className="flex gap-1.5 mt-2">
@@ -328,6 +649,10 @@ export default function Fleet() {
                     </SelectContent>
                   </Select>
                 </div>
+
+                <Button variant="outline" size="sm" className="mt-2 w-full" onClick={handleClearFilters}>
+                  Clear Filters
+                </Button>
               </CardHeader>
               <CardContent className="p-0">
                 <ScrollArea className="h-[500px]">
@@ -419,6 +744,16 @@ export default function Fleet() {
                     </CardContent>
                   </Card>
                 )}
+                {isOverlayLoading && (
+                  <Card className="backdrop-blur-xl bg-background/90 border-muted/40 shadow-lg">
+                    <CardContent className="p-2 text-[10px] text-muted-foreground">Loading map overlays...</CardContent>
+                  </Card>
+                )}
+                {isRouteDetailsLoading && (
+                  <Card className="backdrop-blur-xl bg-background/90 border-muted/40 shadow-lg">
+                    <CardContent className="p-2 text-[10px] text-muted-foreground">Loading route stops...</CardContent>
+                  </Card>
+                )}
               </div>
 
               {/* Stats Overlay */}
@@ -470,6 +805,129 @@ export default function Fleet() {
                         }}
                       />
                     ))}
+
+                    {/* Selected Route Filter Path */}
+                    {isMapLoaded && window.google && selectedRouteFilterPath.length > 1 && (
+                      <Polyline
+                        path={selectedRouteFilterPath}
+                        options={{
+                          strokeColor: "#2563eb",
+                          strokeOpacity: 0.9,
+                          strokeWeight: 5,
+                          zIndex: 18,
+                          icons: [
+                            {
+                              icon: {
+                                path: window.google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+                                scale: 3,
+                                strokeColor: "#1d4ed8",
+                                strokeOpacity: 0.9,
+                              },
+                              offset: "0",
+                              repeat: "80px",
+                            },
+                          ],
+                        }}
+                      />
+                    )}
+
+                    {/* Selected Route Start/End Markers */}
+                    {isMapLoaded && window.google && selectedRouteFilterPath.length > 1 && (
+                      <>
+                        <Marker
+                          position={selectedRouteFilterPath[0]}
+                          icon={{
+                            url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(
+                              `<svg width="26" height="26" viewBox="0 0 26 26" xmlns="http://www.w3.org/2000/svg"><circle cx="13" cy="13" r="11" fill="#16a34a" stroke="white" stroke-width="2"/><text x="13" y="17" text-anchor="middle" font-size="10" fill="white" font-weight="bold">S</text></svg>`
+                            )}`,
+                            scaledSize: new window.google.maps.Size(26, 26),
+                          }}
+                          title="Route Start"
+                        />
+                        <Marker
+                          position={selectedRouteFilterPath[selectedRouteFilterPath.length - 1]}
+                          icon={{
+                            url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(
+                              `<svg width="26" height="26" viewBox="0 0 26 26" xmlns="http://www.w3.org/2000/svg"><circle cx="13" cy="13" r="11" fill="#dc2626" stroke="white" stroke-width="2"/><text x="13" y="17" text-anchor="middle" font-size="10" fill="white" font-weight="bold">E</text></svg>`
+                            )}`,
+                            scaledSize: new window.google.maps.Size(26, 26),
+                          }}
+                          title="Route End"
+                        />
+                      </>
+                    )}
+
+                    {/* Selected Truck Assigned Route */}
+                    {isMapLoaded && window.google && selectedTruckRoutePath.length > 1 && (
+                      <Polyline
+                        path={selectedTruckRoutePath}
+                        options={{
+                          strokeColor: "#e11d48",
+                          strokeOpacity: 0.9,
+                          strokeWeight: 4,
+                          zIndex: 20,
+                          icons: [
+                            {
+                              icon: {
+                                path: window.google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+                                scale: 3,
+                                strokeColor: "#be123c",
+                                strokeOpacity: 0.9,
+                              },
+                              offset: "0",
+                              repeat: "90px",
+                            },
+                          ],
+                        }}
+                      />
+                    )}
+
+                    {/* Selected Truck Route Start/End Markers */}
+                    {isMapLoaded && window.google && selectedTruckRoutePath.length > 1 && (
+                      <>
+                        <Marker
+                          position={selectedTruckRoutePath[0]}
+                          icon={{
+                            url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(
+                              `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="10" fill="#16a34a" stroke="white" stroke-width="2"/></svg>`
+                            )}`,
+                            scaledSize: new window.google.maps.Size(24, 24),
+                          }}
+                          title="Truck Route Start"
+                        />
+                        <Marker
+                          position={selectedTruckRoutePath[selectedTruckRoutePath.length - 1]}
+                          icon={{
+                            url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(
+                              `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="10" fill="#dc2626" stroke="white" stroke-width="2"/></svg>`
+                            )}`,
+                            scaledSize: new window.google.maps.Size(24, 24),
+                          }}
+                          title="Truck Route End"
+                        />
+                      </>
+                    )}
+
+                    {/* Pickup Points for Active Route */}
+                    {isMapLoaded && window.google && selectedRoutePickupPoints.map((point) => (
+                      <Marker
+                        key={`pickup-${point.id}`}
+                        position={{ lat: point.lat, lng: point.lng }}
+                        icon={{
+                          url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(
+                            `<svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="24" height="24" rx="6" fill="${crossedPickupPointIds.has(point.id) ? "#16a34a" : "#f59e0b"}" stroke="white" stroke-width="2"/><text x="14" y="18" text-anchor="middle" font-size="10" fill="white" font-weight="bold">${point.sequence}</text></svg>`
+                          )}`,
+                          scaledSize: new window.google.maps.Size(28, 28),
+                        }}
+                        label={{
+                          text: String(point.sequence),
+                          color: "#111827",
+                          fontSize: "11px",
+                          fontWeight: "700",
+                        }}
+                        title={`${point.sequence}. ${point.name}${crossedPickupPointIds.has(point.id) ? " (Crossed)" : ""}`}
+                      />
+                    ))}
                 
                     {/* GTP Markers */}
                     {isMapLoaded && window.google && gtpLocations.map((gtp) => (
@@ -513,10 +971,15 @@ export default function Fleet() {
                         key={truck.id}
                         position={truck.position}
                         onClick={() => setSelectedMarker(truck.id)}
+                        zIndex={selectedTruck?.id === truck.id ? 1000 : 100}
                         icon={{
                           url: createTruckMarkerIcon(truck.status, truck.truckType, truck.bearing || 0, truck.speed || 0),
-                          scaledSize: new window.google.maps.Size(56, 48),
-                          anchor: new window.google.maps.Point(28, 40),
+                          scaledSize: selectedTruck?.id === truck.id
+                            ? new window.google.maps.Size(64, 54)
+                            : new window.google.maps.Size(56, 48),
+                          anchor: selectedTruck?.id === truck.id
+                            ? new window.google.maps.Point(32, 44)
+                            : new window.google.maps.Point(28, 40),
                         }}
                       >
                         {selectedMarker === truck.id && (
@@ -850,3 +1313,4 @@ export default function Fleet() {
     </div>
   );
 }
+

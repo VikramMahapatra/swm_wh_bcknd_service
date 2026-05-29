@@ -23,7 +23,9 @@ import { useNavigate } from "react-router-dom";
 const OperationalStats = () => {
   const navigate = useNavigate();
   const { data: zonesData = [] } = useZones();
-  const { data: wardsData = [] } = useZoneWards();
+  // Use first zone as default for demo; in real app, use user selection or all zones aggregation
+  const defaultZoneId = zonesData[0]?.id || "";
+  const { data: wardsData = [] } = useZoneWards(defaultZoneId);
   const { data: vendorsData = [] } = useVendors();
   const { data: trucksData = [] } = useTrucks();
   const { data: routesData = [] } = useRoutes();
@@ -81,7 +83,7 @@ const OperationalStats = () => {
     { label: "Zones", value: activeZones, total: zones.length, icon: MapPin, color: "text-chart-1", bgColor: "bg-chart-1/10", route: "/master/zones-wards" },
     { label: "Wards", value: activeWards, total: wards.length, icon: Building2, color: "text-chart-2", bgColor: "bg-chart-2/10", route: "/master/zones-wards" },
     { label: "Vendors", value: activeVendors, total: vendors.length, icon: Users, color: "text-chart-3", bgColor: "bg-chart-3/10", route: "/master/vendors" },
-    { label: "Trucks", value: activeTrucks, total: trucks.length, icon: Truck, color: "text-chart-4", bgColor: "bg-chart-4/10", route: "/master/trucks" },
+    { label: "Trucks", value: activeTrucks, total: trucks.length, icon: Truck, color: "text-chart-4", bgColor: "bg-chart-4/10", route: "/master/vehicles" },
     { label: "Drivers", value: activeDrivers, total: drivers.length, icon: UserCheck, color: "text-primary", bgColor: "bg-primary/10", route: "/master/drivers" },
     { label: "Routes", value: activeRoutes, total: routes.length, icon: Route, color: "text-chart-5", bgColor: "bg-chart-5/10", route: "/master/routes-pickups" },
   ];

@@ -15,6 +15,9 @@ import {
   Building2,
   Route,
   Wrench,
+  Cpu,
+  Link2,
+  Car,
   LogOut,
   ClipboardCheck
 } from 'lucide-react';
@@ -57,7 +60,9 @@ const menuItems = [
 const masterItems = [
   { title: 'Drivers', url: '/master/drivers', icon: User },
   { title: 'Vendors', url: '/master/vendors', icon: Building2 },
-  { title: 'Trucks', url: '/master/trucks', icon: Truck },
+  { title: 'Vehicles', url: '/master/vehicles', icon: Car },
+  { title: 'Devices', url: '/master/devices', icon: Cpu },
+  { title: 'Device Assignments', url: '/master/device-assignments', icon: Link2 },
   { title: 'Zones & Wards', url: '/master/zones-wards', icon: MapPin },
   { title: 'Routes & Pickups', url: '/master/routes-pickups', icon: Route },
 ];

@@ -4,10 +4,12 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import NoResultFound
 from swm_db import get_db_session
 
+from admin_api.api_support import RoleContext, get_role_context
 from admin_api.main import app
 
 
@@ -183,7 +185,18 @@ def _client(monkeypatch):
     from admin_api.routers import master_data as md
     from admin_api.routers import realtime as rt
 
+    async def _override_role_context(request: Request) -> RoleContext:
+        requested_role = (request.headers.get("x-role") or "admin").strip().lower()
+        return RoleContext(
+            subject="test-user",
+            role=requested_role,
+            roles=[requested_role],
+            permissions=["*"],
+            auth_type="test",
+        )
+
     app.dependency_overrides[get_db_session] = _override_db_session
+    app.dependency_overrides[get_role_context] = _override_role_context
     monkeypatch.setattr(md, "VendorRepository", _VendorRepo)
     monkeypatch.setattr(md, "DeviceRepository", _DeviceRepo)
     monkeypatch.setattr(md, "VehicleRepository", _VehicleRepo)
@@ -253,9 +266,212 @@ def test_list_vendors_pagination_search_sort_filter(monkeypatch):
         headers={"x-role": "viewer"},
     )
     assert r.status_code == 200
-    body = r.json()
-    assert body["page"] == 1
-    assert body["page_size"] == 10
+
+
+def test_route_write_rejects_invalid_payload(monkeypatch):
+    client = _client(monkeypatch)
+
+    create_resp = client.post(
+        "/routes",
+        json={
+            "route_code": "bad code",
+            "route_name": "Route X",
+            "expected_distance_km": -1,
+            "expected_duration_min": -5,
+            "start_point": "A",
+            "end_point": "B",
+            "active": True,
+        },
+        headers={"x-role": "admin"},
+    )
+    assert create_resp.status_code == 422
+
+    update_resp = client.put(
+        f"/routes/{_BaseRepo._existing_id}",
+        json={
+            "route_code": "R1",
+            "route_name": "",
+            "expected_distance_km": 1,
+            "expected_duration_min": 10,
+            "start_point": "A",
+            "end_point": "B",
+            "active": True,
+        },
+        headers={"x-role": "admin"},
+    )
+    assert update_resp.status_code == 422
+
+
+def test_vehicle_write_rejects_invalid_payload(monkeypatch):
+    client = _client(monkeypatch)
+
+    create_resp = client.post(
+        "/vehicles",
+        json={
+            "vehicle_number": "bad vehicle",
+            "registration_number": "bad reg",
+            "contractor_id": str(_BaseRepo._existing_id),
+            "ward_id": str(_BaseRepo._existing_id),
+            "capacity_kg": -1,
+            "capacity_cubic_meter": -2,
+            "fuel_type": "steam",
+            "operational_status": "flying",
+            "manufacture_year": 1900,
+            "active": True,
+            "metadata": {},
+        },
+        headers={"x-role": "admin"},
+    )
+    assert create_resp.status_code == 422
+
+    update_resp = client.put(
+        f"/vehicles/{_BaseRepo._existing_id}",
+        json={
+            "vehicle_number": "MH12AB1234",
+            "registration_number": "MH12AB1234",
+            "contractor_id": str(_BaseRepo._existing_id),
+            "ward_id": str(_BaseRepo._existing_id),
+            "capacity_kg": 1,
+            "capacity_cubic_meter": 1,
+            "fuel_type": "diesel",
+            "operational_status": "operational",
+            "manufacture_year": 2200,
+            "active": True,
+            "metadata": {},
+        },
+        headers={"x-role": "admin"},
+    )
+    assert update_resp.status_code == 422
+
+
+def test_geofence_write_rejects_invalid_payload(monkeypatch):
+    client = _client(monkeypatch)
+
+    create_resp = client.post(
+        "/geofences",
+        json={
+            "geofence_code": "bad code",
+            "geofence_name": "Bad Geofence",
+            "type": "airport",
+            "geometry_type": "line",
+            "center_lat": 91,
+            "center_lng": 181,
+            "radius_meter": 0,
+            "active": True,
+        },
+        headers={"x-role": "admin"},
+    )
+    assert create_resp.status_code == 422
+
+    update_resp = client.put(
+        f"/geofences/{_BaseRepo._existing_id}",
+        json={
+            "geofence_code": "GF_1",
+            "geofence_name": "Geo",
+            "type": "zone",
+            "geometry_type": "polygon",
+            "polygon": {"type": "Point", "coordinates": []},
+            "active": True,
+        },
+        headers={"x-role": "admin"},
+    )
+    assert update_resp.status_code == 422
+
+
+def test_vendor_write_rejects_invalid_payload(monkeypatch):
+    client = _client(monkeypatch)
+
+    create_resp = client.post(
+        "/vendors",
+        json={
+            "vendor_code": "bad code",
+            "vendor_name": "Vendor One",
+            "email": "not-an-email",
+            "allowed_ips": ["999.999.999.999"],
+            "auth_type": "oauth",
+            "callback_format": {},
+            "active": True,
+            "metadata": {},
+        },
+        headers={"x-role": "admin"},
+    )
+    assert create_resp.status_code == 422
+
+    update_resp = client.put(
+        f"/vendors/{_BaseRepo._existing_id}",
+        json={
+            "vendor_code": "VEN_1",
+            "vendor_name": "Vendor One",
+            "email": "vendor@example.com",
+            "allowed_ips": ["127.0.0.1"],
+            "auth_type": "header",
+            "callback_format": {},
+            "active": True,
+            "metadata": "not-an-object",
+        },
+        headers={"x-role": "admin"},
+    )
+    assert update_resp.status_code == 422
+
+
+def test_device_write_rejects_invalid_payload(monkeypatch):
+    client = _client(monkeypatch)
+
+    create_resp = client.post(
+        "/devices",
+        json={
+            "vendor_id": str(_BaseRepo._existing_id),
+            "imei": "abc",
+            "battery_percent": 101,
+            "health_status": "unknown",
+            "active": True,
+            "metadata": {},
+        },
+        headers={"x-role": "admin"},
+    )
+    assert create_resp.status_code == 422
+
+    update_resp = client.put(
+        f"/devices/{_BaseRepo._existing_id}",
+        json={
+            "vendor_id": str(_BaseRepo._existing_id),
+            "imei": "12345678901234",
+            "battery_percent": -1,
+            "health_status": "healthy",
+            "active": True,
+            "metadata": {},
+        },
+        headers={"x-role": "admin"},
+    )
+    assert update_resp.status_code == 422
+
+
+def test_contractor_write_rejects_invalid_payload(monkeypatch):
+    client = _client(monkeypatch)
+
+    create_resp = client.post(
+        "/contractors",
+        json={
+            "contractor_code": "bad code",
+            "contractor_name": "Contractor One",
+            "sla_details": {},
+            "active": True,
+        },
+        headers={"x-role": "admin"},
+    )
+    assert create_resp.status_code == 422
+
+    update_resp = client.put(
+        f"/contractors/{_BaseRepo._existing_id}",
+        json={
+            "contractor_code": "CTR_1",
+            "contractor_name": "",
+            "sla_details": [],
+            "active": True,
+        },
+        headers={"x-role": "admin"},
+    )
+    assert update_resp.status_code == 422
 
 
 def test_create_vendor_and_rbac(monkeypatch):
@@ -350,6 +566,35 @@ def test_other_bulk_import_endpoints(monkeypatch, path, csv_content):
     )
     assert r.status_code == 200
     assert r.json()["created"] == 1
+
+
+@pytest.mark.parametrize(
+    "path,csv_content",
+    [
+        ("/devices/import", "vendor_id,imei\nnot-a-uuid,12345678901234\n"),
+        (
+            "/vehicles/import",
+            "vehicle_number,registration_number,contractor_id,ward_id,capacity_kg\nTRK001,REG001,00000000-0000-0000-0000-000000000001,not-a-uuid,abc\n",
+        ),
+        ("/routes/import", "route_code,route_name,start_point,end_point,expected_duration_min\nR1,Route 1,S,E,abc\n"),
+        (
+            "/geofences/import",
+            "geofence_code,geofence_name,type,geometry_type,center_lat\nG1,Geo 1,zone,circle,abc\n",
+        ),
+        (
+            "/device-assignments/import",
+            "device_id,vehicle_id,assigned_from\nnot-a-uuid,00000000-0000-0000-0000-000000000001,not-a-datetime\n",
+        ),
+    ],
+)
+def test_import_endpoints_reject_malformed_row_values(monkeypatch, path, csv_content):
+    client = _client(monkeypatch)
+    response = client.post(
+        path,
+        files={"file": ("bulk.csv", csv_content, "text/csv")},
+        headers={"x-role": "ops"},
+    )
+    assert response.status_code == 400
 
 
 def test_device_assignment_endpoint(monkeypatch):

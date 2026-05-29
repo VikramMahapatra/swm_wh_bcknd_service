@@ -1,4 +1,5 @@
 import { API_BASE_URL } from '../config/api';
+import { clearAuthTokens, getAccessToken, getRefreshToken, saveAuthTokens } from '@/lib/authStorage';
 
 export interface TruckLive {
   id: string;
@@ -18,6 +19,7 @@ export interface TruckLive {
   ward_id: string;
   is_spare: boolean;
   last_update: string | null;
+  bearing?: number;
 }
 
 export interface Zone {
@@ -93,14 +95,26 @@ class ApiService {
   }
 
   private async fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
-    try {
-      const response = await fetch(`${this.baseUrl}${endpoint}`, {
+    const doFetch = async (accessToken?: string | null) =>
+      fetch(`${this.baseUrl}${endpoint}`, {
         ...options,
         headers: {
           'Content-Type': 'application/json',
+          ...(accessToken ? { 'Authorization': `Bearer ${accessToken}` } : {}),
           ...options?.headers,
         },
       });
+
+    try {
+      const token = getAccessToken();
+      let response = await doFetch(token);
+
+      if (response.status === 401 && token && !endpoint.startsWith('/v1/auth/refresh')) {
+        const nextToken = await this.tryRefreshToken();
+        if (nextToken) {
+          response = await doFetch(nextToken);
+        }
+      }
 
       if (!response.ok) {
         throw new Error(`API error: ${response.statusText}`);
@@ -126,12 +140,38 @@ class ApiService {
   }
 
   private async getRealtimeSnapshot(limit = 20000): Promise<RealtimeSnapshotTruck[]> {
-    const payload = await this.fetchApi<RealtimeSnapshotResponse>(`/v1/realtime/trucks?limit=${limit}`, {
-      headers: {
-        'x-role': 'viewer',
-      },
-    });
+    const payload = await this.fetchApi<RealtimeSnapshotResponse>(`/v1/realtime/trucks?limit=${limit}`);
     return Array.isArray(payload.items) ? payload.items : [];
+  }
+
+  private async tryRefreshToken(): Promise<string | null> {
+    const refreshToken = getRefreshToken();
+    if (!refreshToken) return null;
+
+    try {
+      const response = await fetch(`${this.baseUrl}/v1/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      if (!response.ok) {
+        clearAuthTokens();
+        return null;
+      }
+
+      const payload = await response.json();
+      const accessToken = String(payload?.access_token || '');
+      const nextRefreshToken = String(payload?.refresh_token || '');
+      if (!accessToken || !nextRefreshToken) {
+        clearAuthTokens();
+        return null;
+      }
+
+      saveAuthTokens(accessToken, nextRefreshToken);
+      return accessToken;
+    } catch {
+      return null;
+    }
   }
 
   private toLegacyTruckModel(item: RealtimeSnapshotTruck): TruckLive {
@@ -163,13 +203,8 @@ class ApiService {
   }
 
   async getTrucks(filters?: { zone_id?: string; vendor_id?: string; status?: string }): Promise<any[]> {
-    const items = await this.getLiveTrucks();
-    return items.filter((truck) => {
-      if (filters?.zone_id && truck.zone_id !== filters.zone_id) return false;
-      if (filters?.vendor_id && truck.vendor_id !== filters.vendor_id) return false;
-      if (filters?.status && truck.current_status !== filters.status) return false;
-      return true;
-    });
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/trucks${suffix}`);
   }
 
   async getSpareTrucks(): Promise<any[]> {
@@ -185,44 +220,238 @@ class ApiService {
 
   // Zones
   async getZones(): Promise<Zone[]> {
-    return [];
+    const rows = await this.fetchApi<any[]>('/zones');
+    return (Array.isArray(rows) ? rows : []).map((row: any) => ({
+      id: String(row.id ?? ''),
+      name: String(row.name ?? row.zone_name ?? ''),
+      code: String(row.code ?? row.zone_code ?? ''),
+      description: String(row.description ?? ''),
+      supervisor_name: String(row.supervisor_name ?? ''),
+      supervisor_phone: String(row.supervisor_phone ?? ''),
+      total_wards: Number(row.total_wards ?? 0) || 0,
+      status: String(row.status ?? (row.active === false ? 'inactive' : 'active')),
+      supervisorName: String(row.supervisorName ?? row.supervisor_name ?? ''),
+      supervisorPhone: String(row.supervisorPhone ?? row.supervisor_phone ?? ''),
+      totalWards: Number(row.totalWards ?? row.total_wards ?? 0) || 0,
+    })) as Zone[];
   }
 
   async getZone(zoneId: string): Promise<Zone> {
-    return {
-      id: zoneId,
-      name: zoneId,
-      code: zoneId,
-      description: '',
-      supervisor_name: '',
-      supervisor_phone: '',
-      total_wards: 0,
-      status: 'unknown',
-    };
+    const zones = await this.getZones();
+    const matched = zones.find((zone) => zone.id === zoneId || zone.code === zoneId || zone.name === zoneId);
+    if (!matched) {
+      throw new Error(`Zone not found: ${zoneId}`);
+    }
+    return matched;
   }
 
   async getZoneWards(zoneId: string): Promise<any[]> {
-    void zoneId;
-    return [];
+    const rows = await this.fetchApi<any[]>(`/zones/${zoneId}/wards`);
+    return (Array.isArray(rows) ? rows : []).map((row: any) => ({
+      id: String(row.id ?? ''),
+      name: String(row.name ?? row.ward_name ?? ''),
+      code: String(row.code ?? row.ward_code ?? ''),
+      zoneId: String(row.zoneId ?? row.zone_id ?? ''),
+      population: Number(row.population ?? 0) || 0,
+      area: Number(row.area ?? 0) || 0,
+      totalPickupPoints: Number(row.totalPickupPoints ?? row.total_pickup_points ?? 0) || 0,
+      status: String(row.status ?? (row.active === false ? 'inactive' : 'active')),
+      ward_name: row.ward_name,
+      ward_code: row.ward_code,
+      zone_id: row.zone_id,
+    }));
+  }
+
+  async getWards(): Promise<any[]> {
+    const payload = await this.fetchApi<{ items?: any[] }>('/wards?page=1&page_size=200');
+    const rows = Array.isArray(payload?.items) ? payload.items : [];
+    return rows.map((row: any) => ({
+      id: String(row.id ?? ''),
+      name: String(row.name ?? row.ward_name ?? ''),
+      code: String(row.code ?? row.ward_code ?? ''),
+      zoneId: String(row.zoneId ?? row.zone_id ?? ''),
+      population: Number(row.population ?? 0) || 0,
+      area: Number(row.area ?? 0) || 0,
+      totalPickupPoints: Number(row.totalPickupPoints ?? row.total_pickup_points ?? 0) || 0,
+      status: String(row.status ?? (row.active === false ? 'inactive' : 'active')),
+    }));
+  }
+
+  async createZone(payload: { code: string; name: string; status?: 'active' | 'inactive' }): Promise<any> {
+    return this.fetchApi('/zones', {
+      method: 'POST',
+      body: JSON.stringify({
+        zone_code: payload.code,
+        zone_name: payload.name,
+        active: payload.status !== 'inactive',
+      }),
+    });
+  }
+
+  async createWard(payload: {
+    code: string;
+    name: string;
+    zoneName: string;
+    status?: 'active' | 'inactive';
+  }): Promise<any> {
+    return this.fetchApi('/wards', {
+      method: 'POST',
+      body: JSON.stringify({
+        ward_code: payload.code,
+        ward_name: payload.name,
+        zone_name: payload.zoneName,
+        active: payload.status !== 'inactive',
+      }),
+    });
+  }
+
+  async uploadGeofencesCsv(file: File): Promise<any> {
+    const token = getAccessToken();
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetch(`${this.baseUrl}/geofences/import`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      body: formData,
+    });
+    if (!response.ok) {
+      throw new Error(`Geofence upload failed: ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  async getGeofences(filters?: {
+    geofence_for?: string;
+    zone_id?: string;
+    ward_id?: string;
+    route_id?: string;
+    q?: string;
+    page?: number;
+    page_size?: number;
+  }): Promise<any[]> {
+    const suffix = this.toQueryString({
+      geofence_for: filters?.geofence_for,
+      zone_id: filters?.zone_id,
+      ward_id: filters?.ward_id,
+      route_id: filters?.route_id,
+      q: filters?.q,
+      page: String(filters?.page ?? 1),
+      page_size: String(filters?.page_size ?? 200),
+    });
+    const payload = await this.fetchApi<{ items?: any[] }>(`/geofences${suffix}`);
+    return Array.isArray(payload?.items) ? payload.items : [];
+  }
+
+  async createGeofence(payload: {
+    geofence_code: string;
+    geofence_name: string;
+    type: 'zone' | 'depot' | 'landfill' | 'parking' | 'maintenance';
+    geometry_type: 'polygon' | 'circle';
+    geofence_for: 'zone' | 'ward' | 'route';
+    zone_id: string;
+    ward_id?: string | null;
+    route_id?: string | null;
+    polygon?: Record<string, any> | null;
+    center_lat?: number | null;
+    center_lng?: number | null;
+    radius_meter?: number | null;
+    active?: boolean;
+  }): Promise<any> {
+    return this.fetchApi('/geofences', {
+      method: 'POST',
+      body: JSON.stringify({
+        geofence_code: payload.geofence_code,
+        geofence_name: payload.geofence_name,
+        type: payload.type,
+        geometry_type: payload.geometry_type,
+        geofence_for: payload.geofence_for,
+        zone_id: payload.zone_id,
+        ward_id: payload.ward_id ?? null,
+        route_id: payload.route_id ?? null,
+        polygon: payload.polygon ?? null,
+        center_lat: payload.center_lat ?? null,
+        center_lng: payload.center_lng ?? null,
+        radius_meter: payload.radius_meter ?? null,
+        active: payload.active ?? true,
+      }),
+    });
+  }
+
+  async deleteGeofence(geofenceId: string): Promise<any> {
+    return this.fetchApi(`/geofences/${geofenceId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async updateGeofence(geofenceId: string, payload: {
+    geofence_code: string;
+    geofence_name: string;
+    type: 'zone' | 'depot' | 'landfill' | 'parking' | 'maintenance';
+    geometry_type: 'polygon' | 'circle';
+    geofence_for: 'zone' | 'ward' | 'route';
+    zone_id: string;
+    ward_id?: string | null;
+    route_id?: string | null;
+    polygon?: Record<string, any> | null;
+    center_lat?: number | null;
+    center_lng?: number | null;
+    radius_meter?: number | null;
+    active?: boolean;
+  }): Promise<any> {
+    return this.fetchApi(`/geofences/${geofenceId}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        geofence_code: payload.geofence_code,
+        geofence_name: payload.geofence_name,
+        type: payload.type,
+        geometry_type: payload.geometry_type,
+        geofence_for: payload.geofence_for,
+        zone_id: payload.zone_id,
+        ward_id: payload.ward_id ?? null,
+        route_id: payload.route_id ?? null,
+        polygon: payload.polygon ?? null,
+        center_lat: payload.center_lat ?? null,
+        center_lng: payload.center_lng ?? null,
+        radius_meter: payload.radius_meter ?? null,
+        active: payload.active ?? true,
+      }),
+    });
   }
 
   // Alerts
   async getAlerts(filters?: { status?: string; severity?: string; truck_id?: string }): Promise<Alert[]> {
-    void filters;
-    // Migration mode: alerts backend contract is not available on admin-api yet.
-    return [];
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/alerts${suffix}`);
   }
 
   async getActiveAlerts(): Promise<Alert[]> {
-    return [];
+    return this.fetchApi('/alerts/active');
   }
 
   async getExpiryAlerts(): Promise<any> {
-    return { items: [], total: 0 };
+    return this.fetchApi('/alerts/expiry');
   }
 
-  async getReportsData(): Promise<Record<string, any>> {
-    return this.fetchApi('/reports/data');
+  async getReportsData(filters?: {
+    date_from?: string;
+    date_to?: string;
+    zone_id?: string;
+    ward_id?: string;
+    vehicle_id?: string;
+  }): Promise<Record<string, any>> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/reports/data${suffix}`);
+  }
+
+  async getCompletedTrips(filters?: {
+    date_from?: string;
+    date_to?: string;
+    zone_id?: string;
+    ward_id?: string;
+    vehicle_id?: string;
+  }): Promise<any> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/trips/completed${suffix}`);
   }
 
   // Reports
@@ -244,25 +473,251 @@ class ApiService {
 
   // Vendors
   async getVendors(): Promise<any[]> {
-    // SWM-only migration mode: vendor master endpoint is not required for live map flow.
-    // Return an empty list to avoid CORS/404 noise from non-migrated screens.
-    return [];
+    return this.fetchApi('/vendors?ui_compat=true');
+  }
+
+  async getVendor(vendorId: string): Promise<any> {
+    return this.fetchApi(`/vendors/${vendorId}`);
+  }
+
+  async createVendor(payload: {
+    vendor_code: string;
+    vendor_name: string;
+    contact_person?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    active?: boolean;
+    auth_type?: 'header' | 'signature' | 'ip';
+    allowed_ips?: string[];
+    callback_format?: Record<string, any>;
+    metadata?: Record<string, any>;
+    webhook_secret?: string | null;
+    signature_key?: string | null;
+  }): Promise<any> {
+    return this.fetchApi('/vendors', {
+      method: 'POST',
+      body: JSON.stringify({
+        vendor_code: payload.vendor_code,
+        vendor_name: payload.vendor_name,
+        contact_person: payload.contact_person ?? null,
+        email: payload.email ?? null,
+        phone: payload.phone ?? null,
+        active: payload.active ?? true,
+        auth_type: payload.auth_type ?? 'header',
+        allowed_ips: payload.allowed_ips ?? [],
+        callback_format: payload.callback_format ?? {},
+        metadata: payload.metadata ?? {},
+        webhook_secret: payload.webhook_secret ?? null,
+        signature_key: payload.signature_key ?? null,
+      }),
+    });
+  }
+
+  async updateVendor(
+    vendorId: string,
+    payload: {
+      vendor_code: string;
+      vendor_name: string;
+      contact_person?: string | null;
+      email?: string | null;
+      phone?: string | null;
+      active?: boolean;
+      auth_type?: 'header' | 'signature' | 'ip';
+      allowed_ips?: string[];
+      callback_format?: Record<string, any>;
+      metadata?: Record<string, any>;
+      webhook_secret?: string | null;
+      signature_key?: string | null;
+    }
+  ): Promise<any> {
+    return this.fetchApi(`/vendors/${vendorId}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        vendor_code: payload.vendor_code,
+        vendor_name: payload.vendor_name,
+        contact_person: payload.contact_person ?? null,
+        email: payload.email ?? null,
+        phone: payload.phone ?? null,
+        active: payload.active ?? true,
+        auth_type: payload.auth_type ?? 'header',
+        allowed_ips: payload.allowed_ips ?? [],
+        callback_format: payload.callback_format ?? {},
+        metadata: payload.metadata ?? {},
+        webhook_secret: payload.webhook_secret ?? null,
+        signature_key: payload.signature_key ?? null,
+      }),
+    });
+  }
+
+  async deleteVendor(vendorId: string): Promise<any> {
+    return this.fetchApi(`/vendors/${vendorId}`, {
+      method: 'DELETE',
+    });
   }
 
   // Routes
   async getRoutes(filters?: { zone_id?: string; ward_id?: string }): Promise<any[]> {
-    void filters;
-    return [];
+    const routeFilters = {
+      ui_compat: 'true',
+      zone_id: filters?.zone_id,
+      ward_id: filters?.ward_id,
+    };
+    const suffix = this.toQueryString(routeFilters);
+    return this.fetchApi(`/routes${suffix}`);
   }
 
   async getRoutePickupPoints(routeId: string): Promise<any[]> {
     return this.fetchApi(`/routes/${routeId}/pickup-points`);
   }
 
+  async createRoute(payload: {
+    route_name: string;
+    zone_id: string;
+    ward_id: string;
+    polyline_coordinates: number[][];
+  }): Promise<any> {
+    return this.fetchApi('/routes', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateRoute(routeId: string, payload: {
+    route_name: string;
+    zone_id: string;
+    ward_id: string;
+    polyline_coordinates: number[][];
+  }): Promise<any> {
+    return this.fetchApi(`/routes/${routeId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async deleteRoute(routeId: string): Promise<any> {
+    return this.fetchApi(`/routes/${routeId}`, {
+      method: 'DELETE',
+    });
+  }
+
   // Pickup Points
-  async getPickupPoints(filters?: { ward_id?: string; route_id?: string }): Promise<any[]> {
-    const params = new URLSearchParams(filters as Record<string, string>);
-    return this.fetchApi(`/pickup-points/?${params.toString()}`);
+  async getPickupPoints(filters?: { zone_id?: string; ward_id?: string; route_id?: string }): Promise<any[]> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/pickup-points${suffix}`);
+  }
+
+  // Devices
+  async getDevices(): Promise<any[]> {
+    const payload = await this.fetchApi<{ items?: any[] }>('/devices?page=1&page_size=200');
+    return Array.isArray(payload?.items) ? payload.items : [];
+  }
+
+  async getDevice(deviceId: string): Promise<any> {
+    return this.fetchApi(`/devices/${deviceId}`);
+  }
+
+  async createDevice(payload: any): Promise<any> {
+    return this.fetchApi('/devices', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateDevice(deviceId: string, payload: any): Promise<any> {
+    return this.fetchApi(`/devices/${deviceId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async deleteDevice(deviceId: string): Promise<any> {
+    return this.fetchApi(`/devices/${deviceId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // Vehicles
+  async getVehicles(): Promise<any[]> {
+    const payload = await this.fetchApi<{ items?: any[] }>('/vehicles?page=1&page_size=200');
+    return Array.isArray(payload?.items) ? payload.items : [];
+  }
+
+  async getVehicle(vehicleId: string): Promise<any> {
+    return this.fetchApi(`/vehicles/${vehicleId}`);
+  }
+
+  async createVehicle(payload: any): Promise<any> {
+    return this.fetchApi('/vehicles', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateVehicle(vehicleId: string, payload: any): Promise<any> {
+    return this.fetchApi(`/vehicles/${vehicleId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async deleteVehicle(vehicleId: string): Promise<any> {
+    return this.fetchApi(`/vehicles/${vehicleId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // Device Assignments
+  async getDeviceAssignments(): Promise<any[]> {
+    const payload = await this.fetchApi<{ items?: any[] }>('/device-assignments?page=1&page_size=200');
+    return Array.isArray(payload?.items) ? payload.items : [];
+  }
+
+  async createDeviceAssignment(payload: {
+    device_id: string;
+    vehicle_id: string;
+    assigned_from?: string;
+    remarks?: string;
+  }): Promise<any> {
+    return this.fetchApi('/device-assignments', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async reassignDevice(deviceId: string, vehicleId: string, remarks?: string): Promise<any> {
+    const params = new URLSearchParams();
+    params.set('vehicle_id', vehicleId);
+    if (remarks) params.set('remarks', remarks);
+    return this.fetchApi(`/device-assignments/${deviceId}?${params.toString()}`, {
+      method: 'PUT',
+    });
+  }
+
+  async unassignDevice(deviceId: string, remarks?: string): Promise<any> {
+    const suffix = remarks ? `?remarks=${encodeURIComponent(remarks)}` : '';
+    return this.fetchApi(`/device-assignments/${deviceId}${suffix}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async createPickupPoint(payload: any): Promise<any> {
+    return this.fetchApi('/pickup-points', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updatePickupPoint(pickupPointId: string, payload: any): Promise<any> {
+    return this.fetchApi(`/pickup-points/${pickupPointId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async deletePickupPoint(pickupPointId: string): Promise<any> {
+    return this.fetchApi(`/pickup-points/${pickupPointId}`, {
+      method: 'DELETE',
+    });
   }
 
   // Authentication
@@ -277,6 +732,13 @@ class ApiService {
     return this.fetchApi('/auth/register', {
       method: 'POST',
       body: JSON.stringify(userData),
+    });
+  }
+
+  async logout(refreshToken: string): Promise<any> {
+    return this.fetchApi('/v1/auth/logout', {
+      method: 'POST',
+      body: JSON.stringify({ refresh_token: refreshToken }),
     });
   }
 
@@ -300,11 +762,36 @@ class ApiService {
 
   // Drivers
   async getDrivers(): Promise<any[]> {
-    return [];
+    try {
+      return await this.fetchApi('/drivers');
+    } catch (error) {
+      console.warn('Drivers API unavailable, continuing with empty driver list.', error);
+      return [];
+    }
   }
 
   async getDriver(driverId: string): Promise<any> {
     return this.fetchApi(`/drivers/${driverId}`);
+  }
+
+  async createDriver(payload: any): Promise<any> {
+    return this.fetchApi('/drivers', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateDriver(driverId: string, payload: any): Promise<any> {
+    return this.fetchApi(`/drivers/${driverId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async deleteDriver(driverId: string): Promise<any> {
+    return this.fetchApi(`/drivers/${driverId}`, {
+      method: 'DELETE',
+    });
   }
 
   async getTicket(ticketId: string): Promise<any> {
@@ -329,13 +816,12 @@ class ApiService {
     return this.fetchApi(`/tickets/${ticketId}/comments`);
   }
 
-  async addTicketComment(ticketId: string, comment: string, token: string): Promise<any> {
+  async addTicketComment(ticketId: string, comment: string, token?: string): Promise<any> {
+    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
     return this.fetchApi(`/tickets/${ticketId}/comments`, {
       method: 'POST',
       body: JSON.stringify({ comment, is_internal: false }),
-      headers: {
-        'Authorization': `Bearer ${token}`,
-      },
+      headers,
     });
   }
 
@@ -403,7 +889,7 @@ class ApiService {
     }
     const query = params.toString();
     const suffix = query ? `?${query}` : "";
-    return this.fetchApi(`/gtc-checkpoints/${suffix}`);
+    return this.fetchApi(`/gtc-checkpoints${suffix}`);
   }
 
   async createGtcCheckpoint(payload: {
@@ -418,7 +904,7 @@ class ApiService {
     gtc_cleanliness_score?: number | null;
     remarks?: string | null;
   }): Promise<GtcCheckpointEntry> {
-    return this.fetchApi('/gtc-checkpoints/', {
+    return this.fetchApi('/gtc-checkpoints', {
       method: 'POST',
       body: JSON.stringify(payload),
     });

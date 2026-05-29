@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,29 +28,11 @@ import {
 } from "@/components/ui/pagination";
 import { ArrowLeft, Search, Download, CheckCircle2, Clock, MapPin, Truck, Target } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { useZones, useZoneWards, useVendors, useRoutes, useLiveTrucks } from "@/hooks/useDataQueries";
+import { useCompletedTrips } from "@/hooks/useDataQueries";
 import { PageHeader } from "@/components/PageHeader";
+import { format } from "date-fns";
 
 const ITEMS_PER_PAGE = 10;
-
-const parseTimeToMinutes = (time: string) => {
-  const [hours, minutes] = time.split(":").map(Number);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
-  return hours * 60 + minutes;
-};
-
-const formatDuration = (start: string, end: string) => {
-  const startMinutes = parseTimeToMinutes(start);
-  const endMinutes = parseTimeToMinutes(end);
-  if (startMinutes === null || endMinutes === null) return "—";
-  const normalizedEnd = endMinutes < startMinutes ? endMinutes + 24 * 60 : endMinutes;
-  const totalMinutes = Math.max(0, normalizedEnd - startMinutes);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  if (hours > 0 && minutes > 0) return `${hours}h ${minutes}m`;
-  if (hours > 0) return `${hours}h`;
-  return `${minutes}m`;
-};
 
 const TripsCompleted = () => {
   // Export filtered trips as CSV
@@ -100,50 +82,32 @@ const TripsCompleted = () => {
   };
 
   const navigate = useNavigate();
-  const { data: zonesData = [], isLoading: isLoadingZones } = useZones();
-  const { data: wardsData = [], isLoading: isLoadingWards } = useZoneWards();
-  const { data: vendorsData = [], isLoading: isLoadingVendors } = useVendors();
-  const { data: routesData = [], isLoading: isLoadingRoutes } = useRoutes();
-  const { data: trucksLiveData = [], isLoading: isLoadingTrucks } = useLiveTrucks();
-
-  const zones = zonesData;
-  const wards = wardsData;
-  const vendors = vendorsData;
-  const routes = routesData;
-  const trucksLive = trucksLiveData;
-
-  const isLoading = isLoadingZones || isLoadingWards || isLoadingVendors || isLoadingRoutes || isLoadingTrucks;
-
-  const zoneById = useMemo(() => new Map(zones.map((zone) => [zone.id, zone.name])), [zones]);
-  const wardById = useMemo(() => new Map(wards.map((ward) => [ward.id, ward.name])), [wards]);
-  const vendorById = useMemo(() => new Map(vendors.map((vendor) => [vendor.id, vendor.companyName])), [vendors]);
-  const routeById = useMemo(() => new Map(routes.map((route) => [route.id, route.name])), [routes]);
+  const today = format(new Date(), "yyyy-MM-dd");
+  const [dateFrom, setDateFrom] = useState(today);
+  const [dateTo, setDateTo] = useState(today);
+  const { data: completedTripsPayload = { items: [] }, isLoading } = useCompletedTrips({
+    date_from: dateFrom,
+    date_to: dateTo,
+  });
   const tripsData = useMemo(() => {
-    if (isLoading) return [];
-    return trucksLive.map((truck, index) => {
-      const route = routeById.get(truck.routeId);
-      const routePoints = route?.points || [];
-      const startTime = routePoints[0]?.scheduledTime || "06:00";
-      const endTimeCandidate = routePoints[routePoints.length - 1]?.scheduledTime || "09:00";
-      const status = truck.status === "moving" || truck.status === "dumping" ? "in_progress" : "completed";
-      const endTime = status === "completed" ? endTimeCandidate : "—";
-      return {
-        id: `TRP-${String(index + 1).padStart(3, "0")}`,
-        truck: truck.truckNumber,
-        driver: truck.driver,
-        route: route?.name || truck.route,
-        startTime,
-        endTime,
-        pickups: route?.totalPickupPoints || 0,
-        status,
-        duration: status === "completed" ? formatDuration(startTime, endTimeCandidate) : "—",
-        zone: zoneById.get(truck.zoneId) || "Unknown",
-        ward: wardById.get(truck.wardId) || "Unknown",
-        vendor: vendorById.get(truck.vendorId) || "Unknown",
-        routeType: truck.truckType,
-      };
-    });
-  }, [zoneById, wardById, vendorById, routeById, trucksLive, isLoading]);
+    const rows = Array.isArray(completedTripsPayload?.items) ? completedTripsPayload.items : [];
+    return rows.map((trip: any) => ({
+      id: trip.id,
+      truck: trip.truck || "-",
+      driver: trip.driver || "Unassigned",
+      route: trip.route || "-",
+      startTime: trip.startTime || "-",
+      endTime: trip.endTime || "-",
+      pickups: Number(trip.pickups || 0),
+      status: trip.status || "completed",
+      duration: trip.duration || "-",
+      zone: trip.zone || "Unknown",
+      ward: trip.ward || "Unknown",
+      vendor: trip.vendor || "Unknown",
+      routeType: trip.routeType || "Vehicle",
+      gtcPoint: trip.gtcPoint || "-",
+    }));
+  }, [completedTripsPayload]);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [zoneFilter, setZoneFilter] = useState("all");
@@ -269,6 +233,10 @@ const TripsCompleted = () => {
 
       <Card className="p-4">
         <div className="flex flex-col md:flex-row gap-4">
+          <Input type="date" className="md:w-[160px]" value={dateFrom}
+            onChange={(e) => { setDateFrom(e.target.value); setCurrentPage(1); }} />
+          <Input type="date" className="md:w-[160px]" value={dateTo}
+            onChange={(e) => { setDateTo(e.target.value); setCurrentPage(1); }} />
           <div className="flex-1 relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input placeholder="Search by truck, driver, or route..." className="pl-10" value={searchQuery}
@@ -388,3 +356,5 @@ const TripsCompleted = () => {
 };
 
 export default TripsCompleted;
+
+

@@ -67,6 +67,16 @@ export function useZoneWards(zoneId: string): UseQueryResult<any[], Error> {
   });
 }
 
+// Hook for fetching all wards
+export function useWards(): UseQueryResult<any[], Error> {
+  return useQuery({
+    queryKey: ['wards'],
+    queryFn: () => apiService.getWards(),
+    staleTime: 60 * 60 * 1000,
+    gcTime: 24 * 60 * 60 * 1000,
+  });
+}
+
 // Hook for fetching all alerts
 export function useAlerts(filters?: {
   status?: string;
@@ -101,12 +111,33 @@ export function useExpiryAlerts(): UseQueryResult<any[], Error> {
   });
 }
 
-export function useReportsData(): UseQueryResult<Record<string, any>, Error> {
+export function useReportsData(filters?: {
+  date_from?: string;
+  date_to?: string;
+  zone_id?: string;
+  ward_id?: string;
+  vehicle_id?: string;
+}): UseQueryResult<Record<string, any>, Error> {
   return useQuery({
-    queryKey: ['reports', 'data'],
-    queryFn: () => apiService.getReportsData(),
+    queryKey: ['reports', 'data', filters],
+    queryFn: () => apiService.getReportsData(filters),
     staleTime: 60 * 1000, // 1 minute
     gcTime: 5 * 60 * 1000, // 5 minutes
+  });
+}
+
+export function useCompletedTrips(filters?: {
+  date_from?: string;
+  date_to?: string;
+  zone_id?: string;
+  ward_id?: string;
+  vehicle_id?: string;
+}): UseQueryResult<any, Error> {
+  return useQuery({
+    queryKey: ['trips', 'completed', filters],
+    queryFn: () => apiService.getCompletedTrips(filters),
+    staleTime: 30 * 1000,
+    gcTime: 5 * 60 * 1000,
   });
 }
 
@@ -160,6 +191,33 @@ export function useVendors(): UseQueryResult<any[], Error> {
   });
 }
 
+export function useDevices(): UseQueryResult<any[], Error> {
+  return useQuery({
+    queryKey: ['devices'],
+    queryFn: () => apiService.getDevices(),
+    staleTime: 60 * 1000,
+    gcTime: 5 * 60 * 1000,
+  });
+}
+
+export function useVehicles(): UseQueryResult<any[], Error> {
+  return useQuery({
+    queryKey: ['vehicles'],
+    queryFn: () => apiService.getVehicles(),
+    staleTime: 60 * 1000,
+    gcTime: 5 * 60 * 1000,
+  });
+}
+
+export function useDeviceAssignments(): UseQueryResult<any[], Error> {
+  return useQuery({
+    queryKey: ['device-assignments'],
+    queryFn: () => apiService.getDeviceAssignments(),
+    staleTime: 30 * 1000,
+    gcTime: 5 * 60 * 1000,
+  });
+}
+
 // Hook for fetching routes
 export function useRoutes(filters?: {
   zone_id?: string;
@@ -186,6 +244,7 @@ export function useRoutePickupPoints(routeId: string | null | undefined): UseQue
 
 // Hook for fetching pickup points
 export function usePickupPoints(filters?: {
+  zone_id?: string;
   route_id?: string;
   ward_id?: string;
 }): UseQueryResult<any[], Error> {

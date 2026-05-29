@@ -58,6 +58,7 @@ export interface TruckLive {
   vendorId: string;
   zoneId: string;
   wardId: string;
+  bearing?: number;
   isSpare?: boolean;
   replacingTruckId?: string;
   replacedBySpareId?: string;

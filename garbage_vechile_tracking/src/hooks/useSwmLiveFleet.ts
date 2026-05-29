@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { SWM_ADMIN_API_URL, SWM_WS_URL } from "@/config/api";
 import { TruckData } from "@/data/fleetData";
+import { getAccessToken } from "@/lib/authStorage";
 
 type SnapshotTruck = {
   imei: string;
@@ -142,10 +143,12 @@ export function useSwmLiveFleet(limit = 20000): {
 
     const loadSnapshot = async () => {
       try {
+        const token = getAccessToken();
+        if (!token) return;
         const response = await fetch(`${SWM_ADMIN_API_URL}/v1/realtime/trucks?limit=${limit}`, {
           headers: {
             "Content-Type": "application/json",
-            "x-role": "viewer",
+            "Authorization": `Bearer ${token}`,
           },
         });
         if (!response.ok) return;
@@ -168,7 +171,10 @@ export function useSwmLiveFleet(limit = 20000): {
 
     const connectWs = () => {
       if (disposed) return;
-      const ws = new WebSocket(SWM_WS_URL);
+      const token = getAccessToken();
+      if (!token) return;
+      const separator = SWM_WS_URL.includes("?") ? "&" : "?";
+      const ws = new WebSocket(`${SWM_WS_URL}${separator}token=${encodeURIComponent(token)}`);
       wsRef.current = ws;
 
       ws.onopen = () => {

@@ -39,7 +39,8 @@ const ActiveTrucks = () => {
   const navigate = useNavigate();
   const { data: vendorsData = [], isLoading: isLoadingVendors } = useVendors();
   const { data: zonesData = [], isLoading: isLoadingZones } = useZones();
-  const { data: wardsData = [], isLoading: isLoadingWards } = useZoneWards();
+  const defaultZoneId = zonesData[0]?.id || "";
+  const { data: wardsData = [], isLoading: isLoadingWards } = useZoneWards(defaultZoneId);
   
   const [vendors, setVendors] = useState([]);
   const [zones, setZones] = useState([]);

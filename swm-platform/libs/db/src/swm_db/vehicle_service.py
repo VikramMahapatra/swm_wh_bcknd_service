@@ -12,7 +12,7 @@ from swm_db.vehicle_repository import VehicleRepository
 class VehicleCreateInput:
     vehicle_number: str
     registration_number: str
-    contractor_id: uuid.UUID
+    vendor_id: uuid.UUID
     ward_id: uuid.UUID
     route_id: uuid.UUID | None = None
     truck_type: str | None = None
@@ -52,7 +52,7 @@ class VehicleService:
         return await self._repository.create(
             vehicle_number=payload.vehicle_number,
             registration_number=payload.registration_number,
-            contractor_id=payload.contractor_id,
+            vendor_id=payload.vendor_id,
             ward_id=payload.ward_id,
             route_id=payload.route_id,
             truck_type=payload.truck_type,
@@ -79,13 +79,13 @@ class VehicleService:
     async def list_vehicles(
         self,
         *,
-        contractor_id: uuid.UUID | None = None,
+        vendor_id: uuid.UUID | None = None,
         ward_id: uuid.UUID | None = None,
         route_id: uuid.UUID | None = None,
         active_only: bool | None = None,
     ) -> list[VehicleORM]:
         return await self._repository.list(
-            contractor_id=contractor_id,
+            vendor_id=vendor_id,
             ward_id=ward_id,
             route_id=route_id,
             active_only=active_only,

@@ -45,14 +45,14 @@ class VehicleRepository:
     async def list(
         self,
         *,
-        contractor_id: uuid.UUID | None = None,
+        vendor_id: uuid.UUID | None = None,
         ward_id: uuid.UUID | None = None,
         route_id: uuid.UUID | None = None,
         active_only: bool | None = None,
     ) -> list[VehicleORM]:
         stmt = select(VehicleORM)
-        if contractor_id is not None:
-            stmt = stmt.where(VehicleORM.contractor_id == contractor_id)
+        if vendor_id is not None:
+            stmt = stmt.where(VehicleORM.vendor_id == vendor_id)
         if ward_id is not None:
             stmt = stmt.where(VehicleORM.ward_id == ward_id)
         if route_id is not None:

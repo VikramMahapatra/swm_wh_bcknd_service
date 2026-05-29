@@ -23,7 +23,9 @@ const TwitterMentions = lazy(() => import("./pages/TwitterMentions"));
 const Tickets = lazy(() => import("./pages/Tickets"));
 const MasterDrivers = lazy(() => import("./pages/MasterDrivers"));
 const MasterVendors = lazy(() => import("./pages/MasterVendors"));
-const MasterTrucks = lazy(() => import("./pages/MasterTrucks"));
+const MasterVehicles = lazy(() => import("./pages/MasterVehicles"));
+const MasterDevices = lazy(() => import("./pages/MasterDevices"));
+const MasterDeviceAssignments = lazy(() => import("./pages/MasterDeviceAssignments"));
 const MasterZonesWards = lazy(() => import("./pages/MasterZonesWards"));
 const MasterRoutesPickups = lazy(() => import("./pages/MasterRoutesPickups"));
 const SpareVehicles = lazy(() => import("./pages/SpareVehicles"));
@@ -80,7 +82,9 @@ const App = () => (
                 <Route path="/tickets" element={<ProtectedRoute><Tickets /></ProtectedRoute>} />
                 <Route path="/master/drivers" element={<ProtectedRoute><MasterDrivers /></ProtectedRoute>} />
                 <Route path="/master/vendors" element={<ProtectedRoute><MasterVendors /></ProtectedRoute>} />
-                <Route path="/master/trucks" element={<ProtectedRoute><MasterTrucks /></ProtectedRoute>} />
+                <Route path="/master/vehicles" element={<ProtectedRoute><MasterVehicles /></ProtectedRoute>} />
+                <Route path="/master/devices" element={<ProtectedRoute><MasterDevices /></ProtectedRoute>} />
+                <Route path="/master/device-assignments" element={<ProtectedRoute><MasterDeviceAssignments /></ProtectedRoute>} />
                 <Route path="/master/zones-wards" element={<ProtectedRoute><MasterZonesWards /></ProtectedRoute>} />
                 <Route path="/master/routes-pickups" element={<ProtectedRoute><MasterRoutesPickups /></ProtectedRoute>} />
                 <Route path="/active-trucks" element={<ProtectedRoute><ActiveTrucks /></ProtectedRoute>} />
