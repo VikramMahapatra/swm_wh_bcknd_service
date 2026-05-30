@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from swm_db import (
     AlertORM,
     AnalyticsDailyKPIORM,
+    AnalyticsGeofenceEventORM,
+    AnalyticsOverspeedEventORM,
     AuthUserORM,
     DeviceEventORM,
     DeviceORM,
@@ -169,6 +171,7 @@ class DriverCreateRequest(BaseModel):
     email: str | None = None
     address: str | None = None
     emergency_contact: str | None = Field(default=None, validation_alias=AliasChoices("emergency_contact", "emergencyContact"))
+    join_date: str | None = Field(default=None, validation_alias=AliasChoices("join_date", "joinDate"))
 
     @field_validator("vendor_id", "assigned_truck_id", mode="before")
     @classmethod
@@ -193,6 +196,7 @@ class DriverUpdateRequest(BaseModel):
     email: str | None = None
     address: str | None = None
     emergency_contact: str | None = Field(default=None, validation_alias=AliasChoices("emergency_contact", "emergencyContact"))
+    join_date: str | None = Field(default=None, validation_alias=AliasChoices("join_date", "joinDate"))
 
     @field_validator("vendor_id", "assigned_truck_id", mode="before")
     @classmethod
@@ -362,11 +366,11 @@ def _resolve_active(*, status: str | None, active: bool | None, default: bool = 
 
 
 def _driver_to_dict(row: DriverORM) -> dict:
-    metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+    metadata = dict(row.metadata_json) if isinstance(row.metadata_json, dict) else {}
     license_expiry = row.license_expiry.isoformat() if row.license_expiry is not None else None
     assigned_truck_id = str(row.assigned_vehicle_id) if row.assigned_vehicle_id is not None else None
     vendor_id = str(row.vendor_id) if row.vendor_id is not None else None
-    status = "active" if row.active else "inactive"
+    status = str(metadata.get("status") or ("active" if row.active else "inactive"))
     return {
         "id": str(row.id),
         "name": row.name,
@@ -375,6 +379,8 @@ def _driver_to_dict(row: DriverORM) -> dict:
         "address": metadata.get("address"),
         "emergency_contact": metadata.get("emergency_contact"),
         "emergencyContact": metadata.get("emergency_contact"),
+        "join_date": metadata.get("join_date"),
+        "joinDate": metadata.get("join_date"),
         "license_number": row.license_number,
         "licenseNumber": row.license_number,
         "license_expiry": license_expiry,
@@ -1126,6 +1132,7 @@ async def _completed_trip_rows(
             "zone": zone.zone_name,
             "ward": ward.ward_name,
             "vendor": vendor.vendor_name,
+            "driver": "Unassigned",
         }
         for identity in identities:
             vehicle_info[identity] = info
@@ -1156,6 +1163,27 @@ async def _completed_trip_rows(
             identities.add(str(row.imei))
             if info is not None:
                 vehicle_info[str(row.imei)] = info
+
+    driver_name_by_vehicle: dict[str, str] = {}
+    driver_rows = (
+        await session.execute(
+            select(DriverORM)
+            .where(
+                DriverORM.active.is_(True),
+                cast(DriverORM.assigned_vehicle_id, String).in_(vehicle_ids),
+            )
+            .order_by(DriverORM.name.asc())
+        )
+    ).scalars().all()
+    for driver in driver_rows:
+        assigned_vehicle_id = str(driver.assigned_vehicle_id) if driver.assigned_vehicle_id is not None else None
+        if not assigned_vehicle_id:
+            continue
+        driver_name_by_vehicle[assigned_vehicle_id] = driver.name
+        for identity in identities_by_vehicle.get(assigned_vehicle_id, {assigned_vehicle_id}):
+            info = vehicle_info.get(identity)
+            if info is not None:
+                info["driver"] = driver.name
 
     pickup_rows = (
         await session.execute(
@@ -1283,6 +1311,15 @@ async def _completed_trip_rows(
             radius_m=float(settings.gtc_trip_radius_m),
             halt_seconds=max(settings.gtc_trip_halt_seconds, 0),
         )
+        completion_method = "gtc_halt"
+        if not completed:
+            # Some simulator/backfill data has reliable pickup-point crossings
+            # but no dense telemetry points at the GTC to prove the halt window.
+            # In that case, route visited + later GTC crossing is the best
+            # available completion evidence, so keep the report populated.
+            completed = True
+            completed_at = crossing.crossed_at
+            completion_method = "gtc_crossing_fallback"
         if not completed:
             continue
 
@@ -1303,7 +1340,7 @@ async def _completed_trip_rows(
                 "date": completed_local.date().isoformat(),
                 "vehicle_id": vehicle_key,
                 "truck": info["truck"],
-                "driver": "Unassigned",
+                "driver": driver_name_by_vehicle.get(vehicle_key) or info.get("driver") or "Unassigned",
                 "route_id": route_id_str,
                 "route": info["route"],
                 "zone": info["zone"],
@@ -1323,6 +1360,7 @@ async def _completed_trip_rows(
                 "gtcPoint": last_pickup.pickup_name or f"Pickup {last_pickup.sequence_no}",
                 "gtcRadiusM": float(settings.gtc_trip_radius_m),
                 "haltSeconds": int(settings.gtc_trip_halt_seconds),
+                "completionMethod": completion_method,
                 "tripDetails": trip_details,
             }
         )
@@ -1573,6 +1611,691 @@ async def _first_pickup_arrival_rows(
     return report_rows
 
 
+async def _driver_behavior_rows(
+    session: AsyncSession,
+    *,
+    date_from: date | None,
+    date_to: date | None,
+    zone_id: str | None = None,
+    ward_id: str | None = None,
+    vehicle_id: str | None = None,
+) -> list[dict]:
+    report_tz = timezone(timedelta(hours=5, minutes=30))
+    _, _, from_ts, to_ts = _report_date_window(date_from, date_to)
+
+    vehicle_stmt = (
+        select(VehicleORM, WardORM, ZoneORM, VendorORM, RouteORM)
+        .join(WardORM, VehicleORM.ward_id == WardORM.id)
+        .join(ZoneORM, WardORM.zone_id == ZoneORM.id)
+        .outerjoin(VendorORM, VehicleORM.vendor_id == VendorORM.id)
+        .outerjoin(RouteORM, VehicleORM.route_id == RouteORM.id)
+    )
+    if zone_id:
+        vehicle_stmt = vehicle_stmt.where(cast(ZoneORM.id, String) == zone_id)
+    if ward_id:
+        vehicle_stmt = vehicle_stmt.where(cast(WardORM.id, String) == ward_id)
+    if vehicle_id:
+        vehicle_stmt = vehicle_stmt.where(
+            or_(
+                cast(VehicleORM.id, String) == vehicle_id,
+                VehicleORM.vehicle_number == vehicle_id,
+                VehicleORM.registration_number == vehicle_id,
+            )
+        )
+
+    vehicle_rows = (await session.execute(vehicle_stmt)).all()
+    vehicle_info: dict[str, dict] = {}
+    vehicle_ids: set[str] = set()
+    for vehicle, ward, zone, vendor, route in vehicle_rows:
+        canonical_id = str(vehicle.id)
+        vehicle_ids.add(canonical_id)
+        info = {
+            "vehicle_id": canonical_id,
+            "truck": vehicle.vehicle_number or vehicle.registration_number or canonical_id,
+            "registration": vehicle.registration_number,
+            "route": route.route_name if route is not None else "-",
+            "route_id": str(vehicle.route_id) if vehicle.route_id is not None else None,
+            "zone": zone.zone_name,
+            "ward": ward.ward_name,
+            "vendor": vendor.vendor_name if vendor is not None else "-",
+            "driver": "Unassigned",
+        }
+        for identity in (canonical_id, vehicle.vehicle_number, vehicle.registration_number):
+            if identity:
+                vehicle_info[str(identity)] = info
+
+    if vehicle_ids:
+        assignment_rows = (
+            await session.execute(
+                select(
+                    cast(DeviceVehicleAssignmentORM.vehicle_id, String).label("vehicle_id"),
+                    cast(DeviceVehicleAssignmentORM.device_id, String).label("device_id"),
+                    DeviceORM.imei,
+                )
+                .select_from(DeviceVehicleAssignmentORM)
+                .join(DeviceORM, DeviceVehicleAssignmentORM.device_id == DeviceORM.id)
+                .where(cast(DeviceVehicleAssignmentORM.vehicle_id, String).in_(vehicle_ids))
+            )
+        ).all()
+        for row in assignment_rows:
+            info = vehicle_info.get(str(row.vehicle_id))
+            if info is None:
+                continue
+            if row.device_id:
+                vehicle_info[str(row.device_id)] = info
+            if row.imei:
+                vehicle_info[str(row.imei)] = info
+
+    allowed_identities = set(vehicle_info.keys())
+    stmt = (
+        select(AnalyticsOverspeedEventORM)
+        .where(
+            AnalyticsOverspeedEventORM.event_ts >= from_ts,
+            AnalyticsOverspeedEventORM.event_ts < to_ts,
+        )
+        .order_by(AnalyticsOverspeedEventORM.event_ts.desc())
+        .limit(5000)
+    )
+    if allowed_identities:
+        stmt = stmt.where(
+            or_(
+                AnalyticsOverspeedEventORM.vehicle_id.in_(allowed_identities),
+                AnalyticsOverspeedEventORM.imei.in_(allowed_identities),
+                AnalyticsOverspeedEventORM.device_id.in_(allowed_identities),
+            )
+        )
+    elif zone_id or ward_id or vehicle_id:
+        return []
+
+    rows = (await session.execute(stmt)).scalars().all()
+    report_rows: list[dict] = []
+    for index, event in enumerate(rows, start=1):
+        info = (
+            vehicle_info.get(str(event.vehicle_id))
+            or vehicle_info.get(str(event.imei))
+            or vehicle_info.get(str(event.device_id))
+            or {}
+        )
+        event_local = event.event_ts.astimezone(report_tz)
+        over_by = max(0.0, float(event.speed_kph or 0) - float(event.threshold_kph or 0))
+        severity = (event.severity or "medium").lower()
+        report_rows.append(
+            {
+                "id": str(event.id),
+                "date": event_local.date().isoformat(),
+                "time": event_local.strftime("%H:%M:%S"),
+                "eventTs": event_local.isoformat(),
+                "truck": info.get("truck") or str(event.vehicle_id),
+                "vehicle_id": info.get("vehicle_id") or str(event.vehicle_id),
+                "imei": event.imei,
+                "device_id": event.device_id,
+                "driver": info.get("driver") or "Unassigned",
+                "incidentType": "Overspeeding",
+                "value": f"{float(event.speed_kph or 0):.1f} km/h",
+                "speedKph": round(float(event.speed_kph or 0), 2),
+                "limit": f"{float(event.threshold_kph or 0):.0f} km/h",
+                "thresholdKph": round(float(event.threshold_kph or 0), 2),
+                "overByKph": round(over_by, 2),
+                "location": f"{float(event.lat):.6f}, {float(event.lng):.6f}",
+                "lat": float(event.lat),
+                "lng": float(event.lng),
+                "severity": severity,
+                "zone": info.get("zone") or "-",
+                "ward": info.get("ward") or "-",
+                "route": info.get("route") or "-",
+                "route_id": info.get("route_id"),
+                "vendor": info.get("vendor") or str(event.vendor_id),
+                "rank": index,
+            }
+        )
+
+    return report_rows
+
+
+async def _route_performance_rows(
+    session: AsyncSession,
+    *,
+    date_from: date | None,
+    date_to: date | None,
+    zone_id: str | None = None,
+    ward_id: str | None = None,
+    vehicle_id: str | None = None,
+) -> list[dict]:
+    report_tz = timezone(timedelta(hours=5, minutes=30))
+    _, _, from_ts, to_ts = _report_date_window(date_from, date_to)
+
+    vehicle_stmt = (
+        select(VehicleORM, WardORM, ZoneORM, VendorORM, RouteORM)
+        .join(WardORM, VehicleORM.ward_id == WardORM.id)
+        .join(ZoneORM, WardORM.zone_id == ZoneORM.id)
+        .outerjoin(VendorORM, VehicleORM.vendor_id == VendorORM.id)
+        .outerjoin(RouteORM, VehicleORM.route_id == RouteORM.id)
+        .where(VehicleORM.route_id.is_not(None))
+    )
+    if zone_id:
+        vehicle_stmt = vehicle_stmt.where(cast(ZoneORM.id, String) == zone_id)
+    if ward_id:
+        vehicle_stmt = vehicle_stmt.where(cast(WardORM.id, String) == ward_id)
+    if vehicle_id:
+        vehicle_stmt = vehicle_stmt.where(
+            or_(
+                cast(VehicleORM.id, String) == vehicle_id,
+                VehicleORM.vehicle_number == vehicle_id,
+                VehicleORM.registration_number == vehicle_id,
+            )
+        )
+
+    vehicle_rows = (await session.execute(vehicle_stmt)).all()
+    vehicle_info: dict[str, dict] = {}
+    vehicle_ids: set[str] = set()
+    for vehicle, ward, zone, vendor, route in vehicle_rows:
+        canonical_id = str(vehicle.id)
+        vehicle_ids.add(canonical_id)
+        info = {
+            "vehicle_id": canonical_id,
+            "truck": vehicle.vehicle_number or vehicle.registration_number or canonical_id,
+            "zone": zone.zone_name,
+            "ward": ward.ward_name,
+            "route": route.route_name if route is not None else "-",
+            "route_id": str(vehicle.route_id) if vehicle.route_id is not None else None,
+            "vendor": vendor.vendor_name if vendor is not None else "-",
+        }
+        for identity in (canonical_id, vehicle.vehicle_number, vehicle.registration_number):
+            if identity:
+                vehicle_info[str(identity)] = info
+
+    if vehicle_ids:
+        assignment_rows = (
+            await session.execute(
+                select(
+                    cast(DeviceVehicleAssignmentORM.vehicle_id, String).label("vehicle_id"),
+                    cast(DeviceVehicleAssignmentORM.device_id, String).label("device_id"),
+                    DeviceORM.imei,
+                )
+                .select_from(DeviceVehicleAssignmentORM)
+                .join(DeviceORM, DeviceVehicleAssignmentORM.device_id == DeviceORM.id)
+                .where(cast(DeviceVehicleAssignmentORM.vehicle_id, String).in_(vehicle_ids))
+            )
+        ).all()
+        for row in assignment_rows:
+            info = vehicle_info.get(str(row.vehicle_id))
+            if info is None:
+                continue
+            if row.device_id:
+                vehicle_info[str(row.device_id)] = info
+            if row.imei:
+                vehicle_info[str(row.imei)] = info
+
+    allowed_identities = set(vehicle_info.keys())
+    if (zone_id or ward_id or vehicle_id) and not allowed_identities:
+        return []
+
+    def _info_for(vehicle_identity: str, imei: str | None = None, device_id: str | None = None) -> dict:
+        return vehicle_info.get(str(vehicle_identity)) or vehicle_info.get(str(imei or "")) or vehicle_info.get(str(device_id or "")) or {}
+
+    def _add_group(groups: dict[str, dict], detail: dict, info: dict, event_local: datetime) -> None:
+        key = "|".join(
+            [
+                event_local.date().isoformat(),
+                info.get("zone") or "-",
+                info.get("ward") or "-",
+                info.get("route") or "-",
+            ]
+        )
+        group = groups.setdefault(
+            key,
+            {
+                "id": key,
+                "date": event_local.date().isoformat(),
+                "zone": info.get("zone") or "-",
+                "ward": info.get("ward") or "-",
+                "route": info.get("route") or "-",
+                "route_id": info.get("route_id"),
+                "anomalyCount": 0,
+                "overspeedCount": 0,
+                "deviationCount": 0,
+                "geofenceEntryCount": 0,
+                "geofenceExitCount": 0,
+                "affectedTrucks": set(),
+                "worstSeverity": "low",
+                "anomalyDetails": [],
+            },
+        )
+        group["anomalyCount"] += 1
+        group["affectedTrucks"].add(detail.get("truck") or "-")
+        group["anomalyDetails"].append(detail)
+        category = detail.get("category")
+        if category == "Overspeeding":
+            group["overspeedCount"] += 1
+        elif category == "Route Deviation":
+            group["deviationCount"] += 1
+        elif category == "Geofence Entry":
+            group["geofenceEntryCount"] += 1
+        elif category == "Geofence Exit":
+            group["geofenceExitCount"] += 1
+        detail_severity = str(detail.get("severity") or "").lower()
+        if detail_severity in {"critical", "high"}:
+            group["worstSeverity"] = "high"
+        elif detail_severity in {"warning", "medium"} and group["worstSeverity"] != "high":
+            group["worstSeverity"] = "medium"
+
+    groups: dict[str, dict] = {}
+
+    overspeed_stmt = (
+        select(AnalyticsOverspeedEventORM)
+        .where(AnalyticsOverspeedEventORM.event_ts >= from_ts, AnalyticsOverspeedEventORM.event_ts < to_ts)
+        .order_by(AnalyticsOverspeedEventORM.event_ts.desc())
+        .limit(5000)
+    )
+    geofence_stmt = (
+        select(AnalyticsGeofenceEventORM)
+        .where(AnalyticsGeofenceEventORM.event_ts >= from_ts, AnalyticsGeofenceEventORM.event_ts < to_ts)
+        .order_by(AnalyticsGeofenceEventORM.event_ts.desc())
+        .limit(5000)
+    )
+    if allowed_identities:
+        identity_filter = lambda orm: or_(orm.vehicle_id.in_(allowed_identities), orm.imei.in_(allowed_identities), orm.device_id.in_(allowed_identities))
+        overspeed_stmt = overspeed_stmt.where(identity_filter(AnalyticsOverspeedEventORM))
+        geofence_stmt = geofence_stmt.where(identity_filter(AnalyticsGeofenceEventORM))
+
+    overspeed_rows = (await session.execute(overspeed_stmt)).scalars().all()
+    for event in overspeed_rows:
+        info = _info_for(event.vehicle_id, event.imei, event.device_id)
+        if not info:
+            continue
+        event_local = event.event_ts.astimezone(report_tz)
+        speed = float(event.speed_kph or 0)
+        threshold = float(event.threshold_kph or 0)
+        severity = (event.severity or "medium").lower()
+        detail = {
+            "id": str(event.id),
+            "date": event_local.date().isoformat(),
+            "time": event_local.strftime("%H:%M:%S"),
+            "truck": info.get("truck") or str(event.vehicle_id),
+            "imei": event.imei,
+            "device_id": event.device_id,
+            "category": "Overspeeding",
+            "description": f"Speed {speed:.1f} km/h exceeded limit {threshold:.0f} km/h",
+            "value": f"{speed:.1f} km/h",
+            "threshold": f"{threshold:.0f} km/h",
+            "overBy": f"{max(0.0, speed - threshold):.1f} km/h",
+            "location": f"{float(event.lat):.6f}, {float(event.lng):.6f}",
+            "severity": severity,
+        }
+        _add_group(groups, detail, info, event_local)
+
+    geofence_rows = (await session.execute(geofence_stmt)).scalars().all()
+    for event in geofence_rows:
+        info = _info_for(event.vehicle_id, event.imei, event.device_id)
+        if not info:
+            continue
+        event_local = event.event_ts.astimezone(report_tz)
+        event_type = (event.event_type or "").lower()
+        category = "Route Deviation" if event_type == "route_deviation" else "Geofence Entry" if event_type == "entry" else "Geofence Exit"
+        severity = "high" if event_type == "route_deviation" else "medium"
+        detail = {
+            "id": str(event.id),
+            "date": event_local.date().isoformat(),
+            "time": event_local.strftime("%H:%M:%S"),
+            "truck": info.get("truck") or str(event.vehicle_id),
+            "imei": event.imei,
+            "device_id": event.device_id,
+            "category": category,
+            "description": f"{category} at {event.geofence_code or event.geofence_type or 'geofence'}",
+            "value": event.geofence_code or event.geofence_type or "-",
+            "threshold": "-",
+            "overBy": "-",
+            "location": f"{float(event.lat):.6f}, {float(event.lng):.6f}",
+            "severity": severity,
+        }
+        _add_group(groups, detail, info, event_local)
+
+    route_rows: list[dict] = []
+    for group in groups.values():
+        affected_trucks = sorted(group["affectedTrucks"])
+        group["affectedTruckCount"] = len(affected_trucks)
+        group["affectedTrucks"] = ", ".join(affected_trucks)
+        group["completion"] = max(0, 100 - min(group["deviationCount"] * 5, 100))
+        group["efficiency"] = max(0, 100 - min(group["anomalyCount"] * 2, 100))
+        group["avgTime"] = "-"
+        group["deviations"] = group["deviationCount"]
+        route_rows.append(group)
+
+    return sorted(route_rows, key=lambda row: (row["date"], row["zone"], row["ward"], row["route"]), reverse=True)
+
+
+async def _driver_attendance_rows(
+    session: AsyncSession,
+    *,
+    trip_completed: list[dict],
+    driver_behavior: list[dict],
+    zone_id: str | None = None,
+    ward_id: str | None = None,
+    vehicle_id: str | None = None,
+) -> list[dict]:
+    driver_stmt = (
+        select(DriverORM, VehicleORM, WardORM, ZoneORM)
+        .outerjoin(VehicleORM, DriverORM.assigned_vehicle_id == VehicleORM.id)
+        .outerjoin(WardORM, VehicleORM.ward_id == WardORM.id)
+        .outerjoin(ZoneORM, WardORM.zone_id == ZoneORM.id)
+        .order_by(DriverORM.name.asc())
+    )
+    if zone_id:
+        driver_stmt = driver_stmt.where(cast(ZoneORM.id, String) == zone_id)
+    if ward_id:
+        driver_stmt = driver_stmt.where(cast(WardORM.id, String) == ward_id)
+    if vehicle_id:
+        driver_stmt = driver_stmt.where(
+            or_(
+                cast(VehicleORM.id, String) == vehicle_id,
+                VehicleORM.vehicle_number == vehicle_id,
+                VehicleORM.registration_number == vehicle_id,
+            )
+        )
+
+    driver_rows = (await session.execute(driver_stmt)).all()
+    trips_by_vehicle: dict[str, list[dict]] = {}
+    for trip in trip_completed:
+        key = str(trip.get("vehicle_id") or "")
+        if key:
+            trips_by_vehicle.setdefault(key, []).append(trip)
+
+    violations_by_truck: dict[str, int] = {}
+    for incident in driver_behavior:
+        truck = str(incident.get("truck") or "")
+        if truck:
+            violations_by_truck[truck] = violations_by_truck.get(truck, 0) + 1
+
+    rows: list[dict] = []
+    seen_driver_ids: set[str] = set()
+    for driver, vehicle, ward, zone in driver_rows:
+        driver_id = str(driver.id)
+        seen_driver_ids.add(driver_id)
+        vehicle_id_str = str(driver.assigned_vehicle_id) if driver.assigned_vehicle_id is not None else ""
+        driver_trips = trips_by_vehicle.get(vehicle_id_str, [])
+        first_trip = min(driver_trips, key=lambda item: item.get("startedAt") or "") if driver_trips else None
+        last_trip = max(driver_trips, key=lambda item: item.get("completedAt") or "") if driver_trips else None
+        total_minutes = sum(int(trip.get("durationMinutes") or 0) for trip in driver_trips)
+        truck = (
+            vehicle.vehicle_number or vehicle.registration_number or vehicle_id_str
+            if vehicle is not None
+            else "-"
+        )
+        violations = violations_by_truck.get(str(truck), 0)
+        score = max(0, min(100, 100 - violations * 2))
+        rows.append(
+            {
+                "id": driver_id,
+                "driver": driver.name,
+                "truck": truck,
+                "zone": zone.zone_name if zone is not None else "-",
+                "ward": ward.ward_name if ward is not None else "-",
+                "shiftStart": first_trip.get("startTime") if first_trip else "-",
+                "shiftEnd": last_trip.get("endTime") if last_trip else "-",
+                "hoursWorked": round(total_minutes / 60, 2),
+                "routes": len({trip.get("route_id") or trip.get("route") for trip in driver_trips if trip.get("route_id") or trip.get("route")}),
+                "trips": len(driver_trips),
+                "onTime": True,
+                "violations": violations,
+                "score": score,
+                "status": "present" if driver_trips else "no-trip",
+            }
+        )
+
+    # If there are completed trips for a driver not yet registered in master data,
+    # still surface them rather than hiding report activity.
+    for trip in trip_completed:
+        if trip.get("driver") and trip.get("driver") != "Unassigned":
+            continue
+        synthetic_id = f"unassigned-{trip.get('vehicle_id') or trip.get('truck')}"
+        if synthetic_id in seen_driver_ids:
+            continue
+        vehicle_trips = trips_by_vehicle.get(str(trip.get("vehicle_id") or ""), [trip])
+        first_trip = min(vehicle_trips, key=lambda item: item.get("startedAt") or "")
+        last_trip = max(vehicle_trips, key=lambda item: item.get("completedAt") or "")
+        total_minutes = sum(int(item.get("durationMinutes") or 0) for item in vehicle_trips)
+        rows.append(
+            {
+                "id": synthetic_id,
+                "driver": "Unassigned",
+                "truck": trip.get("truck") or "-",
+                "zone": trip.get("zone") or "-",
+                "ward": trip.get("ward") or "-",
+                "shiftStart": first_trip.get("startTime") or "-",
+                "shiftEnd": last_trip.get("endTime") or "-",
+                "hoursWorked": round(total_minutes / 60, 2),
+                "routes": len({item.get("route_id") or item.get("route") for item in vehicle_trips if item.get("route_id") or item.get("route")}),
+                "trips": len(vehicle_trips),
+                "onTime": True,
+                "violations": violations_by_truck.get(str(trip.get("truck") or ""), 0),
+                "score": max(0, 100 - violations_by_truck.get(str(trip.get("truck") or ""), 0) * 2),
+                "status": "present",
+            }
+        )
+        seen_driver_ids.add(synthetic_id)
+
+    return rows
+
+
+async def _vehicle_status_rows(
+    session: AsyncSession,
+    *,
+    date_from: date,
+    date_to: date,
+    zone_id: str | None = None,
+    ward_id: str | None = None,
+    vehicle_id: str | None = None,
+    route_id: str | None = None,
+) -> list[dict]:
+    report_tz = timezone(timedelta(hours=5, minutes=30))
+    now_utc = datetime.now(timezone.utc)
+    from_ts = now_utc - timedelta(hours=24)
+    to_ts = now_utc
+    stale_gps_seconds = 300
+    offline_seconds = 600
+
+    vehicle_stmt = (
+        select(VehicleORM, WardORM, ZoneORM, RouteORM, DriverORM)
+        .join(WardORM, VehicleORM.ward_id == WardORM.id)
+        .join(ZoneORM, WardORM.zone_id == ZoneORM.id)
+        .outerjoin(RouteORM, VehicleORM.route_id == RouteORM.id)
+        .outerjoin(DriverORM, DriverORM.assigned_vehicle_id == VehicleORM.id)
+        .order_by(VehicleORM.vehicle_number.asc())
+    )
+    if zone_id:
+        vehicle_stmt = vehicle_stmt.where(cast(ZoneORM.id, String) == zone_id)
+    if ward_id:
+        vehicle_stmt = vehicle_stmt.where(cast(WardORM.id, String) == ward_id)
+    if route_id:
+        vehicle_stmt = vehicle_stmt.where(cast(RouteORM.id, String) == route_id)
+    if vehicle_id:
+        vehicle_stmt = vehicle_stmt.where(
+            or_(
+                cast(VehicleORM.id, String) == vehicle_id,
+                VehicleORM.vehicle_number == vehicle_id,
+                VehicleORM.registration_number == vehicle_id,
+            )
+        )
+
+    vehicle_rows = (await session.execute(vehicle_stmt)).all()
+    vehicles: dict[str, dict] = {}
+    vehicle_ids: list[UUID] = []
+    for vehicle, ward, zone, route, driver in vehicle_rows:
+        vehicle_id_str = str(vehicle.id)
+        vehicle_ids.append(vehicle.id)
+        vehicles[vehicle_id_str] = {
+            "vehicle": vehicle,
+            "ward": ward,
+            "zone": zone,
+            "route": route,
+            "driver": driver,
+        }
+
+    if not vehicle_ids:
+        return []
+
+    assignment_stmt = (
+        select(DeviceVehicleAssignmentORM, DeviceORM)
+        .join(DeviceORM, DeviceVehicleAssignmentORM.device_id == DeviceORM.id)
+        .where(
+            DeviceVehicleAssignmentORM.vehicle_id.in_(vehicle_ids),
+            DeviceVehicleAssignmentORM.active.is_(True),
+            DeviceVehicleAssignmentORM.assigned_to.is_(None),
+            DeviceVehicleAssignmentORM.assigned_from <= now_utc,
+        )
+        .order_by(DeviceVehicleAssignmentORM.assigned_from.asc())
+    )
+    assignment_rows = (await session.execute(assignment_stmt)).all()
+    assignments_by_vehicle: dict[str, list[dict]] = {}
+    imei_to_assignment: dict[str, list[dict]] = {}
+    for assignment, device in assignment_rows:
+        entry = {
+            "device_id": str(device.id),
+            "imei": device.imei,
+            "assigned_from": assignment.assigned_from,
+            "assigned_to": assignment.assigned_to,
+            "active": bool(assignment.active),
+            "battery_percent": device.battery_percent,
+            "signal_strength": device.signal_strength,
+            "health_status": device.health_status,
+            "device_active": bool(device.active),
+            "device_last_seen": device.last_seen,
+        }
+        vehicle_key = str(assignment.vehicle_id)
+        assignments_by_vehicle.setdefault(vehicle_key, []).append(entry)
+        imei_to_assignment.setdefault(device.imei, []).append({**entry, "vehicle_id": vehicle_key})
+
+    event_rows = []
+    if imei_to_assignment:
+        event_stmt = (
+            select(DeviceEventORM)
+            .where(
+                DeviceEventORM.ts >= from_ts,
+                DeviceEventORM.ts < to_ts,
+                DeviceEventORM.device_id.in_(list(imei_to_assignment.keys())),
+            )
+            .order_by(DeviceEventORM.ts.asc())
+        )
+        event_rows = (await session.execute(event_stmt)).scalars().all()
+
+    event_stats: dict[tuple[str, str], dict] = {}
+    for event in event_rows:
+        possible_assignments = imei_to_assignment.get(event.device_id, [])
+        matched_assignment = possible_assignments[-1] if possible_assignments else None
+        if matched_assignment is None:
+            continue
+
+        key = matched_assignment["vehicle_id"]
+        stats = event_stats.setdefault(
+            key,
+            {
+                "eventCount": 0,
+                "firstSeen": event.ts,
+                "lastSeen": event.ts,
+                "lastLat": event.lat,
+                "lastLon": event.lon,
+                "maxSpeedKph": 0.0,
+                "avgSpeedTotal": 0.0,
+                "ignitionOnCount": 0,
+            },
+        )
+        stats["eventCount"] += 1
+        stats["avgSpeedTotal"] += float(event.speed_kph or 0)
+        stats["maxSpeedKph"] = max(float(stats["maxSpeedKph"]), float(event.speed_kph or 0))
+        if event.ignition:
+            stats["ignitionOnCount"] += 1
+        if event.ts < stats["firstSeen"]:
+            stats["firstSeen"] = event.ts
+        if event.ts >= stats["lastSeen"]:
+            stats["lastSeen"] = event.ts
+            stats["lastLat"] = event.lat
+            stats["lastLon"] = event.lon
+
+    def _format_dt(value: datetime | None) -> str:
+        if value is None:
+            return "-"
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(report_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+    rows: list[dict] = []
+    snapshot_at = now_utc.astimezone(report_tz)
+    for vehicle_key, info in vehicles.items():
+        vehicle = info["vehicle"]
+        ward = info["ward"]
+        zone = info["zone"]
+        route = info["route"]
+        driver = info["driver"]
+        assignment = assignments_by_vehicle.get(vehicle_key, [])[-1] if assignments_by_vehicle.get(vehicle_key) else None
+        stats = event_stats.get(vehicle_key)
+        device_last_seen = (assignment or {}).get("device_last_seen")
+        last_seen = stats["lastSeen"] if stats else device_last_seen
+        battery = (assignment or {}).get("battery_percent")
+        signal = (assignment or {}).get("signal_strength")
+        health_status = str((assignment or {}).get("health_status") or "offline").lower()
+        age_seconds = None
+        if last_seen is not None:
+            age_seconds = max(0, int((now_utc - last_seen).total_seconds()))
+        event_count = int(stats["eventCount"]) if stats else 0
+
+        if not vehicle.active or vehicle.operational_status in {"retired", "breakdown"}:
+            status = "failed" if vehicle.operational_status == "breakdown" else "inactive"
+            gps_status = "offline"
+        elif assignment is None:
+            status = "inactive"
+            gps_status = "offline"
+        elif last_seen is None or age_seconds is None or age_seconds >= offline_seconds or health_status in {"critical", "offline"}:
+            status = "inactive" if health_status != "critical" else "failed"
+            gps_status = "offline"
+        elif age_seconds >= stale_gps_seconds or health_status == "warning" or (battery is not None and battery < 20) or (signal is not None and signal < 30):
+            status = "warning"
+            gps_status = "warning"
+        else:
+            status = "active"
+            gps_status = "online"
+
+        avg_speed = 0.0
+        if stats and event_count > 0:
+            avg_speed = round(float(stats["avgSpeedTotal"]) / event_count, 2)
+        rows.append(
+            {
+                "id": f"spot-{vehicle_key}",
+                "snapshotAt": snapshot_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "vehicle_id": vehicle_key,
+                "truck": vehicle.vehicle_number or vehicle.registration_number,
+                "registration": vehicle.registration_number,
+                "type": vehicle.truck_type or "Vehicle",
+                "zone": zone.zone_name,
+                "ward": ward.ward_name,
+                "route": route.route_name if route is not None else "-",
+                "route_id": str(route.id) if route is not None else None,
+                "driver": driver.name if driver is not None else "Unassigned",
+                "deviceImei": (assignment or {}).get("imei") or "-",
+                "gpsStatus": gps_status,
+                "status": status,
+                "vehicleStatus": vehicle.operational_status,
+                "eventCount": event_count,
+                "firstSeen": _format_dt(stats["firstSeen"] if stats else None),
+                "lastSeen": _format_dt(last_seen),
+                "lastUpdate": _format_dt(last_seen),
+                "location": (
+                    f"{float(stats['lastLat']):.6f}, {float(stats['lastLon']):.6f}"
+                    if stats
+                    else "-"
+                ),
+                "batteryLevel": round(float(battery), 1) if battery is not None else 0,
+                "signalStrength": round(float(signal), 1) if signal is not None else 0,
+                "maxSpeedKph": round(float(stats["maxSpeedKph"]), 2) if stats else 0,
+                "avgSpeedKph": avg_speed,
+                "ignitionOnCount": int(stats["ignitionOnCount"]) if stats else 0,
+                "ageSeconds": age_seconds,
+                "ageMinutes": round(age_seconds / 60, 1) if age_seconds is not None else None,
+            }
+        )
+
+    return sorted(rows, key=lambda row: (row["zone"], row["ward"], row["route"], row["truck"]))
+
+
 @router.get("/reports/data")
 async def reports_data(
     date_from: date | None = Query(default=None),
@@ -1580,6 +2303,7 @@ async def reports_data(
     zone_id: str | None = Query(default=None),
     ward_id: str | None = Query(default=None),
     vehicle_id: str | None = Query(default=None),
+    route_id: str | None = Query(default=None),
     _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
@@ -1835,6 +2559,39 @@ async def reports_data(
         ward_id=ward_id,
         vehicle_id=vehicle_id,
     )
+    driver_behavior = await _driver_behavior_rows(
+        session,
+        date_from=date_from,
+        date_to=date_to,
+        zone_id=zone_id,
+        ward_id=ward_id,
+        vehicle_id=vehicle_id,
+    )
+    driver_attendance = await _driver_attendance_rows(
+        session,
+        trip_completed=trip_completed,
+        driver_behavior=driver_behavior,
+        zone_id=zone_id,
+        ward_id=ward_id,
+        vehicle_id=vehicle_id,
+    )
+    route_performance = await _route_performance_rows(
+        session,
+        date_from=date_from,
+        date_to=date_to,
+        zone_id=zone_id,
+        ward_id=ward_id,
+        vehicle_id=vehicle_id,
+    )
+    vehicle_status = await _vehicle_status_rows(
+        session,
+        date_from=date_from,
+        date_to=date_to,
+        zone_id=zone_id,
+        ward_id=ward_id,
+        vehicle_id=vehicle_id,
+        route_id=route_id,
+    )
     utilization_by_truck: dict[str, dict] = {}
     for trip in trip_completed:
         truck = trip["truck"]
@@ -1856,18 +2613,18 @@ async def reports_data(
     # Compatibility payload for current UI tabs. Provide real aggregates where available.
     return {
         "daily_pickup_coverage": daily_pickup_coverage,
-        "route_performance": [],
+        "route_performance": route_performance,
         "truck_utilization": list(utilization_by_truck.values()),
         "trip_completed": trip_completed,
         "fuel_consumption": [],
-        "driver_attendance": [],
+        "driver_attendance": driver_attendance,
         "complaints": [],
         "dump_yard": [],
         "weekly_trend": weekly_trend,
         "zone_wise": zone_wise,
         "late_arrival": first_pickup_arrivals,
-        "driver_behavior": [],
-        "vehicle_status": [],
+        "driver_behavior": driver_behavior,
+        "vehicle_status": vehicle_status,
         "spare_usage": [],
     }
 
@@ -2041,6 +2798,8 @@ async def driver_create(
             "email": payload.email,
             "address": payload.address,
             "emergency_contact": payload.emergency_contact,
+            "join_date": payload.join_date,
+            "status": payload.status or ("active" if _resolve_active(status=payload.status, active=payload.active, default=True) else "inactive"),
         },
     )
     session.add(row)
@@ -2078,20 +2837,24 @@ async def driver_update(
                 row.license_expiry = date.fromisoformat(payload.license_expiry)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail="license_expiry must be YYYY-MM-DD") from exc
-    if payload.vendor_id is not None:
+    if "vendor_id" in payload.model_fields_set:
         row.vendor_id = _parse_uuid(payload.vendor_id)
-    if payload.assigned_truck_id is not None:
+    if "assigned_truck_id" in payload.model_fields_set:
         row.assigned_vehicle_id = _parse_uuid(payload.assigned_truck_id)
 
     row.active = _resolve_active(status=payload.status, active=payload.active, default=row.active)
 
-    metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+    metadata = dict(row.metadata_json) if isinstance(row.metadata_json, dict) else {}
     if payload.email is not None:
         metadata["email"] = payload.email
     if payload.address is not None:
         metadata["address"] = payload.address
     if payload.emergency_contact is not None:
         metadata["emergency_contact"] = payload.emergency_contact
+    if payload.join_date is not None:
+        metadata["join_date"] = payload.join_date
+    if payload.status is not None:
+        metadata["status"] = payload.status
     row.metadata_json = metadata
 
     await session.commit()

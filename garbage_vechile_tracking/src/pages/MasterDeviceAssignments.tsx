@@ -6,12 +6,28 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { PageHeader } from '@/components/PageHeader';
 import { useToast } from '@/hooks/use-toast';
 import { useDeviceAssignments, useDevices, useVehicles } from '@/hooks/useDataQueries';
 import { apiService } from '@/services/api';
 import { useQueryClient } from '@tanstack/react-query';
-import { Link2, Plus, RefreshCw, Search, Unlink } from 'lucide-react';
+import { Link2, Pencil, Plus, RefreshCw, Search, Unlink } from 'lucide-react';
+
+type DeviceAssignmentAction = {
+  type: 'save-edit' | 'unassign';
+  assignment?: any;
+};
 
 export default function MasterDeviceAssignments() {
   const { toast } = useToast();
@@ -23,6 +39,10 @@ export default function MasterDeviceAssignments() {
   const [search, setSearch] = useState('');
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [form, setForm] = useState({ device_id: '', vehicle_id: '', remarks: '' });
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [editingAssignment, setEditingAssignment] = useState<any | null>(null);
+  const [editForm, setEditForm] = useState({ vehicle_id: '', remarks: '' });
+  const [pendingAction, setPendingAction] = useState<DeviceAssignmentAction | null>(null);
 
   const deviceById = useMemo(() => new Map((devices as any[]).map((d) => [String(d.id), d.imei])), [devices]);
   const vehicleById = useMemo(() => new Map((vehicles as any[]).map((v) => [String(v.id), v.registration_number])), [vehicles]);
@@ -60,27 +80,113 @@ export default function MasterDeviceAssignments() {
     }
   };
 
-  const handleReassign = async (deviceId: string, currentVehicleId: string) => {
-    const target = window.prompt('Enter target vehicle ID for reassignment', currentVehicleId);
-    if (!target || target === currentVehicleId) return;
+  const openEdit = (assignment: any) => {
+    setEditingAssignment(assignment);
+    setEditForm({
+      vehicle_id: String(assignment.vehicle_id || ''),
+      remarks: assignment.remarks || '',
+    });
+    setIsEditOpen(true);
+  };
+
+  const requestSaveEdit = () => {
+    if (!editingAssignment || !editForm.vehicle_id) {
+      toast({ title: 'Vehicle is required', variant: 'destructive' });
+      return;
+    }
+    setPendingAction({ type: 'save-edit', assignment: editingAssignment });
+  };
+
+  const saveEdit = async () => {
+    if (!editingAssignment) return;
     try {
-      await apiService.reassignDevice(deviceId, target);
+      await apiService.reassignDevice(
+        String(editingAssignment.device_id),
+        editForm.vehicle_id,
+        editForm.remarks || undefined
+      );
       await refreshAll();
-      toast({ title: 'Device reassigned' });
+      setIsEditOpen(false);
+      setEditingAssignment(null);
+      setEditForm({ vehicle_id: '', remarks: '' });
+      toast({ title: 'Assignment updated successfully' });
     } catch (error) {
-      toast({ title: 'Reassignment failed', description: error instanceof Error ? error.message : 'Please try again', variant: 'destructive' });
+      toast({ title: 'Update failed', description: error instanceof Error ? error.message : 'Please try again', variant: 'destructive' });
     }
   };
 
-  const handleUnassign = async (deviceId: string) => {
+  const requestUnassign = (assignment: any) => {
+    setPendingAction({ type: 'unassign', assignment });
+  };
+
+  const handleUnassign = async (assignment: any) => {
     try {
-      await apiService.unassignDevice(deviceId);
+      await apiService.unassignDevice(String(assignment.device_id));
       await refreshAll();
       toast({ title: 'Device unassigned' });
     } catch (error) {
       toast({ title: 'Unassign failed', description: error instanceof Error ? error.message : 'Please try again', variant: 'destructive' });
     }
   };
+
+  const confirmPendingAction = async () => {
+    const action = pendingAction;
+    setPendingAction(null);
+    if (!action) return;
+    if (action.type === 'save-edit') {
+      await saveEdit();
+      return;
+    }
+    if (action.type === 'unassign' && action.assignment) {
+      await handleUnassign(action.assignment);
+    }
+  };
+
+  const getActionCopy = () => {
+    if (pendingAction?.type === 'save-edit') {
+      return {
+        title: 'Update assignment?',
+        description: 'This will close the current active assignment and create a new active assignment for the selected vehicle.',
+        action: 'Update',
+      };
+    }
+    return {
+      title: 'Unassign device?',
+      description: 'This will mark the current device-vehicle assignment inactive. Live telemetry will not map to this truck until the device is assigned again.',
+      action: 'Unassign',
+    };
+  };
+
+  const ActionButton = ({
+    label,
+    children,
+    onClick,
+    className = '',
+    disabled = false,
+  }: {
+    label: string;
+    children: React.ReactNode;
+    onClick: () => void;
+    className?: string;
+    disabled?: boolean;
+  }) => (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          size='icon'
+          variant='ghost'
+          className={className}
+          onClick={onClick}
+          disabled={disabled}
+          aria-label={label}
+          title={label}
+        >
+          {children}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
 
   return (
     <div className='container mx-auto px-4 py-6 space-y-6'>
@@ -100,9 +206,54 @@ export default function MasterDeviceAssignments() {
 
       <Card><CardHeader><CardTitle>Assignments ({filtered.length})</CardTitle></CardHeader><CardContent>
         <Table><TableHeader><TableRow><TableHead>Device</TableHead><TableHead>Vehicle</TableHead><TableHead>Assigned From</TableHead><TableHead>Active</TableHead><TableHead className='text-right'>Actions</TableHead></TableRow></TableHeader><TableBody>
-          {isLoading ? <TableRow><TableCell colSpan={5}>Loading...</TableCell></TableRow> : filtered.map((a) => <TableRow key={a.id}><TableCell>{deviceById.get(String(a.device_id)) || a.device_id}</TableCell><TableCell>{vehicleById.get(String(a.vehicle_id)) || a.vehicle_id}</TableCell><TableCell>{a.assigned_from ? String(a.assigned_from).slice(0, 10) : '-'}</TableCell><TableCell>{a.active ? 'Yes' : 'No'}</TableCell><TableCell className='text-right space-x-1'><Button size='icon' variant='ghost' onClick={() => handleReassign(String(a.device_id), String(a.vehicle_id))}><RefreshCw className='h-4 w-4' /></Button><Button size='icon' variant='ghost' className='text-destructive' onClick={() => handleUnassign(String(a.device_id))}><Unlink className='h-4 w-4' /></Button></TableCell></TableRow>)}
+          {isLoading ? <TableRow><TableCell colSpan={5}>Loading...</TableCell></TableRow> : filtered.map((a) => <TableRow key={`${a.device_id}-${a.vehicle_id}-${a.assigned_from || ''}`}><TableCell>{deviceById.get(String(a.device_id)) || a.device_id}</TableCell><TableCell>{vehicleById.get(String(a.vehicle_id)) || a.vehicle_id}</TableCell><TableCell>{a.assigned_from ? String(a.assigned_from).slice(0, 10) : '-'}</TableCell><TableCell>{a.active ? 'Yes' : 'No'}</TableCell><TableCell className='text-right'><TooltipProvider><div className='flex justify-end gap-1'><ActionButton label={a.active ? 'Edit assignment' : 'Reactivate assignment'} onClick={() => openEdit(a)}><Pencil className='h-4 w-4' /></ActionButton><ActionButton label={a.active ? 'Reassign device' : 'Assign device again'} onClick={() => openEdit(a)}><RefreshCw className='h-4 w-4' /></ActionButton><ActionButton label={a.active ? 'Unassign device' : 'Already unassigned'} className='text-destructive' onClick={() => requestUnassign(a)} disabled={!a.active}><Unlink className='h-4 w-4' /></ActionButton></div></TooltipProvider></TableCell></TableRow>)}
         </TableBody></Table>
       </CardContent></Card>
+
+      <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Device-Vehicle Assignment</DialogTitle>
+            <DialogDescription>
+              Update the active vehicle for this device. Saving will create a fresh active assignment.
+            </DialogDescription>
+          </DialogHeader>
+          <div className='space-y-3'>
+            <div>
+              <Label>Device</Label>
+              <Input value={editingAssignment ? deviceById.get(String(editingAssignment.device_id)) || String(editingAssignment.device_id) : ''} disabled />
+            </div>
+            <div>
+              <Label>Vehicle</Label>
+              <Select value={editForm.vehicle_id} onValueChange={(v) => setEditForm({ ...editForm, vehicle_id: v })}>
+                <SelectTrigger><SelectValue placeholder='Select vehicle' /></SelectTrigger>
+                <SelectContent>{(vehicles as any[]).map((v) => <SelectItem key={v.id} value={String(v.id)}>{v.registration_number}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Remarks</Label>
+              <Input value={editForm.remarks} onChange={(e) => setEditForm({ ...editForm, remarks: e.target.value })} placeholder='Optional update note' />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant='outline' onClick={() => setIsEditOpen(false)}>Cancel</Button>
+            <Button onClick={requestSaveEdit}>Save Changes</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={Boolean(pendingAction)} onOpenChange={(open) => !open && setPendingAction(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{getActionCopy().title}</AlertDialogTitle>
+            <AlertDialogDescription>{getActionCopy().description}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmPendingAction}>{getActionCopy().action}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

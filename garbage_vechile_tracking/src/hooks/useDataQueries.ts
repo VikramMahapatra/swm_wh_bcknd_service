@@ -117,6 +117,7 @@ export function useReportsData(filters?: {
   zone_id?: string;
   ward_id?: string;
   vehicle_id?: string;
+  route_id?: string;
 }): UseQueryResult<Record<string, any>, Error> {
   return useQuery({
     queryKey: ['reports', 'data', filters],

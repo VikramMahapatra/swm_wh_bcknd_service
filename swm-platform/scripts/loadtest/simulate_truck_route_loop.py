@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import math
+import random
 from datetime import UTC, datetime
 from typing import List, Tuple
 
@@ -22,6 +23,19 @@ def heading_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> int:
     return int(round(brng))
 
 
+def next_speed_kph(
+    rng: random.Random,
+    previous_speed: float,
+    args: argparse.Namespace,
+) -> float:
+    if rng.random() < args.overspeed_chance:
+        return round(rng.uniform(args.overspeed_min_kph, args.overspeed_max_kph), 2)
+
+    target = rng.uniform(args.speed_kph - args.speed_fluctuation_kph, args.speed_kph + args.speed_fluctuation_kph)
+    smoothed = (previous_speed * 0.65) + (target * 0.35)
+    return round(max(args.min_speed_kph, min(args.max_normal_speed_kph, smoothed)), 2)
+
+
 async def run(args: argparse.Namespace) -> None:
     url = args.base_url.rstrip("/") + "/webhook/gps"
     headers = {
@@ -31,8 +45,16 @@ async def run(args: argparse.Namespace) -> None:
     if args.webhook_secret:
         headers[args.webhook_secret_header] = args.webhook_secret
 
+    rng = random.Random(args.seed)
+    current_speed = args.speed_kph
+
     print(f"Sending GPS loop to {url} for IMEI={args.imei}, vehicle={args.vehicle_id}")
     print(f"Total points per lap: {len(ROUTE_COORDS)}")
+    print(
+        "Speed profile: "
+        f"baseline={args.speed_kph} km/h, fluctuation=+/-{args.speed_fluctuation_kph} km/h, "
+        f"overspeed_chance={args.overspeed_chance:.2f}, overspeed={args.overspeed_min_kph}-{args.overspeed_max_kph} km/h"
+    )
 
     timeout = httpx.Timeout(args.timeout_sec)
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -43,11 +65,12 @@ async def run(args: argparse.Namespace) -> None:
             for i, (lng, lat) in enumerate(ROUTE_COORDS):
                 nxt = ROUTE_COORDS[(i + 1) % len(ROUTE_COORDS)]
                 hdg = heading_deg(lat, lng, nxt[1], nxt[0])
+                current_speed = next_speed_kph(rng, current_speed, args)
                 payload = [{
                     "imei": args.imei,
                     "latitude": lat,
                     "longitude": lng,
-                    "speed": args.speed_kph,
+                    "speed": current_speed,
                     "heading": hdg,
                     "ignition": True,
                     "timestamp": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
@@ -76,7 +99,14 @@ if __name__ == "__main__":
     parser.add_argument("--imei", default="990000000000000")
     parser.add_argument("--vehicle-id", default="LT-TRK-001")
     parser.add_argument("--device-id", default="9cc9c071-5349-4eca-a63e-a5d4563a588c")
-    parser.add_argument("--speed-kph", type=float, default=18.0)
+    parser.add_argument("--speed-kph", type=float, default=28.0, help="Normal cruising baseline speed")
+    parser.add_argument("--speed-fluctuation-kph", type=float, default=18.0, help="Normal speed varies around baseline by this amount")
+    parser.add_argument("--min-speed-kph", type=float, default=4.0, help="Minimum generated normal speed")
+    parser.add_argument("--max-normal-speed-kph", type=float, default=62.0, help="Maximum generated non-overspeed speed")
+    parser.add_argument("--overspeed-chance", type=float, default=0.12, help="Chance per point to emit an overspeed value")
+    parser.add_argument("--overspeed-min-kph", type=float, default=82.0, help="Minimum generated overspeed")
+    parser.add_argument("--overspeed-max-kph", type=float, default=96.0, help="Maximum generated overspeed")
+    parser.add_argument("--seed", type=int, default=None, help="Optional random seed for repeatable speed profile")
     parser.add_argument("--point-interval-sec", type=float, default=2.0)
     parser.add_argument("--timeout-sec", type=float, default=10.0)
     parser.add_argument("--webhook-secret", default="", help="Webhook secret value if ingestion webhook auth is enabled")

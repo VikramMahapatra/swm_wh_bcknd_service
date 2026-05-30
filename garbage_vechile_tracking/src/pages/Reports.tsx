@@ -58,7 +58,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { useTrucks, useDrivers, useReportsData, useZones, useWards, useVehicles } from "@/hooks/useDataQueries";
+import { useTrucks, useDrivers, useReportsData, useZones, useWards, useVehicles, useRoutes } from "@/hooks/useDataQueries";
 import { differenceInDays, parseISO, format } from "date-fns";
 import { Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 
@@ -112,12 +112,18 @@ export default function Reports() {
   const [selectedZone, setSelectedZone] = useState("all");
   const [selectedWard, setSelectedWard] = useState("all");
   const [selectedTruck, setSelectedTruck] = useState("all");
+  const [selectedRoute, setSelectedRoute] = useState("all");
+  const { data: routesData = [] } = useRoutes({
+    zone_id: selectedZone === "all" ? undefined : selectedZone,
+    ward_id: selectedWard === "all" ? undefined : selectedWard,
+  });
   const [appliedFilters, setAppliedFilters] = useState({
     dateFrom: today,
     dateTo: today,
     selectedZone: "all",
     selectedWard: "all",
     selectedTruck: "all",
+    selectedRoute: "all",
   });
   const wardOptions = useMemo(() => {
     if (selectedZone === "all") return wardsData;
@@ -135,12 +141,14 @@ export default function Reports() {
       return true;
     });
   }, [selectedZone, selectedWard, vehiclesData, wardsData]);
+  const routeOptions = useMemo(() => routesData as any[], [routesData]);
   const { data: reportsData = {}, isLoading: isLoadingReports } = useReportsData({
-    date_from: appliedFilters.dateFrom,
-    date_to: appliedFilters.dateTo,
+    date_from: activeTab === "vehicle-status" ? undefined : appliedFilters.dateFrom,
+    date_to: activeTab === "vehicle-status" ? undefined : appliedFilters.dateTo,
     zone_id: appliedFilters.selectedZone === "all" ? undefined : appliedFilters.selectedZone,
     ward_id: appliedFilters.selectedWard === "all" ? undefined : appliedFilters.selectedWard,
-    vehicle_id: appliedFilters.selectedTruck === "all" ? undefined : appliedFilters.selectedTruck,
+    vehicle_id: activeTab === "vehicle-status" || appliedFilters.selectedTruck === "all" ? undefined : appliedFilters.selectedTruck,
+    route_id: activeTab === "vehicle-status" && appliedFilters.selectedRoute !== "all" ? appliedFilters.selectedRoute : undefined,
   });
 
   const dailyPickupCoverageData: any[] = (reportsData as any).daily_pickup_coverage || [];
@@ -175,6 +183,10 @@ export default function Reports() {
   const [dailyPage, setDailyPage] = useState(1);
   const [expandedDailyRows, setExpandedDailyRows] = useState<Record<string, boolean>>({});
   const [routePage, setRoutePage] = useState(1);
+  const [expandedRouteRows, setExpandedRouteRows] = useState<Record<string, boolean>>({});
+  const [routeDetailPages, setRouteDetailPages] = useState<Record<string, number>>({});
+  const [expandedRouteCategoryRows, setExpandedRouteCategoryRows] = useState<Record<string, boolean>>({});
+  const [routeCategoryDetailPages, setRouteCategoryDetailPages] = useState<Record<string, number>>({});
   const [truckPage, setTruckPage] = useState(1);
   const [tripPage, setTripPage] = useState(1);
   const [expandedTripRows, setExpandedTripRows] = useState<Record<string, boolean>>({});
@@ -182,6 +194,8 @@ export default function Reports() {
   const [driverPage, setDriverPage] = useState(1);
   const [lateArrivalPage, setLateArrivalPage] = useState(1);
   const [behaviorPage, setBehaviorPage] = useState(1);
+  const [expandedBehaviorRows, setExpandedBehaviorRows] = useState<Record<string, boolean>>({});
+  const [behaviorDetailPages, setBehaviorDetailPages] = useState<Record<string, number>>({});
   const [vehicleStatusPage, setVehicleStatusPage] = useState(1);
   const [spareUsagePage, setSpareUsagePage] = useState(1);
   const [complaintsPage, setComplaintsPage] = useState(1);
@@ -206,6 +220,14 @@ export default function Reports() {
     }
   }, [selectedTruck, truckOptions]);
 
+  useEffect(() => {
+    if (selectedRoute === "all") return;
+    const routeStillVisible = routeOptions.some((route: any) => String(route.id) === selectedRoute);
+    if (!routeStillVisible) {
+      setSelectedRoute("all");
+    }
+  }, [selectedRoute, routeOptions]);
+
   const handleApplyFilters = () => {
     setAppliedFilters({
       dateFrom,
@@ -213,11 +235,19 @@ export default function Reports() {
       selectedZone,
       selectedWard,
       selectedTruck,
+      selectedRoute,
     });
     setDailyPage(1);
     setTripPage(1);
+    setRoutePage(1);
     setExpandedDailyRows({});
     setExpandedTripRows({});
+    setExpandedRouteRows({});
+    setRouteDetailPages({});
+    setExpandedRouteCategoryRows({});
+    setRouteCategoryDetailPages({});
+    setExpandedBehaviorRows({});
+    setBehaviorDetailPages({});
   };
 
   const toggleDailyRow = (rowId: string) => {
@@ -231,6 +261,48 @@ export default function Reports() {
     setExpandedTripRows((current) => ({
       ...current,
       [rowId]: !current[rowId],
+    }));
+  };
+
+  const toggleRouteRow = (rowId: string) => {
+    setExpandedRouteRows((current) => ({
+      ...current,
+      [rowId]: !current[rowId],
+    }));
+  };
+
+  const setRouteDetailPage = (rowId: string, page: number) => {
+    setRouteDetailPages((current) => ({
+      ...current,
+      [rowId]: page,
+    }));
+  };
+
+  const toggleRouteCategoryRow = (rowId: string) => {
+    setExpandedRouteCategoryRows((current) => ({
+      ...current,
+      [rowId]: !current[rowId],
+    }));
+  };
+
+  const setRouteCategoryDetailPage = (rowId: string, page: number) => {
+    setRouteCategoryDetailPages((current) => ({
+      ...current,
+      [rowId]: page,
+    }));
+  };
+
+  const toggleBehaviorRow = (rowId: string) => {
+    setExpandedBehaviorRows((current) => ({
+      ...current,
+      [rowId]: !current[rowId],
+    }));
+  };
+
+  const setBehaviorDetailPage = (rowId: string, page: number) => {
+    setBehaviorDetailPages((current) => ({
+      ...current,
+      [rowId]: page,
     }));
   };
 
@@ -392,7 +464,10 @@ export default function Reports() {
 
   const buildExcelWorkbook = (reportTitle: string, sections: ExportSection[]) => {
     const generatedAt = format(new Date(), "yyyy-MM-dd HH:mm:ss");
-    const filterText = `Filters: ${appliedFilters.dateFrom} to ${appliedFilters.dateTo}, Zone ${appliedFilters.selectedZone}, Ward ${appliedFilters.selectedWard}, Truck ${appliedFilters.selectedTruck}`;
+    const filterText =
+      reportType === "vehicle_status"
+        ? `Filters: Spot/current status, Zone ${appliedFilters.selectedZone}, Ward ${appliedFilters.selectedWard}, Route ${appliedFilters.selectedRoute}`
+        : `Filters: ${appliedFilters.dateFrom} to ${appliedFilters.dateTo}, Zone ${appliedFilters.selectedZone}, Ward ${appliedFilters.selectedWard}, Truck ${appliedFilters.selectedTruck}`;
     const maxColumns = Math.max(
       1,
       ...sections.map((section) => Math.max(section.columns.length, section.childColumns?.length || 0))
@@ -503,6 +578,43 @@ export default function Reports() {
   };
 
   const makeSectionsForReport = (reportType: string): { title: string; sections: ExportSection[] } => {
+    const groupDriverBehaviorRows = (rows: any[]) =>
+      Object.values(
+        rows.reduce((groups: Record<string, any>, row) => {
+          const key = [
+            row.date || "-",
+            row.zone || "-",
+            row.ward || "-",
+            row.route || "-",
+            row.truck || "-",
+            row.incidentType || "-",
+          ].join("|");
+          if (!groups[key]) {
+            groups[key] = {
+              id: key,
+              date: row.date || "-",
+              zone: row.zone || "-",
+              ward: row.ward || "-",
+              route: row.route || "-",
+              truck: row.truck || "-",
+              incidentType: row.incidentType || "-",
+              totalViolations: 0,
+              maxSpeedKph: 0,
+              maxOverByKph: 0,
+              highestSeverity: "low",
+              details: [],
+            };
+          }
+          groups[key].totalViolations += 1;
+          groups[key].maxSpeedKph = Math.max(groups[key].maxSpeedKph, Number(row.speedKph) || 0);
+          groups[key].maxOverByKph = Math.max(groups[key].maxOverByKph, Number(row.overByKph) || 0);
+          groups[key].details.push(row);
+          if (row.severity === "high") groups[key].highestSeverity = "high";
+          else if (row.severity === "medium" && groups[key].highestSeverity !== "high") groups[key].highestSeverity = "medium";
+          return groups;
+        }, {})
+      ) as any[];
+
     const commonColumns: Record<string, ExportColumn[]> = {
       daily_collection: [
         { key: "date", label: "Date", width: 95 },
@@ -589,15 +701,40 @@ export default function Reports() {
           commonColumns.late_arrival
         );
       case "route_performance":
-        return simpleReport("Route Performance Report", routePerformanceData, [
-          { key: "route", label: "Route", width: 160 },
-          { key: "zone", label: "Zone", width: 120 },
-          { key: "ward", label: "Ward", width: 120 },
-          { key: "assignedTrucks", label: "Assigned Trucks", width: 110, align: "Center" },
-          { key: "completedTrips", label: "Completed Trips", width: 110, align: "Center" },
-          { key: "avgTime", label: "Average Time", width: 110, align: "Center" },
-          { key: "efficiency", label: "Efficiency %", width: 100, align: "Center" },
-        ]);
+        return {
+          title: "Route Performance Report",
+          sections: [{
+            title: "Route Anomaly Summary",
+            rows: routePerformanceData,
+            columns: [
+              { key: "date", label: "Date", width: 95 },
+              { key: "zone", label: "Zone", width: 120 },
+              { key: "ward", label: "Ward", width: 120 },
+              { key: "route", label: "Route", width: 160 },
+              { key: "anomalyCount", label: "Anomaly Count", width: 110, align: "Center" },
+              { key: "deviationCount", label: "Route Deviations", width: 115, align: "Center" },
+              { key: "overspeedCount", label: "Overspeeding", width: 110, align: "Center" },
+              { key: "affectedTruckCount", label: "Affected Trucks", width: 115, align: "Center" },
+              { key: "worstSeverity", label: "Severity", width: 90, align: "Center" },
+              { key: "efficiency", label: "Efficiency %", width: 100, align: "Center" },
+            ],
+            childKey: "anomalyDetails",
+            childTitle: "Anomaly Details",
+            childColumns: [
+              { key: "category", label: "Anomaly Type", width: 140 },
+              { key: "time", label: "Time", width: 90, align: "Center" },
+              { key: "truck", label: "Truck", width: 130 },
+              { key: "imei", label: "IMEI", width: 140 },
+              { key: "device_id", label: "Device", width: 160 },
+              { key: "description", label: "Description", width: 240 },
+              { key: "value", label: "Value", width: 120 },
+              { key: "threshold", label: "Threshold", width: 100 },
+              { key: "overBy", label: "Over By", width: 100 },
+              { key: "location", label: "Location", width: 180 },
+              { key: "severity", label: "Severity", width: 90, align: "Center" },
+            ],
+          }],
+        };
       case "truck_utilization":
         return simpleReport("Truck Utilization Report", truckUtilizationData, [
           { key: "truck", label: "Truck", width: 130 },
@@ -630,24 +767,57 @@ export default function Reports() {
           { key: "status", label: "Status", width: 100, align: "Center" },
         ]);
       case "driver_behavior":
-        return simpleReport("Driver Behavior Report", driverBehaviorData, [
-          { key: "date", label: "Date", width: 95 },
-          { key: "driver", label: "Driver", width: 150 },
-          { key: "truck", label: "Truck", width: 130 },
-          { key: "type", label: "Type", width: 150 },
-          { key: "location", label: "Location", width: 180 },
-          { key: "time", label: "Time", width: 80, align: "Center" },
-          { key: "severity", label: "Severity", width: 90, align: "Center" },
-          { key: "action", label: "Action", width: 150 },
-        ]);
+        return {
+          title: "Driver Behavior Report",
+          sections: [{
+            title: "Grouped Behavior Violations",
+            rows: groupDriverBehaviorRows(driverBehaviorData),
+            columns: [
+              { key: "date", label: "Date", width: 95 },
+              { key: "zone", label: "Zone", width: 120 },
+              { key: "ward", label: "Ward", width: 120 },
+              { key: "route", label: "Route", width: 120 },
+              { key: "truck", label: "Truck", width: 130 },
+              { key: "incidentType", label: "Incident Type", width: 140 },
+              { key: "totalViolations", label: "Total Violations", width: 115, align: "Center" },
+              { key: "maxSpeedKph", label: "Max Speed KPH", width: 115, align: "Right" },
+              { key: "maxOverByKph", label: "Max Over By KPH", width: 120, align: "Right" },
+              { key: "highestSeverity", label: "Severity", width: 90, align: "Center" },
+            ],
+            childKey: "details",
+            childTitle: "Violation Details",
+            childColumns: [
+              { key: "time", label: "Time", width: 90, align: "Center" },
+              { key: "imei", label: "IMEI", width: 140 },
+              { key: "device_id", label: "Device", width: 160 },
+              { key: "speedKph", label: "Recorded KPH", width: 110, align: "Right" },
+              { key: "thresholdKph", label: "Limit KPH", width: 90, align: "Right" },
+              { key: "overByKph", label: "Over By KPH", width: 100, align: "Right" },
+              { key: "location", label: "Location", width: 180 },
+              { key: "severity", label: "Severity", width: 90, align: "Center" },
+            ],
+          }],
+        };
       case "vehicle_status":
-        return simpleReport("Vehicle Status Report", vehicleStatusData, [
+        return simpleReport("Spot Vehicle Status Report", vehicleStatusData, [
+          { key: "snapshotAt", label: "Snapshot At", width: 150 },
+          { key: "zone", label: "Zone", width: 120 },
+          { key: "ward", label: "Ward", width: 120 },
           { key: "truck", label: "Truck", width: 130 },
+          { key: "registration", label: "Registration", width: 130 },
+          { key: "route", label: "Route", width: 140 },
+          { key: "driver", label: "Driver", width: 140 },
+          { key: "deviceImei", label: "Device IMEI", width: 140 },
           { key: "status", label: "Status", width: 100, align: "Center" },
-          { key: "lastSeen", label: "Last Seen", width: 130 },
+          { key: "gpsStatus", label: "GPS Status", width: 100, align: "Center" },
+          { key: "eventCount", label: "GPS Points", width: 100, align: "Right" },
+          { key: "lastSeen", label: "Last Seen", width: 150 },
+          { key: "ageMinutes", label: "Age Minutes", width: 100, align: "Right" },
           { key: "location", label: "Location", width: 180 },
-          { key: "battery", label: "Battery", width: 90, align: "Center" },
-          { key: "signal", label: "Signal", width: 90, align: "Center" },
+          { key: "batteryLevel", label: "Battery %", width: 90, align: "Center" },
+          { key: "signalStrength", label: "Signal %", width: 90, align: "Center" },
+          { key: "maxSpeedKph", label: "Max KPH", width: 90, align: "Right" },
+          { key: "avgSpeedKph", label: "Avg KPH", width: 90, align: "Right" },
         ]);
       case "complaints":
         return simpleReport("Complaints Report", complaintsData, [
@@ -834,14 +1004,18 @@ export default function Reports() {
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">From Date</label>
-              <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">To Date</label>
-              <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-            </div>
+            {activeTab !== "vehicle-status" && (
+              <>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">From Date</label>
+                  <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">To Date</label>
+                  <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+                </div>
+              </>
+            )}
             <div className="space-y-2">
               <label className="text-sm font-medium">Zone</label>
               <Select value={selectedZone} onValueChange={setSelectedZone}>
@@ -874,22 +1048,41 @@ export default function Reports() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Truck</label>
-              <Select value={selectedTruck} onValueChange={setSelectedTruck}>
-                <SelectTrigger>
-                  <SelectValue placeholder="All Trucks" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Trucks</SelectItem>
-                  {truckOptions.map((truck: any) => (
-                    <SelectItem key={String(truck.id)} value={String(truck.id)}>
-                      {truck.vehicle_number || truck.vehicleNumber || truck.registration_number || truck.id}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {activeTab === "vehicle-status" ? (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Route</label>
+                <Select value={selectedRoute} onValueChange={setSelectedRoute}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="All Routes" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Routes</SelectItem>
+                    {routeOptions.map((route: any) => (
+                      <SelectItem key={String(route.id)} value={String(route.id)}>
+                        {route.route_name || route.routeName || route.name || route.id}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Truck</label>
+                <Select value={selectedTruck} onValueChange={setSelectedTruck}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="All Trucks" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Trucks</SelectItem>
+                    {truckOptions.map((truck: any) => (
+                      <SelectItem key={String(truck.id)} value={String(truck.id)}>
+                        {truck.vehicle_number || truck.vehicleNumber || truck.registration_number || truck.id}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div className="space-y-2">
               <label className="text-sm font-medium opacity-0">Apply</label>
               <Button className="w-full" onClick={handleApplyFilters} disabled={isLoadingReports}>
@@ -938,7 +1131,7 @@ export default function Reports() {
           </TabsTrigger>
           <TabsTrigger value="vehicle-status" className="flex items-center gap-1 text-xs md:text-sm">
             <WifiOff className="h-3 w-3 md:h-4 md:w-4" />
-            Vehicle Status
+            Spot Status
           </TabsTrigger>
           <TabsTrigger value="spare-usage" className="flex items-center gap-1 text-xs md:text-sm">
             <ArrowRightLeft className="h-3 w-3 md:h-4 md:w-4" />
@@ -1187,7 +1380,7 @@ export default function Reports() {
                   <Route className="h-5 w-5 text-primary" />
                   Route Performance Report
                 </CardTitle>
-                <CardDescription>Route completion rates, deviations, and efficiency metrics</CardDescription>
+                <CardDescription>Route anomaly summary with expandable overspeeding and geofence event details</CardDescription>
               </div>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" onClick={() => handleDownload("route_performance", "excel")}>
@@ -1198,116 +1391,365 @@ export default function Reports() {
               </div>
             </CardHeader>
             <CardContent className="space-y-6">
-              {/* Filter Tabs */}
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-medium text-muted-foreground">Filter by Efficiency:</span>
-                <div className="flex gap-1">
-                  {[
-                    { key: "all", label: "All" },
-                    { key: "high", label: "High (≥90%)" },
-                    { key: "medium", label: "Medium (80-89%)" },
-                    { key: "low", label: "Low (<80%)" }
-                  ].map((filter) => (
-                    <Badge
-                      key={filter.key}
-                      variant={routeEfficiencyFilter === filter.key ? "default" : "outline"}
-                      className={`cursor-pointer ${routeEfficiencyFilter === filter.key ? "" : "hover:bg-muted"}`}
-                      onClick={() => { setRouteEfficiencyFilter(filter.key); setRoutePage(1); }}
-                    >
-                      {filter.label}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <Card className="bg-primary/10 border-primary/20">
-                  <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-primary">94.6%</p>
-                    <p className="text-xs text-muted-foreground">Avg Completion</p>
-                  </CardContent>
-                </Card>
-                <Card className="bg-orange-500/10 border-orange-500/20">
-                  <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-orange-600">19</p>
-                    <p className="text-xs text-muted-foreground">Total Deviations</p>
-                  </CardContent>
-                </Card>
-                <Card className="bg-blue-500/10 border-blue-500/20">
-                  <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-blue-600">4.3 hrs</p>
-                    <p className="text-xs text-muted-foreground">Avg Route Time</p>
-                  </CardContent>
-                </Card>
-                <Card className="bg-green-500/10 border-green-500/20">
-                  <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-green-600">91.2%</p>
-                    <p className="text-xs text-muted-foreground">Avg Efficiency</p>
-                  </CardContent>
-                </Card>
-              </div>
-
-              <div className="rounded-md border">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="bg-muted/50">
-                      <TableHead>Route</TableHead>
-                      <TableHead className="text-center">Completion %</TableHead>
-                      <TableHead className="text-center">Avg Time</TableHead>
-                      <TableHead className="text-center">Deviations</TableHead>
-                      <TableHead>Efficiency</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {(() => {
-                      const filteredData = routePerformanceData.filter(row => {
-                        if (routeEfficiencyFilter === "all") return true;
-                        if (routeEfficiencyFilter === "high") return row.efficiency >= 90;
-                        if (routeEfficiencyFilter === "medium") return row.efficiency >= 80 && row.efficiency < 90;
-                        return row.efficiency < 80;
-                      });
-                      return paginate(filteredData, routePage).map((row, idx) => (
-                        <TableRow key={idx}>
-                          <TableCell className="font-medium">{row.route}</TableCell>
-                          <TableCell className="text-center">
-                            <div className="flex items-center gap-2 justify-center">
-                              <span className={row.completion >= 95 ? "text-green-600" : row.completion >= 90 ? "text-yellow-600" : "text-red-600"}>
-                                {row.completion}%
-                              </span>
-                              {row.completion >= 95 ? <TrendingUp className="h-4 w-4 text-green-600" /> : <TrendingDown className="h-4 w-4 text-red-600" />}
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-center">{row.avgTime}</TableCell>
-                          <TableCell className="text-center">
-                            <Badge variant={row.deviations === 0 ? "default" : "destructive"} className={row.deviations === 0 ? "bg-green-500/20 text-green-700" : ""}>
-                              {row.deviations}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-2">
-                              <Progress value={row.efficiency} className="h-2 w-20" />
-                              <span className="text-sm font-medium">{row.efficiency}%</span>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ));
-                    })()}
-                  </TableBody>
-                </Table>
-              </div>
               {(() => {
                 const filteredData = routePerformanceData.filter(row => {
+                  const efficiency = Number(row.efficiency) || 0;
                   if (routeEfficiencyFilter === "all") return true;
-                  if (routeEfficiencyFilter === "high") return row.efficiency >= 90;
-                  if (routeEfficiencyFilter === "medium") return row.efficiency >= 80 && row.efficiency < 90;
-                  return row.efficiency < 80;
+                  if (routeEfficiencyFilter === "high") return efficiency >= 90;
+                  if (routeEfficiencyFilter === "medium") return efficiency >= 80 && efficiency < 90;
+                  return efficiency < 80;
                 });
-                return renderPagination(routePage, filteredData.length, setRoutePage);
+                const totalAnomalies = filteredData.reduce((sum, row) => sum + (Number(row.anomalyCount) || 0), 0);
+                const totalDeviations = filteredData.reduce((sum, row) => sum + (Number(row.deviationCount) || 0), 0);
+                const totalOverspeed = filteredData.reduce((sum, row) => sum + (Number(row.overspeedCount) || 0), 0);
+                const affectedTrucks = new Set<string>();
+                filteredData.forEach((row) => {
+                  String(row.affectedTrucks || "")
+                    .split(",")
+                    .map((truck) => truck.trim())
+                    .filter(Boolean)
+                    .forEach((truck) => affectedTrucks.add(truck));
+                });
+                const avgEfficiency = filteredData.length
+                  ? filteredData.reduce((sum, row) => sum + (Number(row.efficiency) || 0), 0) / filteredData.length
+                  : 0;
+
+                return (
+                  <>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium text-muted-foreground">Filter by Efficiency:</span>
+                      <div className="flex gap-1">
+                        {[
+                          { key: "all", label: "All" },
+                          { key: "high", label: "High (>=90%)" },
+                          { key: "medium", label: "Medium (80-89%)" },
+                          { key: "low", label: "Low (<80%)" }
+                        ].map((filter) => (
+                          <Badge
+                            key={filter.key}
+                            variant={routeEfficiencyFilter === filter.key ? "default" : "outline"}
+                            className={`cursor-pointer ${routeEfficiencyFilter === filter.key ? "" : "hover:bg-muted"}`}
+                            onClick={() => { setRouteEfficiencyFilter(filter.key); setRoutePage(1); }}
+                          >
+                            {filter.label}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <Card className="bg-red-500/10 border-red-500/20">
+                        <CardContent className="p-4 text-center">
+                          <p className="text-2xl font-bold text-red-600">{totalAnomalies}</p>
+                          <p className="text-xs text-muted-foreground">Total Anomalies</p>
+                        </CardContent>
+                      </Card>
+                      <Card className="bg-orange-500/10 border-orange-500/20">
+                        <CardContent className="p-4 text-center">
+                          <p className="text-2xl font-bold text-orange-600">{totalDeviations}</p>
+                          <p className="text-xs text-muted-foreground">Route Deviations</p>
+                        </CardContent>
+                      </Card>
+                      <Card className="bg-blue-500/10 border-blue-500/20">
+                        <CardContent className="p-4 text-center">
+                          <p className="text-2xl font-bold text-blue-600">{totalOverspeed}</p>
+                          <p className="text-xs text-muted-foreground">Overspeeding</p>
+                        </CardContent>
+                      </Card>
+                      <Card className="bg-green-500/10 border-green-500/20">
+                        <CardContent className="p-4 text-center">
+                          <p className="text-2xl font-bold text-green-600">{avgEfficiency.toFixed(1)}%</p>
+                          <p className="text-xs text-muted-foreground">{affectedTrucks.size} Affected Trucks</p>
+                        </CardContent>
+                      </Card>
+                    </div>
+
+                    <div className="rounded-md border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="bg-muted/50">
+                            <TableHead className="w-10"></TableHead>
+                            <TableHead>Date</TableHead>
+                            <TableHead>Zone</TableHead>
+                            <TableHead>Ward</TableHead>
+                            <TableHead>Route</TableHead>
+                            <TableHead className="text-center">Anomaly Count</TableHead>
+                            <TableHead className="text-center">Deviations</TableHead>
+                            <TableHead className="text-center">Overspeeding</TableHead>
+                            <TableHead className="text-center">Entries</TableHead>
+                            <TableHead className="text-center">Exits</TableHead>
+                            <TableHead className="text-center">Trucks</TableHead>
+                            <TableHead>Severity</TableHead>
+                            <TableHead>Efficiency</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {paginate(filteredData, routePage).map((row) => {
+                            const rowId = String(row.id || `${row.date}-${row.zone}-${row.ward}-${row.route}`);
+                            const details = Array.isArray(row.anomalyDetails) ? row.anomalyDetails : [];
+                            const isExpanded = Boolean(expandedRouteRows[rowId]);
+                            const anomalyGroups = [
+                              {
+                                id: `${rowId}|overspeeding`,
+                                title: "Overspeeding Anomaly",
+                                description: "Speed violations detected against configured threshold",
+                                icon: Zap,
+                                rows: details.filter((detail: any) => detail.category === "Overspeeding"),
+                              },
+                              {
+                                id: `${rowId}|route-deviation`,
+                                title: "Route Deviation Anomaly",
+                                description: "Route deviation, geofence entry, and geofence exit events",
+                                icon: AlertTriangle,
+                                rows: details.filter((detail: any) => detail.category !== "Overspeeding"),
+                              },
+                            ].filter((group) => group.rows.length > 0);
+                            const efficiency = Number(row.efficiency) || 0;
+                            return (
+                              <Fragment key={rowId}>
+                                <TableRow className={row.worstSeverity === "high" ? "bg-red-500/5" : ""}>
+                                  <TableCell>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-8 w-8"
+                                      onClick={() => toggleRouteRow(rowId)}
+                                      disabled={details.length === 0}
+                                      aria-label={isExpanded ? "Hide anomaly details" : "Show anomaly details"}
+                                    >
+                                      <ChevronRight className={`h-4 w-4 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
+                                    </Button>
+                                  </TableCell>
+                                  <TableCell className="font-medium">{row.date}</TableCell>
+                                  <TableCell>{row.zone}</TableCell>
+                                  <TableCell>{row.ward}</TableCell>
+                                  <TableCell>{row.route}</TableCell>
+                                  <TableCell className="text-center font-semibold text-red-600">{row.anomalyCount || 0}</TableCell>
+                                  <TableCell className="text-center">
+                                    <Badge variant={(row.deviationCount || 0) === 0 ? "outline" : "destructive"}>
+                                      {row.deviationCount || 0}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell className="text-center text-orange-600 font-medium">{row.overspeedCount || 0}</TableCell>
+                                  <TableCell className="text-center">{row.geofenceEntryCount || 0}</TableCell>
+                                  <TableCell className="text-center">{row.geofenceExitCount || 0}</TableCell>
+                                  <TableCell className="text-center">
+                                    <Badge variant="outline">{row.affectedTruckCount || 0}</Badge>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Badge
+                                      className={
+                                        row.worstSeverity === "high"
+                                          ? "bg-red-500/20 text-red-700 border-red-500/30"
+                                          : row.worstSeverity === "medium"
+                                          ? "bg-orange-500/20 text-orange-700 border-orange-500/30"
+                                          : "bg-yellow-500/20 text-yellow-700 border-yellow-500/30"
+                                      }
+                                    >
+                                      {row.worstSeverity || "low"}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell>
+                                    <div className="flex items-center gap-2">
+                                      <Progress value={efficiency} className="h-2 w-20" />
+                                      <span className="text-sm font-medium">{efficiency}%</span>
+                                    </div>
+                                  </TableCell>
+                                </TableRow>
+                                {isExpanded && (
+                                  <TableRow className="bg-muted/20 hover:bg-muted/20">
+                                    <TableCell colSpan={13} className="p-0">
+                                      <div className="p-4">
+                                        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                          <div>
+                                            <p className="text-sm font-semibold">Route Anomaly Details</p>
+                                            <p className="text-xs text-muted-foreground">
+                                              {row.date} | {row.zone} / {row.ward} | {row.route} | Trucks: {row.affectedTrucks || "-"}
+                                            </p>
+                                          </div>
+                                          <Badge variant="outline">{details.length} anomaly entries</Badge>
+                                        </div>
+                                        <div className="rounded-md border bg-background">
+                                          <Table>
+                                            <TableHeader>
+                                              <TableRow className="bg-muted/50">
+                                                <TableHead className="w-10"></TableHead>
+                                                <TableHead>Anomaly Category</TableHead>
+                                                <TableHead className="text-center">Total Records</TableHead>
+                                                <TableHead className="text-center">Affected Trucks</TableHead>
+                                                <TableHead className="text-center">Latest Time</TableHead>
+                                                <TableHead>Severity</TableHead>
+                                              </TableRow>
+                                            </TableHeader>
+                                            <TableBody>
+                                              {anomalyGroups.map((group) => {
+                                                const Icon = group.icon;
+                                                const categoryExpanded = Boolean(expandedRouteCategoryRows[group.id]);
+                                                const categoryPage = routeCategoryDetailPages[group.id] || 1;
+                                                const pagedCategoryDetails = paginate(group.rows, categoryPage);
+                                                const categoryTrucks = new Set(group.rows.map((detail: any) => detail.truck || "-"));
+                                                const categorySeverity = group.rows.some((detail: any) => ["critical", "high"].includes(String(detail.severity || "").toLowerCase()))
+                                                  ? "high"
+                                                  : group.rows.some((detail: any) => ["warning", "medium"].includes(String(detail.severity || "").toLowerCase()))
+                                                  ? "medium"
+                                                  : "low";
+                                                const latestTime = group.rows[0]?.time || "-";
+
+                                                return (
+                                                  <Fragment key={group.id}>
+                                                    <TableRow className={categorySeverity === "high" ? "bg-red-500/5" : ""}>
+                                                      <TableCell>
+                                                        <Button
+                                                          variant="ghost"
+                                                          size="icon"
+                                                          className="h-8 w-8"
+                                                          onClick={() => toggleRouteCategoryRow(group.id)}
+                                                          aria-label={categoryExpanded ? "Hide anomaly category details" : "Show anomaly category details"}
+                                                        >
+                                                          <ChevronRight className={`h-4 w-4 transition-transform ${categoryExpanded ? "rotate-90" : ""}`} />
+                                                        </Button>
+                                                      </TableCell>
+                                                      <TableCell>
+                                                        <div className="flex items-center gap-2">
+                                                          <Badge variant="outline" className="gap-1">
+                                                            <Icon className="h-3 w-3" />
+                                                            {group.title}
+                                                          </Badge>
+                                                          <span className="text-xs text-muted-foreground">{group.description}</span>
+                                                        </div>
+                                                      </TableCell>
+                                                      <TableCell className="text-center font-semibold text-red-600">{group.rows.length}</TableCell>
+                                                      <TableCell className="text-center">
+                                                        <Badge variant="outline">{categoryTrucks.size}</Badge>
+                                                      </TableCell>
+                                                      <TableCell className="text-center">{latestTime}</TableCell>
+                                                      <TableCell>
+                                                        <Badge
+                                                          className={
+                                                            categorySeverity === "high"
+                                                              ? "bg-red-500/20 text-red-700 border-red-500/30"
+                                                              : categorySeverity === "medium"
+                                                              ? "bg-orange-500/20 text-orange-700 border-orange-500/30"
+                                                              : "bg-yellow-500/20 text-yellow-700 border-yellow-500/30"
+                                                          }
+                                                        >
+                                                          {categorySeverity}
+                                                        </Badge>
+                                                      </TableCell>
+                                                    </TableRow>
+                                                    {categoryExpanded && (
+                                                      <TableRow className="bg-muted/10 hover:bg-muted/10">
+                                                        <TableCell colSpan={6} className="p-0">
+                                                          <div className="p-4">
+                                                            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                                              <div>
+                                                                <p className="text-sm font-semibold">{group.title} Details</p>
+                                                                <p className="text-xs text-muted-foreground">
+                                                                  {row.date} | {row.zone} / {row.ward} | {row.route}
+                                                                </p>
+                                                              </div>
+                                                              <Badge variant="outline">{group.rows.length} records</Badge>
+                                                            </div>
+                                                            <div className="rounded-md border bg-background">
+                                                              <Table>
+                                                                <TableHeader>
+                                                                  <TableRow className="bg-muted/50">
+                                                                    <TableHead>Anomaly Type</TableHead>
+                                                                    <TableHead>Time</TableHead>
+                                                                    <TableHead>Truck</TableHead>
+                                                                    <TableHead>IMEI</TableHead>
+                                                                    <TableHead>Device</TableHead>
+                                                                    <TableHead>Description</TableHead>
+                                                                    <TableHead>Value</TableHead>
+                                                                    <TableHead>Threshold</TableHead>
+                                                                    <TableHead>Over By</TableHead>
+                                                                    <TableHead>Location</TableHead>
+                                                                    <TableHead>Severity</TableHead>
+                                                                  </TableRow>
+                                                                </TableHeader>
+                                                                <TableBody>
+                                                                  {pagedCategoryDetails.map((detail: any) => (
+                                                                    <TableRow key={detail.id} className={detail.severity === "high" ? "bg-red-500/5" : ""}>
+                                                                      <TableCell>
+                                                                        <Badge variant="outline" className="gap-1">
+                                                                          {detail.category === "Overspeeding" && <Zap className="h-3 w-3" />}
+                                                                          {detail.category !== "Overspeeding" && <AlertTriangle className="h-3 w-3" />}
+                                                                          {detail.category}
+                                                                        </Badge>
+                                                                      </TableCell>
+                                                                      <TableCell>{detail.time}</TableCell>
+                                                                      <TableCell className="font-mono text-xs">{detail.truck || "-"}</TableCell>
+                                                                      <TableCell className="font-mono text-xs">{detail.imei || "-"}</TableCell>
+                                                                      <TableCell className="font-mono text-xs">{detail.device_id || "-"}</TableCell>
+                                                                      <TableCell className="text-xs">{detail.description || "-"}</TableCell>
+                                                                      <TableCell>{detail.value || "-"}</TableCell>
+                                                                      <TableCell>{detail.threshold || "-"}</TableCell>
+                                                                      <TableCell className="text-red-600 font-medium">{detail.overBy || "-"}</TableCell>
+                                                                      <TableCell className="text-xs">{detail.location || "-"}</TableCell>
+                                                                      <TableCell>
+                                                                        <Badge
+                                                                          className={
+                                                                            detail.severity === "high"
+                                                                              ? "bg-red-500/20 text-red-700 border-red-500/30"
+                                                                              : ["warning", "medium"].includes(String(detail.severity || "").toLowerCase())
+                                                                              ? "bg-orange-500/20 text-orange-700 border-orange-500/30"
+                                                                              : "bg-yellow-500/20 text-yellow-700 border-yellow-500/30"
+                                                                          }
+                                                                        >
+                                                                          {detail.severity || "low"}
+                                                                        </Badge>
+                                                                      </TableCell>
+                                                                    </TableRow>
+                                                                  ))}
+                                                                </TableBody>
+                                                              </Table>
+                                                            </div>
+                                                            {renderPagination(
+                                                              categoryPage,
+                                                              group.rows.length,
+                                                              (page) => setRouteCategoryDetailPage(group.id, page)
+                                                            )}
+                                                          </div>
+                                                        </TableCell>
+                                                      </TableRow>
+                                                    )}
+                                                  </Fragment>
+                                                );
+                                              })}
+                                              {anomalyGroups.length === 0 && (
+                                                <TableRow>
+                                                  <TableCell colSpan={6} className="py-6 text-center text-sm text-muted-foreground">
+                                                    No anomaly details available for this route row.
+                                                  </TableCell>
+                                                </TableRow>
+                                              )}
+                                            </TableBody>
+                                          </Table>
+                                        </div>
+                                      </div>
+                                    </TableCell>
+                                  </TableRow>
+                                )}
+                              </Fragment>
+                            );
+                          })}
+                          {filteredData.length === 0 && (
+                            <TableRow>
+                              <TableCell colSpan={13} className="py-6 text-center text-sm text-muted-foreground">
+                                No route performance anomalies found for the selected filters.
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+                    {renderPagination(routePage, filteredData.length, setRoutePage)}
+                  </>
+                );
               })()}
             </CardContent>
           </Card>
         </TabsContent>
-
         {/* Truck Utilization Report */}
         <TabsContent value="truck" className="space-y-4">
           <Card>
@@ -2117,7 +2559,7 @@ export default function Reports() {
                   <Gauge className="h-5 w-5 text-primary" />
                   Driver Behavior Report
                 </CardTitle>
-                <CardDescription>Overspeeding, harsh braking, and rapid acceleration incidents</CardDescription>
+                <CardDescription>Overspeeding incidents resolved from IMEI to truck, zone, ward, and route</CardDescription>
               </div>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" onClick={() => handleDownload("driver_behavior", "excel")}>
@@ -2181,6 +2623,41 @@ export default function Reports() {
                   const severityMatch = behaviorSeverityFilter === "all" || row.severity === behaviorSeverityFilter;
                   return typeMatch && severityMatch;
                 });
+                const groupedData = Object.values(
+                  filteredData.reduce((groups: Record<string, any>, row) => {
+                    const key = [
+                      row.date || "-",
+                      row.zone || "-",
+                      row.ward || "-",
+                      row.route || "-",
+                      row.truck || "-",
+                      row.incidentType || "-",
+                    ].join("|");
+                    if (!groups[key]) {
+                      groups[key] = {
+                        id: key,
+                        date: row.date || "-",
+                        zone: row.zone || "-",
+                        ward: row.ward || "-",
+                        route: row.route || "-",
+                        truck: row.truck || "-",
+                        incidentType: row.incidentType || "-",
+                        totalViolations: 0,
+                        maxSpeedKph: 0,
+                        maxOverByKph: 0,
+                        highestSeverity: "low",
+                        details: [],
+                      };
+                    }
+                    groups[key].totalViolations += 1;
+                    groups[key].maxSpeedKph = Math.max(groups[key].maxSpeedKph, Number(row.speedKph) || 0);
+                    groups[key].maxOverByKph = Math.max(groups[key].maxOverByKph, Number(row.overByKph) || 0);
+                    groups[key].details.push(row);
+                    if (row.severity === "high") groups[key].highestSeverity = "high";
+                    else if (row.severity === "medium" && groups[key].highestSeverity !== "high") groups[key].highestSeverity = "medium";
+                    return groups;
+                  }, {})
+                ) as any[];
                 
                 const overspeedCount = filteredData.filter(d => d.incidentType === "Overspeeding").length;
                 const harshBrakingCount = filteredData.filter(d => d.incidentType === "Harsh Braking").length;
@@ -2220,54 +2697,148 @@ export default function Reports() {
                       <Table>
                         <TableHeader>
                           <TableRow className="bg-muted/50">
+                            <TableHead className="w-10"></TableHead>
                             <TableHead>Date</TableHead>
-                            <TableHead>Time</TableHead>
+                            <TableHead>Zone</TableHead>
+                            <TableHead>Ward</TableHead>
+                            <TableHead>Route</TableHead>
                             <TableHead>Truck</TableHead>
-                            <TableHead>Driver</TableHead>
                             <TableHead>Incident Type</TableHead>
-                            <TableHead className="text-center">Recorded</TableHead>
-                            <TableHead className="text-center">Limit</TableHead>
-                            <TableHead>Location</TableHead>
+                            <TableHead className="text-center">Total Violations</TableHead>
+                            <TableHead className="text-center">Max Speed</TableHead>
+                            <TableHead className="text-center">Max Over By</TableHead>
                             <TableHead>Severity</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {paginate(filteredData, behaviorPage).map((row) => (
-                            <TableRow key={row.id} className={row.severity === "high" ? "bg-red-500/5" : ""}>
-                              <TableCell className="font-medium">{row.date}</TableCell>
-                              <TableCell>{row.time}</TableCell>
-                              <TableCell className="font-mono text-xs">{row.truck}</TableCell>
-                              <TableCell>{row.driver}</TableCell>
-                              <TableCell>
-                                <Badge variant="outline" className="gap-1">
-                                  {row.incidentType === "Overspeeding" && <Zap className="h-3 w-3" />}
-                                  {row.incidentType === "Harsh Braking" && <AlertTriangle className="h-3 w-3" />}
-                                  {row.incidentType === "Rapid Acceleration" && <TrendingUp className="h-3 w-3" />}
-                                  {row.incidentType}
-                                </Badge>
-                              </TableCell>
-                              <TableCell className="text-center text-red-600 font-medium">{row.value}</TableCell>
-                              <TableCell className="text-center text-muted-foreground">{row.limit}</TableCell>
-                              <TableCell className="text-xs">{row.location}</TableCell>
-                              <TableCell>
-                                <Badge 
-                                  className={
-                                    row.severity === "high" 
-                                      ? "bg-red-500/20 text-red-700 border-red-500/30"
-                                      : row.severity === "medium"
-                                      ? "bg-orange-500/20 text-orange-700 border-orange-500/30"
-                                      : "bg-yellow-500/20 text-yellow-700 border-yellow-500/30"
-                                  }
-                                >
-                                  {row.severity}
-                                </Badge>
+                          {paginate(groupedData, behaviorPage).map((row) => {
+                            const isExpanded = Boolean(expandedBehaviorRows[row.id]);
+                            const detailPage = behaviorDetailPages[row.id] || 1;
+                            const pagedDetails = paginate(row.details, detailPage);
+                            return (
+                              <Fragment key={row.id}>
+                                <TableRow className={row.highestSeverity === "high" ? "bg-red-500/5" : ""}>
+                                  <TableCell>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-8 w-8"
+                                      onClick={() => toggleBehaviorRow(row.id)}
+                                      aria-label={isExpanded ? "Hide violation details" : "Show violation details"}
+                                    >
+                                      <ChevronRight className={`h-4 w-4 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
+                                    </Button>
+                                  </TableCell>
+                                  <TableCell className="font-medium">{row.date}</TableCell>
+                                  <TableCell>{row.zone}</TableCell>
+                                  <TableCell>{row.ward}</TableCell>
+                                  <TableCell>{row.route}</TableCell>
+                                  <TableCell className="font-mono text-xs">{row.truck}</TableCell>
+                                  <TableCell>
+                                    <Badge variant="outline" className="gap-1">
+                                      {row.incidentType === "Overspeeding" && <Zap className="h-3 w-3" />}
+                                      {row.incidentType === "Harsh Braking" && <AlertTriangle className="h-3 w-3" />}
+                                      {row.incidentType === "Rapid Acceleration" && <TrendingUp className="h-3 w-3" />}
+                                      {row.incidentType}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell className="text-center font-semibold">{row.totalViolations}</TableCell>
+                                  <TableCell className="text-center text-red-600 font-medium">{row.maxSpeedKph.toFixed(1)} km/h</TableCell>
+                                  <TableCell className="text-center text-red-600 font-medium">{row.maxOverByKph.toFixed(1)} km/h</TableCell>
+                                  <TableCell>
+                                    <Badge
+                                      className={
+                                        row.highestSeverity === "high"
+                                          ? "bg-red-500/20 text-red-700 border-red-500/30"
+                                          : row.highestSeverity === "medium"
+                                          ? "bg-orange-500/20 text-orange-700 border-orange-500/30"
+                                          : "bg-yellow-500/20 text-yellow-700 border-yellow-500/30"
+                                      }
+                                    >
+                                      {row.highestSeverity}
+                                    </Badge>
+                                  </TableCell>
+                                </TableRow>
+                                {isExpanded && (
+                                  <TableRow className="bg-muted/20 hover:bg-muted/20">
+                                    <TableCell colSpan={11} className="p-0">
+                                      <div className="p-4">
+                                        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                          <div>
+                                            <p className="text-sm font-semibold">Violation Details</p>
+                                            <p className="text-xs text-muted-foreground">
+                                              {row.date} | {row.zone} / {row.ward} | {row.route} | {row.truck}
+                                            </p>
+                                          </div>
+                                          <Badge variant="outline">{row.totalViolations} violations</Badge>
+                                        </div>
+                                        <div className="rounded-md border bg-background">
+                                          <Table>
+                                            <TableHeader>
+                                              <TableRow className="bg-muted/50">
+                                                <TableHead>Time</TableHead>
+                                                <TableHead>IMEI</TableHead>
+                                                <TableHead>Device</TableHead>
+                                                <TableHead className="text-center">Recorded</TableHead>
+                                                <TableHead className="text-center">Limit</TableHead>
+                                                <TableHead className="text-center">Over By</TableHead>
+                                                <TableHead>Location</TableHead>
+                                                <TableHead>Severity</TableHead>
+                                              </TableRow>
+                                            </TableHeader>
+                                            <TableBody>
+                                              {pagedDetails.map((detail: any) => (
+                                                <TableRow key={detail.id} className={detail.severity === "high" ? "bg-red-500/5" : ""}>
+                                                  <TableCell>{detail.time}</TableCell>
+                                                  <TableCell className="font-mono text-xs">{detail.imei || "-"}</TableCell>
+                                                  <TableCell className="font-mono text-xs">{detail.device_id || "-"}</TableCell>
+                                                  <TableCell className="text-center text-red-600 font-medium">{detail.value}</TableCell>
+                                                  <TableCell className="text-center text-muted-foreground">{detail.limit}</TableCell>
+                                                  <TableCell className="text-center text-red-600 font-medium">
+                                                    {detail.overByKph !== undefined ? `${detail.overByKph} km/h` : "-"}
+                                                  </TableCell>
+                                                  <TableCell className="text-xs">{detail.location}</TableCell>
+                                                  <TableCell>
+                                                    <Badge
+                                                      className={
+                                                        detail.severity === "high"
+                                                          ? "bg-red-500/20 text-red-700 border-red-500/30"
+                                                          : detail.severity === "medium"
+                                                          ? "bg-orange-500/20 text-orange-700 border-orange-500/30"
+                                                          : "bg-yellow-500/20 text-yellow-700 border-yellow-500/30"
+                                                      }
+                                                    >
+                                                      {detail.severity}
+                                                    </Badge>
+                                                  </TableCell>
+                                                </TableRow>
+                                              ))}
+                                            </TableBody>
+                                          </Table>
+                                        </div>
+                                        {renderPagination(
+                                          detailPage,
+                                          row.details.length,
+                                          (page) => setBehaviorDetailPage(row.id, page)
+                                        )}
+                                      </div>
+                                    </TableCell>
+                                  </TableRow>
+                                )}
+                              </Fragment>
+                            );
+                          })}
+                          {groupedData.length === 0 && (
+                            <TableRow>
+                              <TableCell colSpan={11} className="py-6 text-center text-sm text-muted-foreground">
+                                No behavior incidents found for the selected filters.
                               </TableCell>
                             </TableRow>
-                          ))}
+                          )}
                         </TableBody>
                       </Table>
                     </div>
-                    {renderPagination(behaviorPage, filteredData.length, setBehaviorPage)}
+                    {renderPagination(behaviorPage, groupedData.length, setBehaviorPage)}
                   </>
                 );
               })()}
@@ -2275,16 +2846,16 @@ export default function Reports() {
           </Card>
         </TabsContent>
 
-        {/* Vehicle Status Report */}
+        {/* Spot Vehicle Status Report */}
         <TabsContent value="vehicle-status" className="space-y-4">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <div>
                 <CardTitle className="flex items-center gap-2">
                   <WifiOff className="h-5 w-5 text-primary" />
-                  Vehicle Status Report
+                  Spot Vehicle Status Report
                 </CardTitle>
-                <CardDescription>Live status of all vehicles including inactive and failed devices</CardDescription>
+                <CardDescription>Current active/inactive truck status filtered by zone, ward and route</CardDescription>
               </div>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" onClick={() => handleDownload("vehicle_status", "excel")}>
@@ -2364,26 +2935,32 @@ export default function Reports() {
                       <Table>
                         <TableHeader>
                           <TableRow className="bg-muted/50">
+                            <TableHead>Snapshot</TableHead>
+                            <TableHead>Zone</TableHead>
+                            <TableHead>Ward</TableHead>
                             <TableHead>Truck</TableHead>
-                            <TableHead>Type</TableHead>
-                            <TableHead>Driver</TableHead>
                             <TableHead>Route</TableHead>
+                            <TableHead>Driver</TableHead>
+                            <TableHead>Device</TableHead>
                             <TableHead>GPS Status</TableHead>
+                            <TableHead className="text-center">GPS Points</TableHead>
                             <TableHead className="text-center">Battery</TableHead>
                             <TableHead className="text-center">Signal</TableHead>
-                            <TableHead>Last Update</TableHead>
+                            <TableHead>Last Seen</TableHead>
+                            <TableHead>Age</TableHead>
                             <TableHead>Status</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
                           {paginate(filteredData, vehicleStatusPage).map((row) => (
                             <TableRow key={row.id} className={row.status === "failed" || row.status === "inactive" ? "bg-red-500/5" : ""}>
+                              <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{row.snapshotAt}</TableCell>
+                              <TableCell>{row.zone}</TableCell>
+                              <TableCell>{row.ward}</TableCell>
                               <TableCell className="font-mono text-xs font-medium">{row.truck}</TableCell>
-                              <TableCell>
-                                <Badge variant="outline" className="capitalize">{row.type}</Badge>
-                              </TableCell>
-                              <TableCell>{row.driver}</TableCell>
                               <TableCell>{row.route}</TableCell>
+                              <TableCell>{row.driver}</TableCell>
+                              <TableCell className="font-mono text-xs">{row.deviceImei}</TableCell>
                               <TableCell>
                                 <Badge 
                                   className={
@@ -2397,6 +2974,7 @@ export default function Reports() {
                                   {row.gpsStatus === "online" ? "Online" : row.gpsStatus === "warning" ? "Weak Signal" : "Offline"}
                                 </Badge>
                               </TableCell>
+                              <TableCell className="text-center font-medium">{row.eventCount}</TableCell>
                               <TableCell className="text-center">
                                 <div className="flex items-center justify-center gap-1">
                                   <Progress value={row.batteryLevel} className="h-2 w-12" />
@@ -2410,7 +2988,8 @@ export default function Reports() {
                                   {row.signalStrength}%
                                 </span>
                               </TableCell>
-                              <TableCell className="text-xs text-muted-foreground">{row.lastUpdate}</TableCell>
+                              <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{row.lastSeen}</TableCell>
+                              <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{row.ageMinutes == null ? "-" : `${row.ageMinutes} min`}</TableCell>
                               <TableCell>
                                 <Badge 
                                   className={
@@ -3075,4 +3654,5 @@ export default function Reports() {
     </div>
   );
 }
+
 

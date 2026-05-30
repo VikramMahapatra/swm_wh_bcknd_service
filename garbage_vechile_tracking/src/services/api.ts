@@ -438,6 +438,7 @@ class ApiService {
     zone_id?: string;
     ward_id?: string;
     vehicle_id?: string;
+    route_id?: string;
   }): Promise<Record<string, any>> {
     const suffix = this.toQueryString(filters);
     return this.fetchApi(`/reports/data${suffix}`);

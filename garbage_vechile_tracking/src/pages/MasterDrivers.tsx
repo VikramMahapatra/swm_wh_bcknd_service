@@ -15,6 +15,8 @@ import { Driver } from '@/data/masterData';
 import { Plus, Search, Edit, Trash2, Phone, Mail, User, Download, Loader2, UserCheck } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
 
+const UNASSIGNED_TRUCK_VALUE = 'unassigned';
+
 function normalizeDriver(driver: any): Driver {
   return {
     id: String(driver?.id ?? ''),
@@ -25,11 +27,26 @@ function normalizeDriver(driver: any): Driver {
     licenseExpiry: String(driver?.licenseExpiry ?? driver?.license_expiry ?? ''),
     address: String(driver?.address ?? ''),
     status: (driver?.status === 'inactive' || driver?.status === 'on_leave') ? driver.status : 'active',
-    assignedTruckId: driver?.assignedTruckId ?? driver?.assigned_truck_id,
-    joinDate: String(driver?.joinDate ?? new Date().toISOString().split('T')[0]),
+    assignedTruckId: driver?.assignedTruckId ?? driver?.assigned_truck_id ?? undefined,
+    joinDate: String(driver?.joinDate ?? driver?.join_date ?? new Date().toISOString().split('T')[0]),
     emergencyContact: String(driver?.emergencyContact ?? driver?.emergency_contact ?? ''),
   };
 }
+
+const getTruckLabel = (truck: any) =>
+  String(
+    truck?.registrationNumber ||
+    truck?.registration_number ||
+    truck?.vehicle_number ||
+    truck?.vehicleNumber ||
+    truck?.truckNumber ||
+    truck?.id ||
+    ''
+  );
+
+const isUuid = (value: unknown) =>
+  typeof value === 'string' &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 
 export default function MasterDrivers() {
   const { toast } = useToast();
@@ -64,13 +81,25 @@ export default function MasterDrivers() {
     licenseExpiry: '',
     address: '',
     status: 'active',
+    assignedTruckId: undefined,
+    joinDate: new Date().toISOString().split('T')[0],
     emergencyContact: ''
   });
+
+  const assignableTrucks = trucks.filter((truck) => isUuid(String(truck?.id ?? '')));
+
+  const getTruckInfo = (truckId?: string) => {
+    if (!truckId) return 'Not Assigned';
+    const truck = trucks.find(t => String(t.id) === String(truckId));
+    return truck ? getTruckLabel(truck) : 'Unknown';
+  };
 
   const filteredDrivers = drivers.filter(driver => {
     const matchesSearch = driver.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
                          driver.phone.includes(searchQuery) ||
-                         driver.licenseNumber.toLowerCase().includes(searchQuery.toLowerCase());
+                         driver.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                         driver.licenseNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                         getTruckInfo(driver.assignedTruckId).toLowerCase().includes(searchQuery.toLowerCase());
     const matchesStatus = statusFilter === 'all' || driver.status === statusFilter;
     return matchesSearch && matchesStatus;
   });
@@ -84,12 +113,6 @@ export default function MasterDrivers() {
     }
   };
 
-  const getTruckInfo = (truckId?: string) => {
-    if (!truckId) return 'Not Assigned';
-    const truck = trucks.find(t => t.id === truckId);
-    return truck ? truck.registrationNumber : 'Unknown';
-  };
-
   const handleSubmit = async () => {
     try {
       const payload = {
@@ -100,7 +123,8 @@ export default function MasterDrivers() {
         licenseExpiry: formData.licenseExpiry,
         address: formData.address,
         status: formData.status,
-        assignedTruckId: formData.assignedTruckId,
+        assignedTruckId: formData.assignedTruckId || null,
+        joinDate: formData.joinDate,
         emergencyContact: formData.emergencyContact,
       };
 
@@ -125,6 +149,10 @@ export default function MasterDrivers() {
   };
 
   const handleDelete = async (id: string) => {
+    const driver = drivers.find((item) => item.id === id);
+    if (!window.confirm(`Delete driver ${driver?.name || id}? This cannot be undone.`)) {
+      return;
+    }
     try {
       await apiService.deleteDriver(id);
       setDrivers(prev => prev.filter(d => d.id !== id));
@@ -140,7 +168,18 @@ export default function MasterDrivers() {
   };
 
   const resetForm = () => {
-    setFormData({ name: '', phone: '', email: '', licenseNumber: '', licenseExpiry: '', address: '', status: 'active', emergencyContact: '' });
+    setFormData({
+      name: '',
+      phone: '',
+      email: '',
+      licenseNumber: '',
+      licenseExpiry: '',
+      address: '',
+      status: 'active',
+      assignedTruckId: undefined,
+      joinDate: new Date().toISOString().split('T')[0],
+      emergencyContact: ''
+    });
     setEditingDriver(null);
     setIsAddDialogOpen(false);
   };
@@ -152,8 +191,8 @@ export default function MasterDrivers() {
   };
 
   const exportToCSV = () => {
-    const headers = ['ID', 'Name', 'Phone', 'Email', 'License Number', 'License Expiry', 'Status', 'Assigned Truck'];
-    const rows = filteredDrivers.map(d => [d.id, d.name, d.phone, d.email, d.licenseNumber, d.licenseExpiry, d.status, getTruckInfo(d.assignedTruckId)]);
+    const headers = ['ID', 'Name', 'Phone', 'Email', 'License Number', 'License Expiry', 'Join Date', 'Status', 'Assigned Truck', 'Emergency Contact', 'Address'];
+    const rows = filteredDrivers.map(d => [d.id, d.name, d.phone, d.email, d.licenseNumber, d.licenseExpiry, d.joinDate, d.status, getTruckInfo(d.assignedTruckId), d.emergencyContact, d.address]);
     const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -217,6 +256,34 @@ export default function MasterDrivers() {
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
+                    <Label>Join Date</Label>
+                    <Input type="date" value={formData.joinDate} onChange={(e) => setFormData({ ...formData, joinDate: e.target.value })} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Assigned Truck</Label>
+                    <Select
+                      value={formData.assignedTruckId || UNASSIGNED_TRUCK_VALUE}
+                      onValueChange={(value) => setFormData({
+                        ...formData,
+                        assignedTruckId: value === UNASSIGNED_TRUCK_VALUE ? undefined : value,
+                      })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder={isLoadingTrucks ? 'Loading trucks...' : 'Select truck'} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={UNASSIGNED_TRUCK_VALUE}>Not Assigned</SelectItem>
+                        {assignableTrucks.map((truck) => (
+                          <SelectItem key={String(truck.id)} value={String(truck.id)}>
+                            {getTruckLabel(truck)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
                     <Label>Address</Label>
                     <Input value={formData.address} onChange={(e) => setFormData({ ...formData, address: e.target.value })} />
                   </div>
@@ -235,7 +302,9 @@ export default function MasterDrivers() {
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={resetForm}>Cancel</Button>
-                <Button onClick={handleSubmit}>{editingDriver ? 'Update' : 'Add'} Driver</Button>
+                <Button onClick={handleSubmit} disabled={!formData.name?.trim()}>
+                  {editingDriver ? 'Update' : 'Add'} Driver
+                </Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
@@ -285,7 +354,7 @@ export default function MasterDrivers() {
           <div className="flex flex-col sm:flex-row gap-4">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input placeholder="Search by name, phone, license..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-10" />
+              <Input placeholder="Search by name, phone, email, license, truck..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-10" />
             </div>
             <Select value={statusFilter} onValueChange={setStatusFilter}>
               <SelectTrigger className="w-[180px]"><SelectValue placeholder="Filter by status" /></SelectTrigger>
@@ -310,12 +379,29 @@ export default function MasterDrivers() {
                 <TableHead>Contact</TableHead>
                 <TableHead>License</TableHead>
                 <TableHead>Assigned Truck</TableHead>
+                <TableHead>Employment</TableHead>
+                <TableHead>Address</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredDrivers.map((driver) => (
+              {isLoadingDrivers && (
+                <TableRow>
+                  <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin inline mr-2" />
+                    Loading drivers...
+                  </TableCell>
+                </TableRow>
+              )}
+              {!isLoadingDrivers && filteredDrivers.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
+                    No drivers found.
+                  </TableCell>
+                </TableRow>
+              )}
+              {!isLoadingDrivers && filteredDrivers.map((driver) => (
                 <TableRow key={driver.id}>
                   <TableCell>
                     <div className="flex items-center gap-3">
@@ -340,6 +426,13 @@ export default function MasterDrivers() {
                   </TableCell>
                   <TableCell>
                     <Badge variant="outline">{getTruckInfo(driver.assignedTruckId)}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    <div className="text-sm">Joined: {driver.joinDate || '-'}</div>
+                    <div className="text-xs text-muted-foreground">Emergency: {driver.emergencyContact || '-'}</div>
+                  </TableCell>
+                  <TableCell className="max-w-[220px] truncate text-sm text-muted-foreground">
+                    {driver.address || '-'}
                   </TableCell>
                   <TableCell>{getStatusBadge(driver.status)}</TableCell>
                   <TableCell className="text-right">
