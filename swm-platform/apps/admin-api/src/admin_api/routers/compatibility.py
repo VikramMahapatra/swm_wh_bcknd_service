@@ -963,6 +963,7 @@ async def alerts_page(
                 AlertORM.imei.ilike(pattern),
                 AlertORM.category.ilike(pattern),
                 AlertORM.alert_type.ilike(pattern),
+                cast(AlertORM.metadata_json, String).ilike(pattern),
             )
         )
 
@@ -999,6 +1000,121 @@ async def alerts_page(
             .order_by(AlertORM.alert_type.asc())
         )
     ).scalars().all()
+    intelligence_alerts = (
+        await session.execute(
+            select(AlertORM)
+            .where(*filters)
+            .order_by(AlertORM.triggered_at.desc())
+            .limit(5000)
+        )
+    ).scalars().all()
+
+    vehicle_meta: dict[str, dict[str, str | None]] = {}
+    vehicle_rows = (
+        await session.execute(
+            select(VehicleORM, WardORM, ZoneORM, RouteORM)
+            .join(WardORM, VehicleORM.ward_id == WardORM.id)
+            .join(ZoneORM, WardORM.zone_id == ZoneORM.id)
+            .outerjoin(RouteORM, VehicleORM.route_id == RouteORM.id)
+        )
+    ).all()
+    vehicle_id_to_meta: dict[UUID, dict[str, str | None]] = {}
+    for vehicle, ward, zone, route in vehicle_rows:
+        meta = {
+            "zone": zone.zone_name if zone else None,
+            "ward": ward.ward_name if ward else None,
+            "route": route.route_name if route else None,
+        }
+        vehicle_id_to_meta[vehicle.id] = meta
+        for key in (vehicle.id, vehicle.vehicle_number, vehicle.registration_number):
+            if key:
+                vehicle_meta[str(key)] = meta
+
+    if vehicle_id_to_meta:
+        assignment_rows = (
+            await session.execute(
+                select(DeviceORM.imei, DeviceVehicleAssignmentORM.vehicle_id)
+                .join(DeviceVehicleAssignmentORM, DeviceVehicleAssignmentORM.device_id == DeviceORM.id)
+                .where(DeviceVehicleAssignmentORM.active.is_(True))
+            )
+        ).all()
+        for imei, assigned_vehicle_id in assignment_rows:
+            meta = vehicle_id_to_meta.get(assigned_vehicle_id)
+            if imei and meta:
+                vehicle_meta[str(imei)] = meta
+
+    route_rows = (
+        await session.execute(
+            select(RouteORM, WardORM, ZoneORM)
+            .join(WardORM, RouteORM.ward_id == WardORM.id)
+            .join(ZoneORM, RouteORM.zone_id == ZoneORM.id)
+            .limit(5000)
+        )
+    ).all()
+    route_meta = {
+        str(route.id): {
+            "zone": zone.zone_name if zone else None,
+            "ward": ward.ward_name if ward else None,
+            "route": route.route_name,
+        }
+        for route, ward, zone in route_rows
+    }
+    ward_rows = (
+        await session.execute(
+            select(WardORM, ZoneORM)
+            .join(ZoneORM, WardORM.zone_id == ZoneORM.id)
+            .limit(5000)
+        )
+    ).all()
+    ward_meta = {
+        str(ward.id): {
+            "zone": zone.zone_name if zone else None,
+            "ward": ward.ward_name,
+            "route": None,
+        }
+        for ward, zone in ward_rows
+    }
+
+    hierarchy: dict[str, dict[str, dict]] = {"zone": {}, "ward": {}, "route": {}}
+    for alert in intelligence_alerts:
+        raw_meta = alert.metadata_json if isinstance(alert.metadata_json, dict) else {}
+        location_meta = (
+            vehicle_meta.get(str(alert.vehicle_id or ""))
+            or vehicle_meta.get(str(alert.imei or ""))
+            or route_meta.get(str(alert.route_id or ""))
+            or ward_meta.get(str(alert.ward_id or ""))
+            or {}
+        )
+        zone_name = str(location_meta.get("zone") or raw_meta.get("zone_name") or raw_meta.get("zone") or "Unmapped")
+        ward_name = str(location_meta.get("ward") or raw_meta.get("ward_name") or raw_meta.get("ward") or "Unmapped")
+        route_name = str(location_meta.get("route") or raw_meta.get("route_name") or raw_meta.get("route") or "Unmapped")
+        type_name = str(alert.alert_type or alert.category or "alert")
+        category_name = str(alert.category or "operations")
+
+        for level, name in (("zone", zone_name), ("ward", ward_name), ("route", route_name)):
+            bucket = hierarchy[level].setdefault(name, {"name": name, "total": 0, "types": {}, "categories": {}})
+            bucket["total"] += 1
+            bucket["types"][type_name] = bucket["types"].get(type_name, 0) + 1
+            bucket["categories"][category_name] = bucket["categories"].get(category_name, 0) + 1
+
+    def _top_hierarchy_rows(level: str) -> list[dict]:
+        output = []
+        for row in sorted(hierarchy[level].values(), key=lambda item: item["total"], reverse=True)[:6]:
+            output.append(
+                {
+                    "name": row["name"],
+                    "total": row["total"],
+                    "types": [
+                        {"name": name, "count": count}
+                        for name, count in sorted(row["types"].items(), key=lambda item: item[1], reverse=True)[:4]
+                    ],
+                    "categories": [
+                        {"name": name, "count": count}
+                        for name, count in sorted(row["categories"].items(), key=lambda item: item[1], reverse=True)[:4]
+                    ],
+                }
+            )
+        return output
 
     return {
         "items": [_to_dict(row) for row in rows],
@@ -1010,6 +1126,12 @@ async def alerts_page(
         "counts": {
             "bySeverity": {str(severity): int(count or 0) for severity, count in severity_rows},
             "byStatus": {str(status): int(count or 0) for status, count in status_rows},
+        },
+        "hierarchyBreakdown": {
+            "sampleSize": len(intelligence_alerts),
+            "zone": _top_hierarchy_rows("zone"),
+            "ward": _top_hierarchy_rows("ward"),
+            "route": _top_hierarchy_rows("route"),
         },
     }
 

@@ -9,6 +9,7 @@ import {
   Eye,
   Filter,
   Gauge,
+  Info,
   Loader2,
   MapPin,
   Navigation,
@@ -31,6 +32,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip as UiTooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { apiService } from "@/services/api";
 
 type AlertRow = {
@@ -131,6 +133,7 @@ export default function Alerts() {
   const [selectedZone, setSelectedZone] = useState("all");
   const [selectedWard, setSelectedWard] = useState("all");
   const [selectedRoute, setSelectedRoute] = useState("all");
+  const [intelligenceLevel, setIntelligenceLevel] = useState<"zone" | "ward" | "route">("zone");
   const [activeTab, setActiveTab] = useState("live");
   const [selectedStartDate, setSelectedStartDate] = useState(defaultStartDate);
   const [selectedEndDate, setSelectedEndDate] = useState(() => dateOnly(new Date()));
@@ -224,6 +227,14 @@ export default function Alerts() {
   const criticalCount = visibleCounts.critical;
   const highCount = visibleCounts.high;
   const resolvedCount = visibleCounts.resolved;
+  const hierarchyBreakdown = alertsPage.hierarchyBreakdown || {};
+  const intelligenceHierarchyRows = (hierarchyBreakdown[intelligenceLevel] || []) as Array<{
+    name: string;
+    total: number;
+    types?: Array<{ name: string; count: number }>;
+    categories?: Array<{ name: string; count: number }>;
+  }>;
+  const intelligenceHierarchyTotal = Math.max(...intelligenceHierarchyRows.map((row) => Number(row.total || 0)), 1);
 
   const totalPages = Number(alertsPage.total_pages || 1);
   const paginatedAlerts = alerts;
@@ -324,6 +335,64 @@ export default function Alerts() {
       .slice(0, 6);
   }, [zoneRows]);
 
+  const commandInsights = useMemo(() => {
+    const urgentRatio = visibleCounts.total ? Math.round(((criticalCount + highCount) / visibleCounts.total) * 100) : 0;
+    const unresolvedRatio = visibleCounts.total ? Math.round((activeCount / visibleCounts.total) * 100) : 0;
+    const dominantType = [...distribution].sort((a, b) => b.value - a.value)[0];
+    const focusArea = topFocusRows[0];
+    const peakHour = [...trend]
+      .map((row: any) => ({
+        hour: row.hour,
+        total: Number(row.critical || 0) + Number(row.high || 0) + Number(row.medium || 0) + Number(row.low || 0),
+      }))
+      .sort((a, b) => b.total - a.total)[0];
+    const pressure =
+      urgentRatio >= 60 || Number(focusArea?.risk || 0) >= 20
+        ? "High Pressure"
+        : urgentRatio >= 30 || unresolvedRatio >= 50
+          ? "Watch Closely"
+          : "Stable";
+    const riskScore = Math.min(
+      100,
+      Math.round(
+        urgentRatio * 0.45
+        + unresolvedRatio * 0.25
+        + Math.min(Number(focusArea?.risk || 0) * 3, 25)
+        + Math.min(Number(peakHour?.total || 0) * 2, 20)
+      )
+    );
+    const dominantKey = alertTypes.find((type) => (alertMeta[type]?.label || titleCase(type)) === dominantType?.name);
+    const recommendedAction =
+      dominantKey?.includes("speed")
+        ? "Call route supervisor and issue driver speed advisory."
+        : dominantKey?.includes("route") || dominantKey?.includes("geofence")
+          ? "Verify assigned route and inspect deviation cluster."
+          : dominantKey?.includes("idle") || dominantKey?.includes("halt") || dominantKey?.includes("stop")
+            ? "Check halt location and driver status immediately."
+            : dominantKey?.includes("offline") || dominantKey?.includes("gps")
+              ? "Escalate to device/vendor support for telemetry health."
+              : "Review open queue and dispatch supervisor follow-up.";
+    const fingerprint = [
+      dominantType?.name || "No dominant type",
+      focusArea?.zone || "No focus area",
+      peakHour?.total ? peakHour.hour : "No peak",
+    ].join(" / ");
+
+    return {
+      pressure,
+      riskScore,
+      urgentRatio,
+      unresolvedRatio,
+      dominantType: dominantType?.name || "No dominant type",
+      dominantTypeShare: visibleCounts.total ? Math.round(((dominantType?.value || 0) / visibleCounts.total) * 100) : 0,
+      dominantTypeKey: dominantKey || "all",
+      focusArea: focusArea?.zone || "No focus area",
+      peakHour: peakHour?.total ? peakHour.hour : "No peak",
+      recommendedAction,
+      fingerprint,
+    };
+  }, [activeCount, alertTypes, criticalCount, distribution, highCount, topFocusRows, trend, visibleCounts.total]);
+
   const handleExportAlerts = () => {
     const csvContent = [
       ["ID", "Type", "Title", "Vehicle", "Severity", "Status", "Triggered At", "Message"].join(","),
@@ -348,10 +417,10 @@ export default function Alerts() {
   };
 
   const drillToLive = (updates: { severity?: string; status?: string; type?: string; search?: string }) => {
-    if (updates.severity) setSelectedSeverity(updates.severity);
-    if (updates.status) setSelectedStatus(updates.status);
-    if (updates.type) setSelectedType(updates.type);
-    if (updates.search !== undefined) setSearchQuery(updates.search);
+    setSelectedSeverity(updates.severity || "all");
+    setSelectedStatus(updates.status || "all");
+    setSelectedType(updates.type || "all");
+    setSearchQuery(updates.search || "");
     setCurrentPage(1);
     setActiveTab("live");
   };
@@ -614,53 +683,198 @@ export default function Alerts() {
           <TabsContent value="analytics" className="space-y-4">
             <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
               <Card className="overflow-hidden border-border/70 bg-gradient-to-br from-slate-950 via-slate-900 to-teal-950 text-white shadow-xl">
-                <div className="relative p-5">
-                  <div className="absolute -right-12 -top-12 h-40 w-40 rounded-full bg-cyan-400/15 blur-2xl" />
-                  <div className="absolute bottom-0 left-1/3 h-24 w-56 rounded-full bg-emerald-400/10 blur-2xl" />
-                  <div className="relative flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-[0.28em] text-cyan-200/80">Monitoring Intelligence</p>
-                      <h3 className="mt-2 text-2xl font-semibold">Alerts Command Center</h3>
-                      <p className="mt-1 max-w-2xl text-sm text-slate-300">Live operational pressure, severity mix, and response workload from the selected filters.</p>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <Badge className="border-cyan-300/30 bg-cyan-300/10 text-cyan-100 hover:bg-cyan-300/10">{selectedPeriodLabel}</Badge>
-                        <Badge className="border-white/20 bg-white/10 text-slate-100 hover:bg-white/10">Aggregated over {selectedPeriodShortLabel}</Badge>
+                <div className="relative overflow-hidden p-5">
+                  <div className="absolute inset-0 opacity-30 [background-image:linear-gradient(rgba(34,211,238,.18)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,.18)_1px,transparent_1px)] [background-size:26px_26px]" />
+                  <div className="absolute -right-16 -top-16 h-52 w-52 rounded-full bg-cyan-400/20 blur-3xl" />
+                  <div className="absolute -bottom-16 left-1/4 h-44 w-72 rounded-full bg-emerald-400/15 blur-3xl" />
+                  <div className="relative grid gap-4 lg:grid-cols-[315px_minmax(0,1fr)]">
+                    <div className="space-y-3">
+                    <div className="rounded-[2rem] border border-cyan-300/20 bg-slate-950/50 p-4 shadow-2xl shadow-cyan-950/30 backdrop-blur">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-cyan-200/80">Ops Risk Dial</p>
+                          <UiTooltip>
+                            <TooltipTrigger asChild>
+                              <button type="button" className="rounded-full text-cyan-100/70 transition hover:text-cyan-100" aria-label="Risk score calculation">
+                                <Info className="h-3.5 w-3.5" />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="right" className="max-w-xs">
+                              <p className="font-semibold">Risk Score Calculation</p>
+                              <p className="mt-1 text-xs">Score is capped at 100 and derived from urgent alert mix, unresolved workload, hotspot risk, and peak-hour intensity.</p>
+                              <p className="mt-1 text-xs">Formula: urgent mix 45% + unresolved load 25% + hotspot risk up to 25 + peak-hour intensity up to 20.</p>
+                            </TooltipContent>
+                          </UiTooltip>
+                        </div>
+                        <span className={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${commandInsights.riskScore >= 70 ? "bg-red-400/15 text-red-200" : commandInsights.riskScore >= 40 ? "bg-orange-400/15 text-orange-200" : "bg-emerald-400/15 text-emerald-200"}`}>
+                          {commandInsights.pressure}
+                        </span>
                       </div>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2 text-center">
-                      <div className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3 backdrop-blur">
-                        <p className="text-2xl font-bold">{visibleCounts.total}</p>
-                        <p className="text-[10px] uppercase tracking-wide text-slate-300">Filtered</p>
+                      <div className="relative mx-auto mt-3 h-40 w-40">
+                        <svg viewBox="0 0 120 120" className="h-full w-full -rotate-90">
+                          <circle cx="60" cy="60" r="46" fill="none" stroke="rgba(255,255,255,.08)" strokeWidth="12" />
+                          <circle cx="60" cy="60" r="46" fill="none" stroke="rgba(34,211,238,.18)" strokeWidth="4" strokeDasharray="2 7" />
+                          <circle
+                            cx="60"
+                            cy="60"
+                            r="46"
+                            fill="none"
+                            stroke={commandInsights.riskScore >= 70 ? "#fb7185" : commandInsights.riskScore >= 40 ? "#fb923c" : "#34d399"}
+                            strokeLinecap="round"
+                            strokeWidth="12"
+                            pathLength="100"
+                            strokeDasharray={`${commandInsights.riskScore} 100`}
+                          />
+                        </svg>
+                        <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                          <p className="text-4xl font-black tracking-tight">{commandInsights.riskScore}</p>
+                          <p className="text-[10px] uppercase tracking-[0.28em] text-slate-400">risk score</p>
+                        </div>
                       </div>
-                      <div className="rounded-2xl border border-red-300/20 bg-red-500/15 px-4 py-3 backdrop-blur">
-                        <p className="text-2xl font-bold text-red-200">{criticalCount + highCount}</p>
-                        <p className="text-[10px] uppercase tracking-wide text-red-100/80">Urgent</p>
-                      </div>
-                      <div className="rounded-2xl border border-emerald-300/20 bg-emerald-500/15 px-4 py-3 backdrop-blur">
-                        <p className="text-2xl font-bold text-emerald-200">{resolvedCount}</p>
-                        <p className="text-[10px] uppercase tracking-wide text-emerald-100/80">Closed</p>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="relative mt-5 grid gap-3 md:grid-cols-4">
-                    {severityBreakdown.map((item) => (
                       <button
-                        key={item.key}
                         type="button"
-                        className="rounded-2xl border border-white/10 bg-white/[0.07] p-3 text-left transition hover:-translate-y-0.5 hover:border-cyan-300/40 hover:bg-white/[0.11]"
-                        onClick={() => drillToLive({ severity: item.key })}
-                        title={`Drill down to ${item.label} alerts`}
+                        className="mt-3 w-full rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-3 py-2 text-center text-xs text-cyan-50 transition hover:bg-cyan-300/15"
+                        onClick={() => drillToLive({ status: "open" })}
                       >
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm text-slate-200">{item.label}</span>
-                          <span className="text-lg font-bold" style={{ color: item.color }}>{item.value}</span>
-                        </div>
-                        <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
-                          <div className="h-full rounded-full" style={{ width: `${item.percent}%`, backgroundColor: item.color }} />
-                        </div>
-                        <p className="mt-1 text-right text-[10px] text-slate-400">{item.percent}%</p>
+                        Open supervisor queue
                       </button>
-                    ))}
+                    </div>
+
+                    <div className="rounded-[1.5rem] border border-white/10 bg-slate-950/35 p-3 backdrop-blur">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div>
+                          <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">Area Matrix</p>
+                          <p className="text-[11px] text-slate-400">Top {intelligenceLevel}s by alert type</p>
+                        </div>
+                        <div className="flex rounded-full border border-white/10 bg-white/5 p-0.5">
+                          {(["zone", "ward", "route"] as const).map((level) => (
+                            <button
+                              key={level}
+                              type="button"
+                              className={`rounded-full px-2 py-1 text-[10px] font-semibold capitalize transition ${intelligenceLevel === level ? "bg-cyan-300 text-slate-950" : "text-slate-300 hover:bg-white/10"}`}
+                              onClick={() => setIntelligenceLevel(level)}
+                            >
+                              {level}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="space-y-1.5">
+                        {intelligenceHierarchyRows.length === 0 ? (
+                          <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-xs text-slate-400">No breakdown available.</div>
+                        ) : intelligenceHierarchyRows.slice(0, 3).map((row) => (
+                          <button
+                            key={`${intelligenceLevel}-${row.name}`}
+                            type="button"
+                            className="w-full rounded-xl border border-white/10 bg-white/[0.06] p-2 text-left transition hover:border-cyan-300/30 hover:bg-cyan-300/10"
+                            onClick={() => drillToLive({ search: row.name === "Unmapped" ? "" : row.name })}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="truncate text-xs font-semibold text-white">{row.name}</p>
+                              <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-cyan-100">{row.total}</span>
+                            </div>
+                            <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/10">
+                              <div className="h-full rounded-full bg-gradient-to-r from-cyan-300 to-emerald-300" style={{ width: `${Math.max(8, (Number(row.total || 0) / intelligenceHierarchyTotal) * 100)}%` }} />
+                            </div>
+                            <div className="mt-1.5 flex flex-wrap gap-1">
+                              {(row.types || []).slice(0, 2).map((type) => (
+                                <span key={`${row.name}-${type.name}`} className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-1.5 py-0.5 text-[9px] text-cyan-100">
+                                  {titleCase(type.name)}: {type.count}
+                                </span>
+                              ))}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-[0.28em] text-cyan-200/80">Monitoring Intelligence</p>
+                        <div className="mt-2 flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+                          <div>
+                            <h3 className="text-3xl font-semibold tracking-tight">Command Signal</h3>
+                            <p className="mt-1 max-w-2xl text-sm text-slate-300">A derived operational brief from alert mix, response backlog, area concentration, and hourly intensity.</p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Badge className="border-cyan-300/30 bg-cyan-300/10 text-cyan-100 hover:bg-cyan-300/10">{selectedPeriodLabel}</Badge>
+                            <Badge className="border-white/20 bg-white/10 text-slate-100 hover:bg-white/10">Live drill-down enabled</Badge>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-[1.75rem] border border-white/10 bg-white/[0.07] p-4 backdrop-blur">
+                        <div className="grid gap-3 xl:grid-cols-[1fr_0.85fr]">
+                          <div>
+                            <div className="flex items-center gap-1.5">
+                              <p className="text-[10px] uppercase tracking-[0.2em] text-slate-400">System Diagnosis</p>
+                              <UiTooltip>
+                                <TooltipTrigger asChild>
+                                  <button type="button" className="rounded-full text-slate-300/70 transition hover:text-white" aria-label="System diagnosis explanation">
+                                    <Info className="h-3.5 w-3.5" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className="max-w-xs">
+                                  <p className="font-semibold">How Diagnosis Is Built</p>
+                                  <p className="mt-1 text-xs">The diagnosis combines the dominant alert type, highest-risk mapped area, and busiest hour in the selected period.</p>
+                                  <p className="mt-1 text-xs">The recommended action changes based on the dominant pattern, such as speed, route/geofence, idle/halt, GPS/device, or open queue pressure.</p>
+                                </TooltipContent>
+                              </UiTooltip>
+                            </div>
+                            <p className="mt-2 text-xl font-semibold text-white">{commandInsights.fingerprint}</p>
+                            <p className="mt-2 text-sm leading-6 text-slate-300">{commandInsights.recommendedAction}</p>
+                          </div>
+                          <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-3">
+                            <p className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Signal Composition</p>
+                            <div className="mt-3 space-y-2">
+                              <div>
+                                <div className="mb-1 flex justify-between text-xs"><span>Urgency Mix</span><span>{commandInsights.urgentRatio}%</span></div>
+                                <div className="h-2 rounded-full bg-white/10"><div className="h-full rounded-full bg-rose-400" style={{ width: `${commandInsights.urgentRatio}%` }} /></div>
+                              </div>
+                              <div>
+                                <div className="mb-1 flex justify-between text-xs"><span>Unresolved Load</span><span>{commandInsights.unresolvedRatio}%</span></div>
+                                <div className="h-2 rounded-full bg-white/10"><div className="h-full rounded-full bg-cyan-300" style={{ width: `${commandInsights.unresolvedRatio}%` }} /></div>
+                              </div>
+                              <div>
+                                <div className="mb-1 flex justify-between text-xs"><span>Pattern Share</span><span>{commandInsights.dominantTypeShare}%</span></div>
+                                <div className="h-2 rounded-full bg-white/10"><div className="h-full rounded-full bg-amber-300" style={{ width: `${commandInsights.dominantTypeShare}%` }} /></div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-2 md:grid-cols-3">
+                        <button
+                          type="button"
+                          className="group rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-3 text-left transition hover:-translate-y-0.5 hover:bg-cyan-300/15"
+                          onClick={() => drillToLive({ type: commandInsights.dominantTypeKey })}
+                        >
+                          <p className="text-[10px] uppercase tracking-[0.2em] text-cyan-100/80">Mission 01</p>
+                          <p className="mt-1 text-sm font-semibold text-cyan-50">Investigate Pattern</p>
+                          <p className="mt-1 truncate text-xs text-slate-300">{commandInsights.dominantType}</p>
+                        </button>
+                        <button
+                          type="button"
+                          className="group rounded-2xl border border-emerald-300/20 bg-emerald-300/10 p-3 text-left transition hover:-translate-y-0.5 hover:bg-emerald-300/15"
+                          onClick={() => drillToLive({ search: commandInsights.focusArea === "No focus area" || commandInsights.focusArea === "Unmapped" ? "" : commandInsights.focusArea })}
+                        >
+                          <p className="text-[10px] uppercase tracking-[0.2em] text-emerald-100/80">Mission 02</p>
+                          <p className="mt-1 text-sm font-semibold text-emerald-50">Inspect Hotspot</p>
+                          <p className="mt-1 truncate text-xs text-slate-300">{commandInsights.focusArea}</p>
+                        </button>
+                        <button
+                          type="button"
+                          className="group rounded-2xl border border-amber-300/20 bg-amber-300/10 p-3 text-left transition hover:-translate-y-0.5 hover:bg-amber-300/15"
+                          onClick={() => drillToLive({ status: "open" })}
+                        >
+                          <p className="text-[10px] uppercase tracking-[0.2em] text-amber-100/80">Mission 03</p>
+                          <p className="mt-1 text-sm font-semibold text-amber-50">Clear Queue</p>
+                          <p className="mt-1 truncate text-xs text-slate-300">Peak window: {commandInsights.peakHour}</p>
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </Card>
@@ -691,6 +905,55 @@ export default function Alerts() {
                       </div>
                     </button>
                   ))}
+                </div>
+                <div className="mt-6 rounded-2xl border bg-gradient-to-br from-muted/70 via-background to-muted/30 p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold">Workload Intelligence</p>
+                      <p className="text-xs text-muted-foreground">Operational queue guidance for the current filters</p>
+                    </div>
+                    <Badge className={commandInsights.unresolvedRatio >= 80 ? "bg-destructive/10 text-destructive" : commandInsights.unresolvedRatio >= 40 ? "bg-orange-500/10 text-orange-600" : "bg-emerald-500/10 text-emerald-600"}>
+                      {commandInsights.unresolvedRatio >= 80 ? "Queue overloaded" : commandInsights.unresolvedRatio >= 40 ? "Needs attention" : "Under control"}
+                    </Badge>
+                  </div>
+
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    <button
+                      type="button"
+                      className="rounded-xl border bg-background/80 p-3 text-left transition hover:border-destructive/40 hover:bg-destructive/5"
+                      onClick={() => drillToLive({ status: "open" })}
+                    >
+                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Next Queue</p>
+                      <p className="mt-1 text-sm font-semibold">Open first</p>
+                      <p className="text-xs text-muted-foreground">{Number(byStatus.open || 0)} pending</p>
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-xl border bg-background/80 p-3 text-left transition hover:border-orange-500/40 hover:bg-orange-500/5"
+                      onClick={() => drillToLive({ status: "escalated" })}
+                    >
+                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Escalation</p>
+                      <p className="mt-1 text-sm font-semibold">{Number(byStatus.escalated || 0) > 0 ? "Review now" : "No pressure"}</p>
+                      <p className="text-xs text-muted-foreground">{Number(byStatus.escalated || 0)} escalated</p>
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-xl border bg-background/80 p-3 text-left transition hover:border-emerald-500/40 hover:bg-emerald-500/5"
+                      onClick={() => drillToLive({ status: "resolved" })}
+                    >
+                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Closure</p>
+                      <p className="mt-1 text-sm font-semibold">{visibleCounts.total ? Math.round((resolvedCount / visibleCounts.total) * 100) : 0}% resolved</p>
+                      <p className="text-xs text-muted-foreground">{resolvedCount} closed</p>
+                    </button>
+                  </div>
+
+                  <div className="mt-3 rounded-xl border border-dashed bg-background/60 p-3 text-xs text-muted-foreground">
+                    Recommended: {Number(byStatus.escalated || 0) > 0
+                      ? "clear escalated alerts first, then process open alerts by hotspot."
+                      : commandInsights.unresolvedRatio >= 80
+                        ? "assign additional supervisors to reduce the open queue."
+                        : "continue monitoring and close resolved field incidents."}
+                  </div>
                 </div>
               </Card>
             </div>
