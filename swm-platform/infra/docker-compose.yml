@@ -236,12 +236,18 @@ services:
       - ../.env
     environment:
       ENV: prod
+      POSTGRES_DB: swm
+      POSTGRES_USER: swm
+      POSTGRES_PASSWORD: swm
+      POSTGRES_DSN: postgresql+asyncpg://swm:swm@postgres:5432/swm
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_URL: redis://redis:6379/0
-      WAIT_FOR_HOSTS: redis:6379
+      WAIT_FOR_HOSTS: redis:6379,postgres:5432
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     ports:
       - "9002:8002"
@@ -318,9 +324,11 @@ services:
       TELEMETRY_STREAM: gps.telemetry.raw
       TELEMETRY_GROUP: realtime
       WORKER_METRICS_PORT: 9101
-      WAIT_FOR_HOSTS: redis:6379
+      WAIT_FOR_HOSTS: redis:6379,postgres:5432
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import os,sys; sys.exit(0 if os.path.exists('/tmp/worker-ready') else 1)\""]
@@ -440,6 +448,10 @@ services:
       - ../.env
     environment:
       ENV: prod
+      POSTGRES_DB: swm
+      POSTGRES_USER: swm
+      POSTGRES_PASSWORD: swm
+      POSTGRES_DSN: postgresql+asyncpg://swm:swm@postgres:5432/swm
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_URL: redis://redis:6379/0
@@ -450,9 +462,11 @@ services:
       ALERT_STALE_GPS_SECONDS: 300
       ALERT_OFFLINE_SECONDS: 600
       ALERT_COOLDOWN_SECONDS: 120
-      WAIT_FOR_HOSTS: redis:6379
+      WAIT_FOR_HOSTS: redis:6379,postgres:5432
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import os,sys; sys.exit(0 if os.path.exists('/tmp/worker-ready') else 1)\""]

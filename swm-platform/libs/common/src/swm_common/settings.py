@@ -87,6 +87,13 @@ class Settings(BaseSettings):
     gtc_trip_radius_m: float = Field(default=30.0, alias="GTC_TRIP_RADIUS_M")
     gtc_trip_halt_seconds: int = Field(default=180, alias="GTC_TRIP_HALT_SECONDS")
     first_pickup_grace_minutes: int = Field(default=15, alias="FIRST_PICKUP_GRACE_MINUTES")
+    route_deviation_geofence_m: float = Field(default=30.0, alias="ROUTE_DEVIATION_GEOFENCE_M")
+    route_unauthorized_stop_seconds: int = Field(default=300, alias="ROUTE_UNAUTHORIZED_STOP_SECONDS")
+    route_excessive_idle_seconds: int = Field(default=600, alias="ROUTE_EXCESSIVE_IDLE_SECONDS")
+    route_stationary_radius_m: float = Field(default=30.0, alias="ROUTE_STATIONARY_RADIUS_M")
+    route_idle_speed_kph: float = Field(default=2.0, alias="ROUTE_IDLE_SPEED_KPH")
+    route_reverse_progress_m: float = Field(default=60.0, alias="ROUTE_REVERSE_PROGRESS_M")
+    route_reverse_min_events: int = Field(default=3, alias="ROUTE_REVERSE_MIN_EVENTS")
 
 
 @lru_cache(maxsize=1)

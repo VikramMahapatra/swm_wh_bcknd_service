@@ -11,13 +11,15 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import String, and_, case, cast, func, or_, select
+from sqlalchemy import String, and_, case, cast, false, func, or_, select
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 from swm_db import (
+    AlertActionORM,
     AlertORM,
     AnalyticsDailyKPIORM,
     AnalyticsGeofenceEventORM,
+    AnalyticsIdleRecordORM,
     AnalyticsOverspeedEventORM,
     AuthUserORM,
     DeviceEventORM,
@@ -320,6 +322,204 @@ class TicketCommentCreateRequest(BaseModel):
     content: str | None = None
     author: str | None = None
     is_internal: bool = Field(default=False, validation_alias=AliasChoices("is_internal", "isInternal"))
+
+
+class AlertActionRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    actor: str | None = None
+    notes: str | None = None
+    escalation_status: str | None = Field(default=None, validation_alias=AliasChoices("escalation_status", "escalationStatus"))
+
+
+def _normalize_alert_severity(value: str | None, fallback: str = "medium") -> str:
+    normalized = (value or fallback).strip().lower()
+    if normalized in {"low", "medium", "high", "critical"}:
+        return normalized
+    if normalized in {"warning", "warn"}:
+        return "medium"
+    if normalized in {"danger", "severe"}:
+        return "high"
+    return fallback
+
+
+def _event_source_key(source_table: str, source_id: UUID | str) -> str:
+    return f"{source_table}:{source_id}"
+
+
+def _alert_metadata(
+    source_table: str,
+    source_id: UUID | str,
+    *,
+    lat: float | None = None,
+    lng: float | None = None,
+    **extra: object,
+) -> dict:
+    metadata = {
+        "source": "analytics",
+        "source_table": source_table,
+        "source_id": str(source_id),
+        "source_key": _event_source_key(source_table, source_id),
+    }
+    if lat is not None and lng is not None:
+        metadata["location"] = {"lat": float(lat), "lng": float(lng)}
+    for key, value in extra.items():
+        if value is not None:
+            metadata[key] = value
+    return metadata
+
+
+async def _sync_real_analytics_alerts(session: AsyncSession) -> int:
+    """Promote recent analytics anomalies into operational alerts.
+
+    The alert UI reads from public.alerts. Analytics workers store operational
+    facts in analytics_* tables, so this bridge keeps the page real-data driven
+    even when the dedicated alert worker has not inserted alert rows yet.
+    """
+    existing_rows = (
+        await session.execute(
+            select(AlertORM.metadata_json)
+            .order_by(AlertORM.triggered_at.desc())
+            .limit(5000)
+        )
+    ).scalars().all()
+    existing_sources = {
+        str(metadata.get("source_key") or "")
+        for metadata in existing_rows
+        if isinstance(metadata, dict)
+    }
+
+    created = 0
+
+    overspeed_rows = (
+        await session.execute(
+            select(AnalyticsOverspeedEventORM)
+            .order_by(AnalyticsOverspeedEventORM.event_ts.desc())
+            .limit(200)
+        )
+    ).scalars().all()
+    for event in overspeed_rows:
+        source_key = _event_source_key("analytics_overspeed_events", event.id)
+        if source_key in existing_sources:
+            continue
+        over_by = max(float(event.speed_kph or 0) - float(event.threshold_kph or 0), 0.0)
+        severity = _normalize_alert_severity(event.severity, "high" if over_by >= 20 else "medium")
+        session.add(
+            AlertORM(
+                alert_type="overspeeding",
+                category="fleet",
+                title="Overspeeding detected",
+                message=(
+                    f"Vehicle {event.vehicle_id} recorded {float(event.speed_kph or 0):.1f} km/h "
+                    f"against threshold {float(event.threshold_kph or 0):.1f} km/h."
+                ),
+                severity=severity,
+                status="open",
+                vehicle_id=event.vehicle_id,
+                imei=event.imei,
+                triggered_at=event.event_ts,
+                metadata_json=_alert_metadata(
+                    "analytics_overspeed_events",
+                    event.id,
+                    lat=event.lat,
+                    lng=event.lng,
+                    device_id=event.device_id,
+                    vendor_ref=event.vendor_id,
+                    speed_kph=float(event.speed_kph or 0),
+                    threshold_kph=float(event.threshold_kph or 0),
+                    over_by_kph=round(over_by, 2),
+                    suggested_action="Contact driver and verify safe driving compliance.",
+                ),
+            )
+        )
+        existing_sources.add(source_key)
+        created += 1
+
+    route_deviation_rows = (
+        await session.execute(
+            select(AnalyticsGeofenceEventORM)
+            .where(AnalyticsGeofenceEventORM.event_type == "route_deviation")
+            .order_by(AnalyticsGeofenceEventORM.event_ts.desc())
+            .limit(200)
+        )
+    ).scalars().all()
+    for event in route_deviation_rows:
+        source_key = _event_source_key("analytics_geofence_events", event.id)
+        if source_key in existing_sources:
+            continue
+        session.add(
+            AlertORM(
+                alert_type="route_deviation",
+                category="route",
+                title="Route deviation detected",
+                message=f"Vehicle {event.vehicle_id} moved outside assigned route geofence.",
+                severity="high",
+                status="open",
+                vehicle_id=event.vehicle_id,
+                imei=event.imei,
+                triggered_at=event.event_ts,
+                metadata_json=_alert_metadata(
+                    "analytics_geofence_events",
+                    event.id,
+                    lat=event.lat,
+                    lng=event.lng,
+                    device_id=event.device_id,
+                    vendor_ref=event.vendor_id,
+                    geofence_id=str(event.geofence_id) if event.geofence_id else None,
+                    geofence_code=event.geofence_code,
+                    geofence_type=event.geofence_type,
+                    event_type=event.event_type,
+                    suggested_action="Validate route adherence and check for operational exception.",
+                ),
+            )
+        )
+        existing_sources.add(source_key)
+        created += 1
+
+    idle_rows = (
+        await session.execute(
+            select(AnalyticsIdleRecordORM)
+            .where(AnalyticsIdleRecordORM.duration_seconds >= 180)
+            .order_by(AnalyticsIdleRecordORM.started_at.desc())
+            .limit(200)
+        )
+    ).scalars().all()
+    for event in idle_rows:
+        source_key = _event_source_key("analytics_idle_records", event.id)
+        if source_key in existing_sources:
+            continue
+        duration_minutes = int(round((event.duration_seconds or 0) / 60))
+        session.add(
+            AlertORM(
+                alert_type="excessive_idle",
+                category="fleet",
+                title="Excessive idle detected",
+                message=f"Vehicle {event.vehicle_id} stayed idle for {duration_minutes} minutes.",
+                severity="high" if (event.duration_seconds or 0) >= 900 else "medium",
+                status="open",
+                vehicle_id=event.vehicle_id,
+                imei=event.imei,
+                triggered_at=event.started_at,
+                metadata_json=_alert_metadata(
+                    "analytics_idle_records",
+                    event.id,
+                    lat=event.lat,
+                    lng=event.lng,
+                    device_id=event.device_id,
+                    vendor_ref=event.vendor_id,
+                    started_at=event.started_at.isoformat(),
+                    ended_at=event.ended_at.isoformat(),
+                    duration_seconds=event.duration_seconds,
+                    suggested_action="Check if halt was authorized or operationally required.",
+                ),
+            )
+        )
+        existing_sources.add(source_key)
+        created += 1
+
+    if created:
+        await session.commit()
+    return created
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -661,6 +861,7 @@ async def alerts_list(
     _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
+    await _sync_real_analytics_alerts(session)
     stmt = select(AlertORM)
     if status:
         stmt = stmt.where(AlertORM.status == status)
@@ -673,11 +874,152 @@ async def alerts_list(
     return [_to_dict(row) for row in rows]
 
 
+@router.get("/alerts/page")
+async def alerts_page(
+    status: str | None = Query(default=None),
+    severity: str | None = Query(default=None),
+    truck_id: str | None = Query(default=None),
+    alert_type: str | None = Query(default=None),
+    zone_id: str | None = Query(default=None),
+    ward_id: str | None = Query(default=None),
+    route_id: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    await _sync_real_analytics_alerts(session)
+
+    filters = []
+    if status:
+        filters.append(AlertORM.status == status)
+    if severity:
+        filters.append(AlertORM.severity == severity)
+    if truck_id:
+        filters.append(AlertORM.vehicle_id == truck_id)
+    if alert_type:
+        filters.append(or_(AlertORM.alert_type == alert_type, AlertORM.category == alert_type))
+    if zone_id or ward_id or route_id:
+        hierarchy_matches = []
+        vehicle_stmt = (
+            select(VehicleORM.id, VehicleORM.vehicle_number, VehicleORM.registration_number)
+            .join(WardORM, VehicleORM.ward_id == WardORM.id)
+            .join(ZoneORM, WardORM.zone_id == ZoneORM.id)
+            .outerjoin(RouteORM, VehicleORM.route_id == RouteORM.id)
+        )
+        if zone_id:
+            vehicle_stmt = vehicle_stmt.where(cast(ZoneORM.id, String) == zone_id)
+            ward_ids = (
+                await session.execute(
+                    select(WardORM.id).where(cast(WardORM.zone_id, String) == zone_id)
+                )
+            ).scalars().all()
+            if ward_ids:
+                hierarchy_matches.append(AlertORM.ward_id.in_(ward_ids))
+        if ward_id:
+            vehicle_stmt = vehicle_stmt.where(cast(WardORM.id, String) == ward_id)
+            hierarchy_matches.append(cast(AlertORM.ward_id, String) == ward_id)
+        if route_id:
+            vehicle_stmt = vehicle_stmt.where(cast(RouteORM.id, String) == route_id)
+            hierarchy_matches.append(cast(AlertORM.route_id, String) == route_id)
+
+        vehicle_rows = (await session.execute(vehicle_stmt)).all()
+        vehicle_keys = {
+            str(value)
+            for row in vehicle_rows
+            for value in (row.id, row.vehicle_number, row.registration_number)
+            if value
+        }
+        vehicle_ids = [row.id for row in vehicle_rows if row.id]
+        if vehicle_ids:
+            imei_rows = (
+                await session.execute(
+                    select(DeviceORM.imei)
+                    .join(DeviceVehicleAssignmentORM, DeviceVehicleAssignmentORM.device_id == DeviceORM.id)
+                    .where(
+                        DeviceVehicleAssignmentORM.vehicle_id.in_(vehicle_ids),
+                        DeviceVehicleAssignmentORM.active.is_(True),
+                    )
+                )
+            ).scalars().all()
+            vehicle_keys.update(str(imei) for imei in imei_rows if imei)
+        if vehicle_keys:
+            hierarchy_matches.append(or_(AlertORM.vehicle_id.in_(vehicle_keys), AlertORM.imei.in_(vehicle_keys)))
+        filters.append(or_(*hierarchy_matches) if hierarchy_matches else false())
+    if date_from:
+        filters.append(AlertORM.triggered_at >= datetime.combine(date_from, time.min, tzinfo=timezone.utc))
+    if date_to:
+        filters.append(AlertORM.triggered_at <= datetime.combine(date_to, time.max, tzinfo=timezone.utc))
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        filters.append(
+            or_(
+                AlertORM.title.ilike(pattern),
+                AlertORM.message.ilike(pattern),
+                AlertORM.vehicle_id.ilike(pattern),
+                AlertORM.imei.ilike(pattern),
+                AlertORM.category.ilike(pattern),
+                AlertORM.alert_type.ilike(pattern),
+            )
+        )
+
+    total = int((await session.execute(select(func.count(AlertORM.id)).where(*filters))).scalar() or 0)
+    rows = (
+        await session.execute(
+            select(AlertORM)
+            .where(*filters)
+            .order_by(AlertORM.triggered_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).scalars().all()
+    severity_rows = (
+        await session.execute(
+            select(AlertORM.severity, func.count(AlertORM.id))
+            .where(*filters)
+            .group_by(AlertORM.severity)
+        )
+    ).all()
+    status_rows = (
+        await session.execute(
+            select(AlertORM.status, func.count(AlertORM.id))
+            .where(*filters)
+            .group_by(AlertORM.status)
+        )
+    ).all()
+    type_rows = (
+        await session.execute(
+            select(AlertORM.alert_type)
+            .select_from(AlertORM)
+            .where(AlertORM.alert_type.is_not(None))
+            .distinct()
+            .order_by(AlertORM.alert_type.asc())
+        )
+    ).scalars().all()
+
+    return {
+        "items": [_to_dict(row) for row in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(math.ceil(total / page_size), 1),
+        "types": [str(value) for value in type_rows if value],
+        "counts": {
+            "bySeverity": {str(severity): int(count or 0) for severity, count in severity_rows},
+            "byStatus": {str(status): int(count or 0) for status, count in status_rows},
+        },
+    }
+
+
 @router.get("/alerts/active")
 async def alerts_active(
     _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
+    await _sync_real_analytics_alerts(session)
     rows = (
         await session.execute(
             select(AlertORM)
@@ -695,6 +1037,127 @@ async def alerts_expiry(
 ) -> dict:
     # Placeholder response to satisfy current UI contract until expiry-domain models are introduced.
     return {"items": [], "total": 0}
+
+
+@router.get("/alerts/summary")
+async def alerts_summary(
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    await _sync_real_analytics_alerts(session)
+    active_statuses = ["open", "acknowledged", "escalated"]
+    total = int((await session.execute(select(func.count(AlertORM.id)))).scalar() or 0)
+    active = int((await session.execute(select(func.count(AlertORM.id)).where(AlertORM.status.in_(active_statuses)))).scalar() or 0)
+    resolved = int((await session.execute(select(func.count(AlertORM.id)).where(AlertORM.status == "resolved"))).scalar() or 0)
+    severity_rows = (
+        await session.execute(
+            select(AlertORM.severity, func.count(AlertORM.id))
+            .select_from(AlertORM)
+            .group_by(AlertORM.severity)
+        )
+    ).all()
+    status_rows = (
+        await session.execute(
+            select(AlertORM.status, func.count(AlertORM.id))
+            .select_from(AlertORM)
+            .group_by(AlertORM.status)
+        )
+    ).all()
+    category_rows = (
+        await session.execute(
+            select(AlertORM.category, func.count(AlertORM.id))
+            .select_from(AlertORM)
+            .group_by(AlertORM.category)
+        )
+    ).all()
+    latest_rows = (
+        await session.execute(
+            select(AlertORM)
+            .where(AlertORM.status.in_(active_statuses))
+            .order_by(AlertORM.triggered_at.desc())
+            .limit(10)
+        )
+    ).scalars().all()
+    return {
+        "total": total,
+        "active": active,
+        "resolved": resolved,
+        "critical": sum(int(count or 0) for severity, count in severity_rows if severity == "critical"),
+        "high": sum(int(count or 0) for severity, count in severity_rows if severity == "high"),
+        "bySeverity": {str(severity): int(count or 0) for severity, count in severity_rows},
+        "byStatus": {str(status): int(count or 0) for status, count in status_rows},
+        "byCategory": {str(category): int(count or 0) for category, count in category_rows},
+        "latest": [_to_dict(row) for row in latest_rows],
+    }
+
+
+async def _apply_alert_action(
+    alert_id: UUID,
+    action_type: str,
+    payload: AlertActionRequest,
+    session: AsyncSession,
+) -> dict:
+    row = (await session.execute(select(AlertORM).where(AlertORM.id == alert_id))).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="alert not found")
+
+    actor = payload.actor or "ui"
+    now = datetime.now(timezone.utc)
+    if action_type == "acknowledged":
+        row.status = "acknowledged"
+        row.acknowledged_at = now
+        row.acknowledged_by = actor
+    elif action_type == "resolved":
+        row.status = "resolved"
+        row.resolved_at = now
+        row.resolved_by = actor
+    elif action_type == "escalated":
+        row.status = "escalated"
+        row.escalation_status = payload.escalation_status or "escalated"
+    else:
+        raise HTTPException(status_code=400, detail="unsupported alert action")
+
+    session.add(
+        AlertActionORM(
+            alert_id=row.id,
+            action_type=action_type,
+            actor=actor,
+            notes=payload.notes,
+            payload_json={"status": row.status, "escalation_status": row.escalation_status},
+        )
+    )
+    await session.commit()
+    return _to_dict(row)
+
+
+@router.post("/alerts/{alert_id}/acknowledge")
+async def alerts_acknowledge(
+    alert_id: UUID,
+    payload: AlertActionRequest,
+    _: RoleContext = Depends(require_roles("admin", "ops")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    return await _apply_alert_action(alert_id, "acknowledged", payload, session)
+
+
+@router.post("/alerts/{alert_id}/resolve")
+async def alerts_resolve(
+    alert_id: UUID,
+    payload: AlertActionRequest,
+    _: RoleContext = Depends(require_roles("admin", "ops")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    return await _apply_alert_action(alert_id, "resolved", payload, session)
+
+
+@router.post("/alerts/{alert_id}/escalate")
+async def alerts_escalate(
+    alert_id: UUID,
+    payload: AlertActionRequest,
+    _: RoleContext = Depends(require_roles("admin", "ops")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    return await _apply_alert_action(alert_id, "escalated", payload, session)
 
 
 @router.get("/zones")
@@ -1665,6 +2128,7 @@ async def _driver_behavior_rows(
                 vehicle_info[str(identity)] = info
 
     if vehicle_ids:
+        assigned_imeis: set[str] = set()
         assignment_rows = (
             await session.execute(
                 select(
@@ -1685,6 +2149,9 @@ async def _driver_behavior_rows(
                 vehicle_info[str(row.device_id)] = info
             if row.imei:
                 vehicle_info[str(row.imei)] = info
+                assigned_imeis.add(str(row.imei))
+    else:
+        assigned_imeis = set()
 
     allowed_identities = set(vehicle_info.keys())
     stmt = (
@@ -1760,9 +2227,12 @@ async def _route_performance_rows(
     zone_id: str | None = None,
     ward_id: str | None = None,
     vehicle_id: str | None = None,
+    route_id: str | None = None,
+    trip_completed: list[dict] | None = None,
 ) -> list[dict]:
     report_tz = timezone(timedelta(hours=5, minutes=30))
     _, _, from_ts, to_ts = _report_date_window(date_from, date_to)
+    settings = get_settings()
 
     vehicle_stmt = (
         select(VehicleORM, WardORM, ZoneORM, VendorORM, RouteORM)
@@ -1776,6 +2246,8 @@ async def _route_performance_rows(
         vehicle_stmt = vehicle_stmt.where(cast(ZoneORM.id, String) == zone_id)
     if ward_id:
         vehicle_stmt = vehicle_stmt.where(cast(WardORM.id, String) == ward_id)
+    if route_id:
+        vehicle_stmt = vehicle_stmt.where(cast(RouteORM.id, String) == route_id)
     if vehicle_id:
         vehicle_stmt = vehicle_stmt.where(
             or_(
@@ -1788,9 +2260,13 @@ async def _route_performance_rows(
     vehicle_rows = (await session.execute(vehicle_stmt)).all()
     vehicle_info: dict[str, dict] = {}
     vehicle_ids: set[str] = set()
+    route_geometry_by_id: dict[str, list[list[float]]] = {}
     for vehicle, ward, zone, vendor, route in vehicle_rows:
         canonical_id = str(vehicle.id)
         vehicle_ids.add(canonical_id)
+        route_key = str(vehicle.route_id) if vehicle.route_id is not None else None
+        if route is not None and route_key:
+            route_geometry_by_id[route_key] = route.polyline_coordinates or []
         info = {
             "vehicle_id": canonical_id,
             "truck": vehicle.vehicle_number or vehicle.registration_number or canonical_id,
@@ -1804,6 +2280,7 @@ async def _route_performance_rows(
             if identity:
                 vehicle_info[str(identity)] = info
 
+    assigned_imeis: set[str] = set()
     if vehicle_ids:
         assignment_rows = (
             await session.execute(
@@ -1825,6 +2302,7 @@ async def _route_performance_rows(
                 vehicle_info[str(row.device_id)] = info
             if row.imei:
                 vehicle_info[str(row.imei)] = info
+                assigned_imeis.add(str(row.imei))
 
     allowed_identities = set(vehicle_info.keys())
     if (zone_id or ward_id or vehicle_id) and not allowed_identities:
@@ -1833,7 +2311,74 @@ async def _route_performance_rows(
     def _info_for(vehicle_identity: str, imei: str | None = None, device_id: str | None = None) -> dict:
         return vehicle_info.get(str(vehicle_identity)) or vehicle_info.get(str(imei or "")) or vehicle_info.get(str(device_id or "")) or {}
 
+    def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+        radius_m = 6371000.0
+        phi1 = math.radians(lat1)
+        phi2 = math.radians(lat2)
+        d_phi = math.radians(lat2 - lat1)
+        d_lam = math.radians(lng2 - lng1)
+        a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lam / 2) ** 2
+        return 2 * radius_m * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    def _point_to_segment_distance_and_progress(
+        lat: float,
+        lng: float,
+        start: list[float],
+        end: list[float],
+        progress_before_segment: float,
+    ) -> tuple[float, float]:
+        if len(start) < 2 or len(end) < 2:
+            return float("inf"), progress_before_segment
+        lat1, lng1 = float(start[0]), float(start[1])
+        lat2, lng2 = float(end[0]), float(end[1])
+        mean_lat = math.radians((lat + lat1 + lat2) / 3)
+        meters_per_lat = 111320.0
+        meters_per_lng = max(1.0, 111320.0 * math.cos(mean_lat))
+        sx, sy = lng1 * meters_per_lng, lat1 * meters_per_lat
+        ex, ey = lng2 * meters_per_lng, lat2 * meters_per_lat
+        px, py = lng * meters_per_lng, lat * meters_per_lat
+        dx, dy = ex - sx, ey - sy
+        length_sq = dx * dx + dy * dy
+        if length_sq <= 0:
+            return _haversine_m(lat, lng, lat1, lng1), progress_before_segment
+        t = max(0.0, min(1.0, ((px - sx) * dx + (py - sy) * dy) / length_sq))
+        proj_x, proj_y = sx + t * dx, sy + t * dy
+        distance_m = math.hypot(px - proj_x, py - proj_y)
+        segment_len = _haversine_m(lat1, lng1, lat2, lng2)
+        return distance_m, progress_before_segment + (segment_len * t)
+
+    def _route_distance_and_progress(lat: float, lng: float, route_points: list[list[float]]) -> tuple[float | None, float | None]:
+        if len(route_points) < 2:
+            return None, None
+        best_distance = float("inf")
+        best_progress = 0.0
+        progress_before = 0.0
+        for index in range(len(route_points) - 1):
+            distance, progress = _point_to_segment_distance_and_progress(
+                lat,
+                lng,
+                route_points[index],
+                route_points[index + 1],
+                progress_before,
+            )
+            if distance < best_distance:
+                best_distance = distance
+                best_progress = progress
+            start = route_points[index]
+            end = route_points[index + 1]
+            if len(start) >= 2 and len(end) >= 2:
+                progress_before += _haversine_m(float(start[0]), float(start[1]), float(end[0]), float(end[1]))
+        return best_distance, best_progress
+
     def _add_group(groups: dict[str, dict], detail: dict, info: dict, event_local: datetime) -> None:
+        detail.setdefault("date", event_local.date().isoformat())
+        detail.setdefault("time", event_local.strftime("%H:%M:%S"))
+        detail.setdefault("eventTs", event_local.isoformat())
+        detail.setdefault("vehicle_id", info.get("vehicle_id"))
+        detail.setdefault("route_id", info.get("route_id"))
+        detail.setdefault("zone", info.get("zone") or "-")
+        detail.setdefault("ward", info.get("ward") or "-")
+        detail.setdefault("route", info.get("route") or "-")
         key = "|".join(
             [
                 event_local.date().isoformat(),
@@ -1856,6 +2401,12 @@ async def _route_performance_rows(
                 "deviationCount": 0,
                 "geofenceEntryCount": 0,
                 "geofenceExitCount": 0,
+                "missedPickupCount": 0,
+                "unauthorizedStopCount": 0,
+                "reverseMovementCount": 0,
+                "excessiveIdleCount": 0,
+                "outOfSequenceCount": 0,
+                "categoryCounts": {},
                 "affectedTrucks": set(),
                 "worstSeverity": "low",
                 "anomalyDetails": [],
@@ -1865,6 +2416,7 @@ async def _route_performance_rows(
         group["affectedTrucks"].add(detail.get("truck") or "-")
         group["anomalyDetails"].append(detail)
         category = detail.get("category")
+        group["categoryCounts"][category] = group["categoryCounts"].get(category, 0) + 1
         if category == "Overspeeding":
             group["overspeedCount"] += 1
         elif category == "Route Deviation":
@@ -1873,6 +2425,16 @@ async def _route_performance_rows(
             group["geofenceEntryCount"] += 1
         elif category == "Geofence Exit":
             group["geofenceExitCount"] += 1
+        elif category == "Missed Pickup":
+            group["missedPickupCount"] += 1
+        elif category == "Unauthorized Stop":
+            group["unauthorizedStopCount"] += 1
+        elif category == "Reverse Movement":
+            group["reverseMovementCount"] += 1
+        elif category == "Excessive Idle":
+            group["excessiveIdleCount"] += 1
+        elif category == "Out-of-sequence Collection":
+            group["outOfSequenceCount"] += 1
         detail_severity = str(detail.get("severity") or "").lower()
         if detail_severity in {"critical", "high"}:
             group["worstSeverity"] = "high"
@@ -1950,15 +2512,410 @@ async def _route_performance_rows(
         }
         _add_group(groups, detail, info, event_local)
 
+    route_pickups_by_route: dict[str, list[dict]] = {}
+    if route_geometry_by_id:
+        pickup_rows = (
+            await session.execute(
+                select(
+                    PickupPointORM.id,
+                    PickupPointORM.route_id,
+                    PickupPointORM.pickup_name,
+                    PickupPointORM.sequence_no,
+                    PickupPointORM.lat,
+                    PickupPointORM.lng,
+                    PickupPointORM.pickup_radius_m,
+                )
+                .where(PickupPointORM.route_id.in_(list(route_geometry_by_id.keys())))
+                .order_by(PickupPointORM.route_id.asc(), PickupPointORM.sequence_no.asc())
+            )
+        ).all()
+        for pickup in pickup_rows:
+            if pickup.lat is None or pickup.lng is None:
+                continue
+            route_pickups_by_route.setdefault(str(pickup.route_id), []).append(
+                {
+                    "id": str(pickup.id),
+                    "name": pickup.pickup_name or f"Pickup Point {pickup.sequence_no}",
+                    "sequence": int(pickup.sequence_no or 0),
+                    "lat": float(pickup.lat),
+                    "lng": float(pickup.lng),
+                    "radius": float(pickup.pickup_radius_m or settings.pickup_cross_radius_m),
+                }
+            )
+
+    def _nearest_pickup_distance(lat: float, lng: float, route_key: str | None) -> tuple[float | None, dict | None]:
+        pickups = route_pickups_by_route.get(route_key or "", [])
+        if not pickups:
+            return None, None
+        nearest = min(pickups, key=lambda item: _haversine_m(lat, lng, item["lat"], item["lng"]))
+        return _haversine_m(lat, lng, nearest["lat"], nearest["lng"]), nearest
+
+    events_by_vehicle: dict[str, list[DeviceEventORM]] = {}
+    events_by_vehicle_date: set[tuple[str, str, str]] = set()
+    if assigned_imeis:
+        device_event_rows = (
+            await session.execute(
+                select(DeviceEventORM)
+                .where(
+                    DeviceEventORM.ts >= from_ts,
+                    DeviceEventORM.ts < to_ts,
+                    DeviceEventORM.device_id.in_(list(assigned_imeis)),
+                )
+                .order_by(DeviceEventORM.device_id.asc(), DeviceEventORM.ts.asc())
+                .limit(30000)
+            )
+        ).scalars().all()
+        last_deviation_at: dict[str, datetime] = {}
+        for event in device_event_rows:
+            info = _info_for(event.device_id)
+            if not info:
+                continue
+            vehicle_key = str(info.get("vehicle_id") or "")
+            route_key = str(info.get("route_id") or "")
+            if not vehicle_key or not route_key:
+                continue
+            events_by_vehicle.setdefault(vehicle_key, []).append(event)
+            event_local = event.ts.astimezone(report_tz)
+            events_by_vehicle_date.add((event_local.date().isoformat(), vehicle_key, route_key))
+
+            route_points = route_geometry_by_id.get(route_key, [])
+            distance_m, _progress = _route_distance_and_progress(float(event.lat), float(event.lon), route_points)
+            if distance_m is None or distance_m <= float(settings.route_deviation_geofence_m):
+                continue
+            deviation_key = f"{vehicle_key}|{route_key}"
+            previous = last_deviation_at.get(deviation_key)
+            if previous is not None and (event.ts - previous).total_seconds() < 300:
+                continue
+            last_deviation_at[deviation_key] = event.ts
+            detail = {
+                "id": f"route-deviation-{vehicle_key}-{int(event.ts.timestamp())}",
+                "date": event_local.date().isoformat(),
+                "time": event_local.strftime("%H:%M:%S"),
+                "truck": info.get("truck") or vehicle_key,
+                "imei": event.device_id,
+                "device_id": event.device_id,
+                "category": "Route Deviation",
+                "description": "Truck left the assigned route corridor",
+                "value": f"{distance_m:.1f} m from route",
+                "threshold": f"{float(settings.route_deviation_geofence_m):.0f} m",
+                "overBy": f"{max(0.0, distance_m - float(settings.route_deviation_geofence_m)):.1f} m",
+                "location": f"{float(event.lat):.6f}, {float(event.lon):.6f}",
+                "severity": "high",
+            }
+            _add_group(groups, detail, info, event_local)
+
+    for vehicle_key, vehicle_events in events_by_vehicle.items():
+        if not vehicle_events:
+            continue
+        info = _info_for(vehicle_key) or _info_for(vehicle_events[0].device_id)
+        route_key = str(info.get("route_id") or "")
+        route_points = route_geometry_by_id.get(route_key, [])
+        cluster_start = vehicle_events[0]
+        cluster_anchor = vehicle_events[0]
+        previous_progress: float | None = None
+        reverse_count = 0
+        reverse_start: DeviceEventORM | None = None
+        reverse_reported_at: datetime | None = None
+
+        def _emit_stop_anomalies(cluster_end: DeviceEventORM) -> None:
+            duration_seconds = int((cluster_end.ts - cluster_start.ts).total_seconds())
+            if duration_seconds < int(settings.route_unauthorized_stop_seconds):
+                return
+            start_local = cluster_start.ts.astimezone(report_tz)
+            route_distance, _ = _route_distance_and_progress(float(cluster_anchor.lat), float(cluster_anchor.lon), route_points)
+            pickup_distance, pickup = _nearest_pickup_distance(float(cluster_anchor.lat), float(cluster_anchor.lon), route_key)
+            near_pickup = pickup_distance is not None and pickup is not None and pickup_distance <= float(pickup["radius"])
+            away_from_route = route_distance is not None and route_distance > float(settings.route_deviation_geofence_m)
+            if duration_seconds >= int(settings.route_excessive_idle_seconds):
+                _add_group(
+                    groups,
+                    {
+                        "id": f"excessive-idle-{vehicle_key}-{int(cluster_start.ts.timestamp())}",
+                        "date": start_local.date().isoformat(),
+                        "time": start_local.strftime("%H:%M:%S"),
+                        "truck": info.get("truck") or vehicle_key,
+                        "imei": cluster_start.device_id,
+                        "device_id": cluster_start.device_id,
+                        "category": "Excessive Idle",
+                        "description": "Vehicle remained stationary for too long",
+                        "value": f"{duration_seconds // 60} min",
+                        "threshold": f"{int(settings.route_excessive_idle_seconds) // 60} min",
+                        "overBy": f"{max(0, duration_seconds - int(settings.route_excessive_idle_seconds)) // 60} min",
+                        "location": f"{float(cluster_anchor.lat):.6f}, {float(cluster_anchor.lon):.6f}",
+                        "severity": "medium",
+                    },
+                    info,
+                    start_local,
+                )
+            if away_from_route and not near_pickup:
+                _add_group(
+                    groups,
+                    {
+                        "id": f"unauthorized-stop-{vehicle_key}-{int(cluster_start.ts.timestamp())}",
+                        "date": start_local.date().isoformat(),
+                        "time": start_local.strftime("%H:%M:%S"),
+                        "truck": info.get("truck") or vehicle_key,
+                        "imei": cluster_start.device_id,
+                        "device_id": cluster_start.device_id,
+                        "category": "Unauthorized Stop",
+                        "description": "Long halt at an unknown off-route location",
+                        "value": f"{duration_seconds // 60} min halt",
+                        "threshold": f"{int(settings.route_unauthorized_stop_seconds) // 60} min",
+                        "overBy": f"{max(0, duration_seconds - int(settings.route_unauthorized_stop_seconds)) // 60} min",
+                        "location": f"{float(cluster_anchor.lat):.6f}, {float(cluster_anchor.lon):.6f}",
+                        "severity": "high",
+                    },
+                    info,
+                    start_local,
+                )
+
+        for event in vehicle_events[1:]:
+            anchor_distance = _haversine_m(float(event.lat), float(event.lon), float(cluster_anchor.lat), float(cluster_anchor.lon))
+            if float(event.speed_kph or 0) <= float(settings.route_idle_speed_kph) and anchor_distance <= float(settings.route_stationary_radius_m):
+                pass
+            else:
+                _emit_stop_anomalies(event)
+                cluster_start = event
+                cluster_anchor = event
+
+            distance_m, progress_m = _route_distance_and_progress(float(event.lat), float(event.lon), route_points)
+            if progress_m is not None and previous_progress is not None:
+                if previous_progress - progress_m >= float(settings.route_reverse_progress_m):
+                    reverse_count += 1
+                    reverse_start = reverse_start or event
+                else:
+                    reverse_count = 0
+                    reverse_start = None
+                if reverse_count >= int(settings.route_reverse_min_events):
+                    if reverse_reported_at is None or (event.ts - reverse_reported_at).total_seconds() >= 300:
+                        event_local = event.ts.astimezone(report_tz)
+                        _add_group(
+                            groups,
+                            {
+                                "id": f"reverse-movement-{vehicle_key}-{int(event.ts.timestamp())}",
+                                "date": event_local.date().isoformat(),
+                                "time": event_local.strftime("%H:%M:%S"),
+                                "truck": info.get("truck") or vehicle_key,
+                                "imei": event.device_id,
+                                "device_id": event.device_id,
+                                "category": "Reverse Movement",
+                                "description": "Repeated backtracking detected along the route",
+                                "value": f"{reverse_count} reverse samples",
+                                "threshold": f"{int(settings.route_reverse_min_events)} samples",
+                                "overBy": f"{max(0, reverse_count - int(settings.route_reverse_min_events))} samples",
+                                "location": f"{float(event.lat):.6f}, {float(event.lon):.6f}",
+                                "severity": "medium",
+                            },
+                            info,
+                            event_local,
+                        )
+                        reverse_reported_at = event.ts
+                    reverse_count = 0
+                    reverse_start = None
+            if progress_m is not None:
+                previous_progress = progress_m
+        _emit_stop_anomalies(vehicle_events[-1])
+
+    if vehicle_ids and route_pickups_by_route:
+        crossing_rows = (
+            await session.execute(
+                select(
+                    PickupPointCrossingORM.vehicle_id,
+                    PickupPointCrossingORM.route_id,
+                    PickupPointCrossingORM.pickup_point_id,
+                    PickupPointCrossingORM.crossed_at,
+                    PickupPointORM.pickup_name,
+                    PickupPointORM.sequence_no,
+                )
+                .join(PickupPointORM, PickupPointCrossingORM.pickup_point_id == PickupPointORM.id)
+                .where(
+                    PickupPointCrossingORM.crossed_at >= from_ts,
+                    PickupPointCrossingORM.crossed_at < to_ts,
+                    PickupPointCrossingORM.vehicle_id.in_(vehicle_ids),
+                )
+                .order_by(PickupPointCrossingORM.vehicle_id.asc(), PickupPointCrossingORM.crossed_at.asc())
+            )
+        ).all()
+        crossed_by_vehicle_date_route: dict[tuple[str, str, str], set[str]] = {}
+        ordered_crossings: dict[tuple[str, str, str], list] = {}
+        for crossing in crossing_rows:
+            cross_local = crossing.crossed_at.astimezone(report_tz)
+            key = (cross_local.date().isoformat(), str(crossing.vehicle_id), str(crossing.route_id))
+            crossed_by_vehicle_date_route.setdefault(key, set()).add(str(crossing.pickup_point_id))
+            ordered_crossings.setdefault(key, []).append(crossing)
+
+        for key, rows_for_key in ordered_crossings.items():
+            _date_text, vehicle_key, route_key = key
+            info = _info_for(vehicle_key)
+            max_sequence = -1
+            for crossing in rows_for_key:
+                sequence = int(crossing.sequence_no or 0)
+                if sequence < max_sequence:
+                    cross_local = crossing.crossed_at.astimezone(report_tz)
+                    _add_group(
+                        groups,
+                        {
+                            "id": f"out-of-sequence-{vehicle_key}-{int(crossing.crossed_at.timestamp())}",
+                            "date": cross_local.date().isoformat(),
+                            "time": cross_local.strftime("%H:%M:%S"),
+                            "truck": info.get("truck") or vehicle_key,
+                            "imei": "-",
+                            "device_id": "-",
+                            "category": "Out-of-sequence Collection",
+                            "description": f"Visited {crossing.pickup_name or 'pickup'} after a later sequence point",
+                            "value": f"Sequence {sequence}",
+                            "threshold": f"Expected >= {max_sequence}",
+                            "overBy": "wrong order",
+                            "location": "-",
+                            "severity": "medium",
+                        },
+                        info,
+                        cross_local,
+                    )
+                max_sequence = max(max_sequence, sequence)
+
+        for event_key in events_by_vehicle_date:
+            date_text, vehicle_key, route_key = event_key
+            info = _info_for(vehicle_key)
+            crossed_ids = crossed_by_vehicle_date_route.get(event_key, set())
+            for pickup in route_pickups_by_route.get(route_key, []):
+                if pickup["id"] in crossed_ids:
+                    continue
+                event_local = datetime.combine(date.fromisoformat(date_text), time.min, tzinfo=report_tz)
+                _add_group(
+                    groups,
+                    {
+                        "id": f"missed-pickup-{vehicle_key}-{route_key}-{pickup['id']}-{date_text}",
+                        "date": date_text,
+                        "time": "-",
+                        "truck": info.get("truck") or vehicle_key,
+                        "imei": "-",
+                        "device_id": "-",
+                        "category": "Missed Pickup",
+                        "description": f"Vehicle never entered bin zone: {pickup['name']}",
+                        "value": "not visited",
+                        "threshold": f"{pickup['radius']:.0f} m geofence",
+                        "overBy": "missed",
+                        "location": f"{pickup['lat']:.6f}, {pickup['lng']:.6f}",
+                        "severity": "high",
+                    },
+                    info,
+                    event_local,
+                )
+
+    def _parse_report_dt(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
+    def _detail_belongs_to_trip(detail: dict, trip: dict) -> bool:
+        if str(detail.get("vehicle_id") or "") != str(trip.get("vehicle_id") or ""):
+            return False
+        if str(detail.get("route_id") or "") != str(trip.get("route_id") or ""):
+            return False
+        if str(detail.get("date") or "") != str(trip.get("date") or ""):
+            return False
+        if detail.get("category") == "Missed Pickup":
+            return True
+        event_at = _parse_report_dt(detail.get("eventTs"))
+        started_at = _parse_report_dt(trip.get("startedAt"))
+        completed_at = _parse_report_dt(trip.get("completedAt"))
+        if event_at is None or started_at is None or completed_at is None:
+            return False
+        event_at_utc = event_at.astimezone(timezone.utc)
+        return started_at.astimezone(timezone.utc) <= event_at_utc <= completed_at.astimezone(timezone.utc)
+
+    def _trip_summary_for_group(group: dict) -> list[dict]:
+        trips = []
+        used_detail_ids: set[str] = set()
+        for index, trip in enumerate(trip_completed or [], start=1):
+            if str(trip.get("date") or "") != str(group.get("date") or ""):
+                continue
+            if str(trip.get("route_id") or "") != str(group.get("route_id") or ""):
+                continue
+            if str(trip.get("zone") or "-") != str(group.get("zone") or "-"):
+                continue
+            if str(trip.get("ward") or "-") != str(group.get("ward") or "-"):
+                continue
+            details: list[dict] = []
+            for detail in group["anomalyDetails"]:
+                detail_id = str(detail.get("id") or "")
+                if detail_id in used_detail_ids:
+                    continue
+                if _detail_belongs_to_trip(detail, trip):
+                    details.append(detail)
+                    used_detail_ids.add(detail_id)
+            category_counts: dict[str, int] = {}
+            for detail in details:
+                category = str(detail.get("category") or "Other")
+                category_counts[category] = category_counts.get(category, 0) + 1
+            trips.append(
+                {
+                    "id": f"{group['id']}|trip|{trip.get('id') or index}",
+                    "tripId": trip.get("id") or f"Trip {index}",
+                    "date": trip.get("date"),
+                    "truck": trip.get("truck") or "-",
+                    "driver": trip.get("driver") or "Unassigned",
+                    "startTime": trip.get("startTime") or "-",
+                    "endTime": trip.get("endTime") or "-",
+                    "duration": trip.get("duration") or "-",
+                    "pickups": trip.get("pickups") or 0,
+                    "status": trip.get("status") or "-",
+                    "completionMethod": trip.get("completionMethod") or "-",
+                    "anomalyCount": len(details),
+                    "categoryCounts": category_counts,
+                    "anomalyDetails": details,
+                }
+            )
+        if trips:
+            unassigned_details = [detail for detail in group["anomalyDetails"] if str(detail.get("id") or "") not in used_detail_ids]
+            if unassigned_details:
+                category_counts: dict[str, int] = {}
+                for detail in unassigned_details:
+                    category = str(detail.get("category") or "Other")
+                    category_counts[category] = category_counts.get(category, 0) + 1
+                trips.append(
+                    {
+                        "id": f"{group['id']}|trip|unmatched",
+                        "tripId": "Outside Trip Window",
+                        "date": group.get("date"),
+                        "truck": ", ".join(sorted({str(detail.get("truck") or "-") for detail in unassigned_details})),
+                        "driver": "-",
+                        "startTime": "-",
+                        "endTime": "-",
+                        "duration": "-",
+                        "pickups": "-",
+                        "status": "unmatched",
+                        "completionMethod": "-",
+                        "anomalyCount": len(unassigned_details),
+                        "categoryCounts": category_counts,
+                        "anomalyDetails": unassigned_details,
+                    }
+                )
+        return trips
+
     route_rows: list[dict] = []
     for group in groups.values():
         affected_trucks = sorted(group["affectedTrucks"])
         group["affectedTruckCount"] = len(affected_trucks)
         group["affectedTrucks"] = ", ".join(affected_trucks)
+        group["anomalyDetails"] = sorted(
+            group["anomalyDetails"],
+            key=lambda item: (str(item.get("date") or ""), str(item.get("time") or "")),
+            reverse=True,
+        )
         group["completion"] = max(0, 100 - min(group["deviationCount"] * 5, 100))
         group["efficiency"] = max(0, 100 - min(group["anomalyCount"] * 2, 100))
         group["avgTime"] = "-"
         group["deviations"] = group["deviationCount"]
+        group["tripSummaries"] = _trip_summary_for_group(group)
+        group["tripCount"] = len([trip for trip in group["tripSummaries"] if trip.get("status") != "unmatched"])
         route_rows.append(group)
 
     return sorted(route_rows, key=lambda row: (row["date"], row["zone"], row["ward"], row["route"]), reverse=True)
@@ -2582,6 +3539,8 @@ async def reports_data(
         zone_id=zone_id,
         ward_id=ward_id,
         vehicle_id=vehicle_id,
+        route_id=route_id,
+        trip_completed=trip_completed,
     )
     vehicle_status = await _vehicle_status_rows(
         session,

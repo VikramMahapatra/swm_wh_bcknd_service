@@ -184,7 +184,7 @@ export default function Reports() {
   const [expandedDailyRows, setExpandedDailyRows] = useState<Record<string, boolean>>({});
   const [routePage, setRoutePage] = useState(1);
   const [expandedRouteRows, setExpandedRouteRows] = useState<Record<string, boolean>>({});
-  const [routeDetailPages, setRouteDetailPages] = useState<Record<string, number>>({});
+  const [expandedRouteTripRows, setExpandedRouteTripRows] = useState<Record<string, boolean>>({});
   const [expandedRouteCategoryRows, setExpandedRouteCategoryRows] = useState<Record<string, boolean>>({});
   const [routeCategoryDetailPages, setRouteCategoryDetailPages] = useState<Record<string, number>>({});
   const [truckPage, setTruckPage] = useState(1);
@@ -243,7 +243,7 @@ export default function Reports() {
     setExpandedDailyRows({});
     setExpandedTripRows({});
     setExpandedRouteRows({});
-    setRouteDetailPages({});
+    setExpandedRouteTripRows({});
     setExpandedRouteCategoryRows({});
     setRouteCategoryDetailPages({});
     setExpandedBehaviorRows({});
@@ -271,10 +271,10 @@ export default function Reports() {
     }));
   };
 
-  const setRouteDetailPage = (rowId: string, page: number) => {
-    setRouteDetailPages((current) => ({
+  const toggleRouteTripRow = (rowId: string) => {
+    setExpandedRouteTripRows((current) => ({
       ...current,
-      [rowId]: page,
+      [rowId]: !current[rowId],
     }));
   };
 
@@ -416,6 +416,9 @@ export default function Reports() {
     childKey?: string;
     childTitle?: string;
     childColumns?: ExportColumn[];
+    grandChildKey?: string;
+    grandChildTitle?: string;
+    grandChildColumns?: ExportColumn[];
   };
 
   const excelEscape = (value: unknown) =>
@@ -447,7 +450,9 @@ export default function Reports() {
   const excelColumnsXml = (sections: ExportSection[]) => {
     const maxColumns = Math.max(
       1,
-      ...sections.map((section) => Math.max(section.columns.length, section.childColumns?.length || 0))
+      ...sections.map((section) =>
+        Math.max(section.columns.length, section.childColumns?.length || 0, section.grandChildColumns?.length || 0)
+      )
     );
     const widths = Array.from({ length: maxColumns }, (_, index) => {
       const width = Math.max(
@@ -455,6 +460,7 @@ export default function Reports() {
         ...sections.flatMap((section) => [
           section.columns[index]?.width || 0,
           section.childColumns?.[index]?.width || 0,
+          section.grandChildColumns?.[index]?.width || 0,
         ])
       );
       return `<Column ss:Width="${width}"/>`;
@@ -470,7 +476,9 @@ export default function Reports() {
         : `Filters: ${appliedFilters.dateFrom} to ${appliedFilters.dateTo}, Zone ${appliedFilters.selectedZone}, Ward ${appliedFilters.selectedWard}, Truck ${appliedFilters.selectedTruck}`;
     const maxColumns = Math.max(
       1,
-      ...sections.map((section) => Math.max(section.columns.length, section.childColumns?.length || 0))
+      ...sections.map((section) =>
+        Math.max(section.columns.length, section.childColumns?.length || 0, section.grandChildColumns?.length || 0)
+      )
     );
     const rows: string[] = [
       excelRow([excelCell(reportTitle, "Title", Math.max(maxColumns - 1, 0))], 28),
@@ -512,6 +520,28 @@ export default function Reports() {
             rows.push(
               excelRow(section.childColumns!.map((column) => excelCell(getValue(child, column.key), childStyle, 0, column.align)))
             );
+
+            const grandChildRows = section.grandChildKey ? getValue(child, section.grandChildKey) : undefined;
+            if (Array.isArray(grandChildRows) && grandChildRows.length > 0 && section.grandChildColumns?.length) {
+              rows.push(
+                excelRow([
+                  excelCell(
+                    `${section.grandChildTitle || "Details"} - ${child.tripId || child.truck || child.id || ""}`,
+                    "GrandSubSection",
+                    Math.max(section.grandChildColumns.length - 1, 0)
+                  ),
+                ])
+              );
+              rows.push(excelRow(section.grandChildColumns.map((column) => excelCell(column.label, "SubHeader", 0, column.align))));
+              grandChildRows.forEach((grandChild) => {
+                const grandChildStyle = ["critical", "high"].includes(String(grandChild.severity || "").toLowerCase())
+                  ? "LateCell"
+                  : "GrandChildCell";
+                rows.push(
+                  excelRow(section.grandChildColumns!.map((column) => excelCell(getValue(grandChild, column.key), grandChildStyle, 0, column.align)))
+                );
+              });
+            }
           });
           rows.push(excelRow(Array.from({ length: section.childColumns.length }, () => excelCell("", "Blank"))));
         }
@@ -533,6 +563,7 @@ export default function Reports() {
   <Style ss:ID="Meta"><Font ss:Color="#666666"/><Interior ss:Color="#F3F6FA" ss:Pattern="Solid"/></Style>
   <Style ss:ID="Section"><Font ss:Bold="1" ss:Size="13" ss:Color="#FFFFFF"/><Interior ss:Color="#305496" ss:Pattern="Solid"/></Style>
   <Style ss:ID="SubSection"><Font ss:Bold="1" ss:Color="#1F4E78"/><Interior ss:Color="#D9EAF7" ss:Pattern="Solid"/></Style>
+  <Style ss:ID="GrandSubSection"><Font ss:Bold="1" ss:Color="#7F6000"/><Interior ss:Color="#FFF2CC" ss:Pattern="Solid"/></Style>
   <Style ss:ID="Header"><Alignment ss:Horizontal="Center"/><Font ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#4472C4" ss:Pattern="Solid"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
   <Style ss:ID="HeaderCenter" ss:Parent="Header"><Alignment ss:Horizontal="Center"/></Style>
   <Style ss:ID="HeaderRight" ss:Parent="Header"><Alignment ss:Horizontal="Right"/></Style>
@@ -545,6 +576,9 @@ export default function Reports() {
   <Style ss:ID="ChildCell" ss:Parent="Cell"><Interior ss:Color="#F8FBFD" ss:Pattern="Solid"/></Style>
   <Style ss:ID="ChildCellCenter" ss:Parent="ChildCell"><Alignment ss:Horizontal="Center"/></Style>
   <Style ss:ID="ChildCellRight" ss:Parent="ChildCell"><Alignment ss:Horizontal="Right"/></Style>
+  <Style ss:ID="GrandChildCell" ss:Parent="Cell"><Interior ss:Color="#FFFDF5" ss:Pattern="Solid"/></Style>
+  <Style ss:ID="GrandChildCellCenter" ss:Parent="GrandChildCell"><Alignment ss:Horizontal="Center"/></Style>
+  <Style ss:ID="GrandChildCellRight" ss:Parent="GrandChildCell"><Alignment ss:Horizontal="Right"/></Style>
   <Style ss:ID="LateCell" ss:Parent="Cell"><Font ss:Color="#B91C1C" ss:Bold="1"/><Interior ss:Color="#FEE2E2" ss:Pattern="Solid"/></Style>
   <Style ss:ID="LateCellCenter" ss:Parent="LateCell"><Alignment ss:Horizontal="Center"/></Style>
   <Style ss:ID="LateCellRight" ss:Parent="LateCell"><Alignment ss:Horizontal="Right"/></Style>
@@ -711,16 +745,35 @@ export default function Reports() {
               { key: "zone", label: "Zone", width: 120 },
               { key: "ward", label: "Ward", width: 120 },
               { key: "route", label: "Route", width: 160 },
+              { key: "tripCount", label: "Trips", width: 80, align: "Center" },
               { key: "anomalyCount", label: "Anomaly Count", width: 110, align: "Center" },
               { key: "deviationCount", label: "Route Deviations", width: 115, align: "Center" },
+              { key: "missedPickupCount", label: "Missed Pickups", width: 115, align: "Center" },
+              { key: "unauthorizedStopCount", label: "Unauthorized Stops", width: 130, align: "Center" },
+              { key: "excessiveIdleCount", label: "Excessive Idle", width: 115, align: "Center" },
+              { key: "reverseMovementCount", label: "Reverse Movement", width: 130, align: "Center" },
+              { key: "outOfSequenceCount", label: "Wrong Order", width: 105, align: "Center" },
               { key: "overspeedCount", label: "Overspeeding", width: 110, align: "Center" },
               { key: "affectedTruckCount", label: "Affected Trucks", width: 115, align: "Center" },
               { key: "worstSeverity", label: "Severity", width: 90, align: "Center" },
               { key: "efficiency", label: "Efficiency %", width: 100, align: "Center" },
             ],
-            childKey: "anomalyDetails",
-            childTitle: "Anomaly Details",
+            childKey: "tripSummaries",
+            childTitle: "Trip Summary",
             childColumns: [
+              { key: "tripId", label: "Trip", width: 170 },
+              { key: "truck", label: "Truck", width: 130 },
+              { key: "driver", label: "Driver", width: 140 },
+              { key: "startTime", label: "Start", width: 85, align: "Center" },
+              { key: "endTime", label: "End", width: 85, align: "Center" },
+              { key: "duration", label: "Duration", width: 90, align: "Center" },
+              { key: "pickups", label: "Pickups", width: 80, align: "Center" },
+              { key: "anomalyCount", label: "Anomalies", width: 90, align: "Center" },
+              { key: "status", label: "Status", width: 105, align: "Center" },
+            ],
+            grandChildKey: "anomalyDetails",
+            grandChildTitle: "Trip Anomaly Details",
+            grandChildColumns: [
               { key: "category", label: "Anomaly Type", width: 140 },
               { key: "time", label: "Time", width: 90, align: "Center" },
               { key: "truck", label: "Truck", width: 130 },
@@ -1473,8 +1526,14 @@ export default function Reports() {
                             <TableHead>Zone</TableHead>
                             <TableHead>Ward</TableHead>
                             <TableHead>Route</TableHead>
+                            <TableHead className="text-center">Trips</TableHead>
                             <TableHead className="text-center">Anomaly Count</TableHead>
                             <TableHead className="text-center">Deviations</TableHead>
+                            <TableHead className="text-center">Missed</TableHead>
+                            <TableHead className="text-center">Stops</TableHead>
+                            <TableHead className="text-center">Idle</TableHead>
+                            <TableHead className="text-center">Reverse</TableHead>
+                            <TableHead className="text-center">Wrong Order</TableHead>
                             <TableHead className="text-center">Overspeeding</TableHead>
                             <TableHead className="text-center">Entries</TableHead>
                             <TableHead className="text-center">Exits</TableHead>
@@ -1487,23 +1546,71 @@ export default function Reports() {
                           {paginate(filteredData, routePage).map((row) => {
                             const rowId = String(row.id || `${row.date}-${row.zone}-${row.ward}-${row.route}`);
                             const details = Array.isArray(row.anomalyDetails) ? row.anomalyDetails : [];
+                            const tripSummaries = Array.isArray(row.tripSummaries) ? row.tripSummaries : [];
                             const isExpanded = Boolean(expandedRouteRows[rowId]);
-                            const anomalyGroups = [
+                            const anomalyDefinitions = [
                               {
-                                id: `${rowId}|overspeeding`,
+                                category: "Overspeeding",
                                 title: "Overspeeding Anomaly",
                                 description: "Speed violations detected against configured threshold",
                                 icon: Zap,
-                                rows: details.filter((detail: any) => detail.category === "Overspeeding"),
                               },
                               {
-                                id: `${rowId}|route-deviation`,
+                                category: "Route Deviation",
                                 title: "Route Deviation Anomaly",
-                                description: "Route deviation, geofence entry, and geofence exit events",
+                                description: "Truck leaves assigned road/path beyond configured route corridor",
                                 icon: AlertTriangle,
-                                rows: details.filter((detail: any) => detail.category !== "Overspeeding"),
                               },
-                            ].filter((group) => group.rows.length > 0);
+                              {
+                                category: "Missed Pickup",
+                                title: "Missed Pickup Anomaly",
+                                description: "Vehicle never entered a bin zone",
+                                icon: AlertTriangle,
+                              },
+                              {
+                                category: "Unauthorized Stop",
+                                title: "Unauthorized Stop Anomaly",
+                                description: "Long halt at unknown location",
+                                icon: AlertTriangle,
+                              },
+                              {
+                                category: "Reverse Movement",
+                                title: "Reverse Movement Anomaly",
+                                description: "Repeated backtracking along the route",
+                                icon: AlertTriangle,
+                              },
+                              {
+                                category: "Excessive Idle",
+                                title: "Excessive Idle Anomaly",
+                                description: "Vehicle stationary too long",
+                                icon: AlertTriangle,
+                              },
+                              {
+                                category: "Out-of-sequence Collection",
+                                title: "Out-of-sequence Collection Anomaly",
+                                description: "Bins visited in wrong order",
+                                icon: AlertTriangle,
+                              },
+                              {
+                                category: "Geofence Entry",
+                                title: "Geofence Entry Anomaly",
+                                description: "Route geofence entry events",
+                                icon: AlertTriangle,
+                              },
+                              {
+                                category: "Geofence Exit",
+                                title: "Geofence Exit Anomaly",
+                                description: "Route geofence exit events",
+                                icon: AlertTriangle,
+                              },
+                            ];
+                            const anomalyGroups = anomalyDefinitions
+                              .map((definition) => ({
+                                ...definition,
+                                id: `${rowId}|${definition.category}`,
+                                rows: details.filter((detail: any) => detail.category === definition.category),
+                              }))
+                              .filter((group) => group.rows.length > 0);
                             const efficiency = Number(row.efficiency) || 0;
                             return (
                               <Fragment key={rowId}>
@@ -1524,12 +1631,18 @@ export default function Reports() {
                                   <TableCell>{row.zone}</TableCell>
                                   <TableCell>{row.ward}</TableCell>
                                   <TableCell>{row.route}</TableCell>
+                                  <TableCell className="text-center"><Badge variant="outline">{row.tripCount || 0}</Badge></TableCell>
                                   <TableCell className="text-center font-semibold text-red-600">{row.anomalyCount || 0}</TableCell>
                                   <TableCell className="text-center">
                                     <Badge variant={(row.deviationCount || 0) === 0 ? "outline" : "destructive"}>
                                       {row.deviationCount || 0}
                                     </Badge>
                                   </TableCell>
+                                  <TableCell className="text-center">{row.missedPickupCount || 0}</TableCell>
+                                  <TableCell className="text-center">{row.unauthorizedStopCount || 0}</TableCell>
+                                  <TableCell className="text-center">{row.excessiveIdleCount || 0}</TableCell>
+                                  <TableCell className="text-center">{row.reverseMovementCount || 0}</TableCell>
+                                  <TableCell className="text-center">{row.outOfSequenceCount || 0}</TableCell>
                                   <TableCell className="text-center text-orange-600 font-medium">{row.overspeedCount || 0}</TableCell>
                                   <TableCell className="text-center">{row.geofenceEntryCount || 0}</TableCell>
                                   <TableCell className="text-center">{row.geofenceExitCount || 0}</TableCell>
@@ -1558,16 +1671,208 @@ export default function Reports() {
                                 </TableRow>
                                 {isExpanded && (
                                   <TableRow className="bg-muted/20 hover:bg-muted/20">
-                                    <TableCell colSpan={13} className="p-0">
+                                    <TableCell colSpan={19} className="p-0">
                                       <div className="p-4">
                                         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                                           <div>
-                                            <p className="text-sm font-semibold">Route Anomaly Details</p>
+                                            <p className="text-sm font-semibold">Route Trip & Anomaly Details</p>
                                             <p className="text-xs text-muted-foreground">
-                                              {row.date} | {row.zone} / {row.ward} | {row.route} | Trucks: {row.affectedTrucks || "-"}
+                                              {row.date} | {row.zone} / {row.ward} | {row.route} | Trips: {row.tripCount || tripSummaries.length || 0}
                                             </p>
                                           </div>
                                           <Badge variant="outline">{details.length} anomaly entries</Badge>
+                                        </div>
+                                        <div className="mb-4 rounded-md border bg-background">
+                                          <Table>
+                                            <TableHeader>
+                                              <TableRow className="bg-muted/50">
+                                                <TableHead className="w-10"></TableHead>
+                                                <TableHead>Trip</TableHead>
+                                                <TableHead>Truck</TableHead>
+                                                <TableHead>Driver</TableHead>
+                                                <TableHead>Start</TableHead>
+                                                <TableHead>End</TableHead>
+                                                <TableHead>Duration</TableHead>
+                                                <TableHead className="text-center">Pickups</TableHead>
+                                                <TableHead className="text-center">Anomalies</TableHead>
+                                                <TableHead>Status</TableHead>
+                                              </TableRow>
+                                            </TableHeader>
+                                            <TableBody>
+                                              {tripSummaries.length === 0 ? (
+                                                <TableRow>
+                                                  <TableCell colSpan={10} className="py-4 text-center text-sm text-muted-foreground">
+                                                    No completed trips found for this route/date. Showing route-level anomalies below.
+                                                  </TableCell>
+                                                </TableRow>
+                                              ) : (
+                                                tripSummaries.map((trip: any) => {
+                                                  const tripRowId = String(trip.id || `${rowId}|${trip.tripId}`);
+                                                  const tripExpanded = Boolean(expandedRouteTripRows[tripRowId]);
+                                                  const tripDetails = Array.isArray(trip.anomalyDetails) ? trip.anomalyDetails : [];
+                                                  const tripAnomalyGroups = anomalyDefinitions
+                                                    .map((definition) => ({
+                                                      ...definition,
+                                                      id: `${tripRowId}|${definition.category}`,
+                                                      rows: tripDetails.filter((detail: any) => detail.category === definition.category),
+                                                    }))
+                                                    .filter((group) => group.rows.length > 0);
+                                                  return (
+                                                    <Fragment key={tripRowId}>
+                                                      <TableRow className={trip.status === "unmatched" ? "bg-yellow-500/5" : ""}>
+                                                        <TableCell>
+                                                          <Button
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            className="h-8 w-8"
+                                                            onClick={() => toggleRouteTripRow(tripRowId)}
+                                                            disabled={tripDetails.length === 0}
+                                                            aria-label={tripExpanded ? "Hide trip anomaly details" : "Show trip anomaly details"}
+                                                          >
+                                                            <ChevronRight className={`h-4 w-4 transition-transform ${tripExpanded ? "rotate-90" : ""}`} />
+                                                          </Button>
+                                                        </TableCell>
+                                                        <TableCell className="font-mono text-xs">{trip.tripId}</TableCell>
+                                                        <TableCell>{trip.truck || "-"}</TableCell>
+                                                        <TableCell>{trip.driver || "-"}</TableCell>
+                                                        <TableCell>{trip.startTime || "-"}</TableCell>
+                                                        <TableCell>{trip.endTime || "-"}</TableCell>
+                                                        <TableCell>{trip.duration || "-"}</TableCell>
+                                                        <TableCell className="text-center">{trip.pickups || "-"}</TableCell>
+                                                        <TableCell className="text-center font-semibold text-red-600">{trip.anomalyCount || 0}</TableCell>
+                                                        <TableCell>
+                                                          <Badge variant={trip.status === "completed" ? "outline" : "secondary"}>{trip.status || "-"}</Badge>
+                                                        </TableCell>
+                                                      </TableRow>
+                                                      {tripExpanded && (
+                                                        <TableRow className="bg-muted/10 hover:bg-muted/10">
+                                                          <TableCell colSpan={10} className="p-0">
+                                                            <div className="p-4">
+                                                              <div className="mb-3 flex items-center justify-between gap-2">
+                                                                <div>
+                                                                  <p className="text-sm font-semibold">Trip Anomaly Categories</p>
+                                                                  <p className="text-xs text-muted-foreground">
+                                                                    {trip.tripId} | {trip.truck || "-"} | {trip.startTime || "-"} - {trip.endTime || "-"}
+                                                                  </p>
+                                                                </div>
+                                                                <Badge variant="outline">{tripDetails.length} anomalies</Badge>
+                                                              </div>
+                                                              <div className="rounded-md border bg-background">
+                                                                <Table>
+                                                                  <TableHeader>
+                                                                    <TableRow className="bg-muted/50">
+                                                                      <TableHead className="w-10"></TableHead>
+                                                                      <TableHead>Anomaly Category</TableHead>
+                                                                      <TableHead className="text-center">Records</TableHead>
+                                                                      <TableHead className="text-center">Latest Time</TableHead>
+                                                                      <TableHead>Severity</TableHead>
+                                                                    </TableRow>
+                                                                  </TableHeader>
+                                                                  <TableBody>
+                                                                    {tripAnomalyGroups.map((group) => {
+                                                                      const Icon = group.icon;
+                                                                      const categoryExpanded = Boolean(expandedRouteCategoryRows[group.id]);
+                                                                      const categoryPage = routeCategoryDetailPages[group.id] || 1;
+                                                                      const pagedCategoryDetails = paginate(group.rows, categoryPage);
+                                                                      const categorySeverity = group.rows.some((detail: any) => ["critical", "high"].includes(String(detail.severity || "").toLowerCase()))
+                                                                        ? "high"
+                                                                        : group.rows.some((detail: any) => ["warning", "medium"].includes(String(detail.severity || "").toLowerCase()))
+                                                                        ? "medium"
+                                                                        : "low";
+                                                                      const latestTime = group.rows[0]?.time || "-";
+
+                                                                      return (
+                                                                        <Fragment key={group.id}>
+                                                                          <TableRow className={categorySeverity === "high" ? "bg-red-500/5" : ""}>
+                                                                            <TableCell>
+                                                                              <Button
+                                                                                variant="ghost"
+                                                                                size="icon"
+                                                                                className="h-8 w-8"
+                                                                                onClick={() => toggleRouteCategoryRow(group.id)}
+                                                                                aria-label={categoryExpanded ? "Hide trip anomaly category details" : "Show trip anomaly category details"}
+                                                                              >
+                                                                                <ChevronRight className={`h-4 w-4 transition-transform ${categoryExpanded ? "rotate-90" : ""}`} />
+                                                                              </Button>
+                                                                            </TableCell>
+                                                                            <TableCell>
+                                                                              <div className="flex items-center gap-2">
+                                                                                <Badge variant="outline" className="gap-1">
+                                                                                  <Icon className="h-3 w-3" />
+                                                                                  {group.title}
+                                                                                </Badge>
+                                                                                <span className="text-xs text-muted-foreground">{group.description}</span>
+                                                                              </div>
+                                                                            </TableCell>
+                                                                            <TableCell className="text-center font-semibold text-red-600">{group.rows.length}</TableCell>
+                                                                            <TableCell className="text-center">{latestTime}</TableCell>
+                                                                            <TableCell>
+                                                                              <Badge
+                                                                                className={
+                                                                                  categorySeverity === "high"
+                                                                                    ? "bg-red-500/20 text-red-700 border-red-500/30"
+                                                                                    : categorySeverity === "medium"
+                                                                                    ? "bg-orange-500/20 text-orange-700 border-orange-500/30"
+                                                                                    : "bg-yellow-500/20 text-yellow-700 border-yellow-500/30"
+                                                                                }
+                                                                              >
+                                                                                {categorySeverity}
+                                                                              </Badge>
+                                                                            </TableCell>
+                                                                          </TableRow>
+                                                                          {categoryExpanded && (
+                                                                            <TableRow className="bg-muted/20 hover:bg-muted/20">
+                                                                              <TableCell colSpan={5} className="p-0">
+                                                                                <div className="p-3">
+                                                                                  <div className="rounded-md border bg-background">
+                                                                                    <Table>
+                                                                                      <TableHeader>
+                                                                                        <TableRow className="bg-muted/50">
+                                                                                          <TableHead>Time</TableHead>
+                                                                                          <TableHead>Description</TableHead>
+                                                                                          <TableHead>Value</TableHead>
+                                                                                          <TableHead>Threshold</TableHead>
+                                                                                          <TableHead>Over By</TableHead>
+                                                                                          <TableHead>Location</TableHead>
+                                                                                          <TableHead>Severity</TableHead>
+                                                                                        </TableRow>
+                                                                                      </TableHeader>
+                                                                                      <TableBody>
+                                                                                        {pagedCategoryDetails.map((detail: any) => (
+                                                                                          <TableRow key={detail.id} className={detail.severity === "high" ? "bg-red-500/5" : ""}>
+                                                                                            <TableCell>{detail.time || "-"}</TableCell>
+                                                                                            <TableCell className="text-xs">{detail.description || "-"}</TableCell>
+                                                                                            <TableCell>{detail.value || "-"}</TableCell>
+                                                                                            <TableCell>{detail.threshold || "-"}</TableCell>
+                                                                                            <TableCell className="text-red-600 font-medium">{detail.overBy || "-"}</TableCell>
+                                                                                            <TableCell className="text-xs">{detail.location || "-"}</TableCell>
+                                                                                            <TableCell><Badge variant="outline">{detail.severity || "low"}</Badge></TableCell>
+                                                                                          </TableRow>
+                                                                                        ))}
+                                                                                      </TableBody>
+                                                                                    </Table>
+                                                                                  </div>
+                                                                                  {renderPagination(categoryPage, group.rows.length, (page) => setRouteCategoryDetailPage(group.id, page))}
+                                                                                </div>
+                                                                              </TableCell>
+                                                                            </TableRow>
+                                                                          )}
+                                                                        </Fragment>
+                                                                      );
+                                                                    })}
+                                                                  </TableBody>
+                                                                </Table>
+                                                              </div>
+                                                            </div>
+                                                          </TableCell>
+                                                        </TableRow>
+                                                      )}
+                                                    </Fragment>
+                                                  );
+                                                })
+                                              )}
+                                            </TableBody>
+                                          </Table>
                                         </div>
                                         <div className="rounded-md border bg-background">
                                           <Table>

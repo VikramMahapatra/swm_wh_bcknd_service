@@ -77,6 +77,7 @@ version = "0.1.0"
 source = { editable = "workers/alert-worker" }
 dependencies = [
     { name = "swm-common" },
+    { name = "swm-db" },
     { name = "swm-models" },
     { name = "swm-redis" },
 ]
@@ -84,6 +85,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "swm-common", editable = "libs/common" },
+    { name = "swm-db", editable = "libs/db" },
     { name = "swm-models", editable = "libs/models" },
     { name = "swm-redis", editable = "libs/redis" },
 ]

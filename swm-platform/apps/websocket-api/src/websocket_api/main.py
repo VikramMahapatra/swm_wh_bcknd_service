@@ -22,6 +22,7 @@ logger = get_logger("websocket_api")
 app = FastAPI(title="SWM WebSocket API", version="0.1.0")
 redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
 LIVE_UPDATES_CHANNEL = "live_updates"
+ALERT_EVENTS_CHANNEL = "alert_events"
 
 
 def _extract_websocket_token(websocket: WebSocket) -> str | None:
@@ -67,7 +68,7 @@ async def realtime_socket(websocket: WebSocket) -> None:
     await websocket.accept()
     WEBSOCKET_CONNECTIONS.inc()
     pubsub = redis_client.pubsub(ignore_subscribe_messages=True)
-    await pubsub.subscribe(LIVE_UPDATES_CHANNEL)
+    await pubsub.subscribe(LIVE_UPDATES_CHANNEL, ALERT_EVENTS_CHANNEL)
     logger.info("websocket_connected")
 
     try:
@@ -86,7 +87,7 @@ async def realtime_socket(websocket: WebSocket) -> None:
             status="closed",
         ).inc()
         WEBSOCKET_CONNECTIONS.dec()
-        await pubsub.unsubscribe(LIVE_UPDATES_CHANNEL)
+        await pubsub.unsubscribe(LIVE_UPDATES_CHANNEL, ALERT_EVENTS_CHANNEL)
         await pubsub.close()
 
 

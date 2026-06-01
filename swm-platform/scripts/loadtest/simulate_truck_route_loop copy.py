@@ -3,8 +3,8 @@ import asyncio
 import json
 import math
 import random
-from datetime import UTC, datetime, timedelta
-from typing import Any, List, Tuple
+from datetime import UTC, datetime
+from typing import List, Tuple
 
 import httpx
 
@@ -36,114 +36,6 @@ def next_speed_kph(
     return round(max(args.min_speed_kph, min(args.max_normal_speed_kph, smoothed)), 2)
 
 
-ALERT_SCENARIOS = [
-    "overspeeding",
-    "excessive_idle",
-    "route_deviation",
-    "missed_pickup",
-    "unauthorized_stop",
-    "unauthorized_halt",
-    "speed_anomaly",
-    "speed_violation",
-    "geofence_breach",
-    "gps_signal_loss",
-    "vehicle_offline",
-]
-
-
-def _parse_scenarios(raw: str) -> list[str]:
-    if not raw.strip():
-        return []
-    values = [item.strip().lower() for item in raw.split(",") if item.strip()]
-    unknown = sorted(set(values) - set(ALERT_SCENARIOS))
-    if unknown:
-        raise ValueError(f"unknown alert scenario(s): {', '.join(unknown)}")
-    return values
-
-
-def _offset_from_route(lat: float, lng: float, meters: float) -> tuple[float, float]:
-    # Approximate meter-to-degree conversion is sufficient for load-test anomaly injection.
-    return lat + (meters / 111_320.0), lng + (meters / (111_320.0 * max(math.cos(math.radians(lat)), 0.01)))
-
-
-def maybe_alert_scenario(rng: random.Random, args: argparse.Namespace) -> str | None:
-    if not args.inject_alerts or not args.alert_scenarios:
-        return None
-    if rng.random() >= args.alert_chance:
-        return None
-    return rng.choice(args.alert_scenarios)
-
-
-def apply_alert_scenario(
-    scenario: str | None,
-    *,
-    rng: random.Random,
-    lat: float,
-    lng: float,
-    speed: float,
-    timestamp: datetime,
-    args: argparse.Namespace,
-) -> tuple[float, float, float, datetime, dict[str, Any]]:
-    if not scenario:
-        return lat, lng, speed, timestamp, {}
-
-    attributes: dict[str, Any] = {
-        "simulated_alert": True,
-        "alert_type": scenario,
-        "alert_severity": "high",
-        "alert_category": "fleet",
-        "alert_reason": f"loadtest injected {scenario}",
-    }
-
-    if scenario in {"overspeeding", "speed_violation", "speed_anomaly"}:
-        speed = round(rng.uniform(args.overspeed_min_kph, args.overspeed_max_kph), 2)
-        attributes.update(
-            {
-                "alert_category": "fleet",
-                "speed_violation": True,
-                "speed_anomaly": scenario == "speed_anomaly",
-                "overspeeding": scenario == "overspeeding",
-                "threshold_kph": args.alert_speed_threshold_kph,
-            }
-        )
-    elif scenario == "excessive_idle":
-        speed = 0.0
-        attributes.update(
-            {
-                "alert_category": "fleet",
-                "idle_seconds": args.alert_idle_seconds,
-                "excessive_idle": True,
-            }
-        )
-    elif scenario in {"unauthorized_stop", "unauthorized_halt"}:
-        speed = 0.0
-        attributes.update(
-            {
-                "alert_category": "operations",
-                "halt_seconds": args.alert_halt_seconds,
-                "unauthorized_stop": scenario == "unauthorized_stop",
-                "unauthorized_halt": scenario == "unauthorized_halt",
-            }
-        )
-    elif scenario == "route_deviation":
-        lat, lng = _offset_from_route(lat, lng, args.route_deviation_offset_m)
-        attributes.update({"alert_category": "route", "route_deviation": True, "offset_m": args.route_deviation_offset_m})
-    elif scenario == "missed_pickup":
-        attributes.update({"alert_category": "operations", "missed_pickup": True})
-    elif scenario == "geofence_breach":
-        lat, lng = _offset_from_route(lat, lng, args.route_deviation_offset_m)
-        attributes.update({"alert_category": "route", "geofence_breach": True, "geofence_event": "breach"})
-    elif scenario == "gps_signal_loss":
-        timestamp = timestamp - timedelta(seconds=args.gps_signal_loss_age_seconds)
-        attributes.update({"alert_category": "device", "gps_signal_loss": True, "alert_severity": "medium"})
-    elif scenario == "vehicle_offline":
-        timestamp = timestamp - timedelta(seconds=args.vehicle_offline_age_seconds)
-        speed = 0.0
-        attributes.update({"alert_category": "device", "vehicle_offline": True, "alert_severity": "critical"})
-
-    return lat, lng, speed, timestamp, attributes
-
-
 async def run(args: argparse.Namespace) -> None:
     url = args.base_url.rstrip("/") + "/webhook/gps"
     headers = {
@@ -155,7 +47,6 @@ async def run(args: argparse.Namespace) -> None:
 
     rng = random.Random(args.seed)
     current_speed = args.speed_kph
-    args.alert_scenarios = _parse_scenarios(args.alert_scenarios)
 
     print(f"Sending GPS loop to {url} for IMEI={args.imei}, vehicle={args.vehicle_id}")
     print(f"Total points per lap: {len(ROUTE_COORDS)}")
@@ -164,11 +55,6 @@ async def run(args: argparse.Namespace) -> None:
         f"baseline={args.speed_kph} km/h, fluctuation=+/-{args.speed_fluctuation_kph} km/h, "
         f"overspeed_chance={args.overspeed_chance:.2f}, overspeed={args.overspeed_min_kph}-{args.overspeed_max_kph} km/h"
     )
-    if args.inject_alerts:
-        print(
-            "Alert injection: "
-            f"chance={args.alert_chance:.2f}, scenarios={','.join(args.alert_scenarios) or 'none'}"
-        )
 
     timeout = httpx.Timeout(args.timeout_sec)
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -180,36 +66,22 @@ async def run(args: argparse.Namespace) -> None:
                 nxt = ROUTE_COORDS[(i + 1) % len(ROUTE_COORDS)]
                 hdg = heading_deg(lat, lng, nxt[1], nxt[0])
                 current_speed = next_speed_kph(rng, current_speed, args)
-                event_ts = datetime.now(tz=UTC)
-                scenario = maybe_alert_scenario(rng, args)
-                send_lat, send_lng, send_speed, event_ts, alert_attributes = apply_alert_scenario(
-                    scenario,
-                    rng=rng,
-                    lat=lat,
-                    lng=lng,
-                    speed=current_speed,
-                    timestamp=event_ts,
-                    args=args,
-                )
                 payload = [{
                     "imei": args.imei,
-                    "latitude": send_lat,
-                    "longitude": send_lng,
-                    "speed": send_speed,
+                    "latitude": lat,
+                    "longitude": lng,
+                    "speed": current_speed,
                     "heading": hdg,
                     "ignition": True,
-                    "timestamp": event_ts.isoformat().replace("+00:00", "Z"),
+                    "timestamp": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
                     # keep in payload for downstream systems that inspect raw fields
                     "vehicle_id": args.vehicle_id,
                     "device_id": args.device_id,
                     "attributes": {
                         "vehicle_id": args.vehicle_id,
                         "device_id": args.device_id,
-                        **alert_attributes,
                     },
                 }]
-                if scenario:
-                    print(f"[{lap}:{i}] injected alert={scenario} speed={send_speed} lat={send_lat:.6f} lng={send_lng:.6f}")
                 try:
                     resp = await client.post(url, headers=headers, json=payload)
                     if resp.status_code >= 300:
@@ -234,19 +106,6 @@ if __name__ == "__main__":
     parser.add_argument("--overspeed-chance", type=float, default=0.12, help="Chance per point to emit an overspeed value")
     parser.add_argument("--overspeed-min-kph", type=float, default=82.0, help="Minimum generated overspeed")
     parser.add_argument("--overspeed-max-kph", type=float, default=96.0, help="Maximum generated overspeed")
-    parser.add_argument("--inject-alerts", action="store_true", help="Enable random simulated alert/anomaly markers")
-    parser.add_argument(
-        "--alert-scenarios",
-        default="overspeeding,excessive_idle,route_deviation,missed_pickup,unauthorized_stop,unauthorized_halt,speed_anomaly,speed_violation,geofence_breach,gps_signal_loss,vehicle_offline",
-        help="Comma-separated alert scenarios to randomly inject",
-    )
-    parser.add_argument("--alert-chance", type=float, default=0.08, help="Chance per point to inject one alert scenario when --inject-alerts is enabled")
-    parser.add_argument("--alert-speed-threshold-kph", type=float, default=80.0, help="Threshold metadata for speed alert scenarios")
-    parser.add_argument("--alert-idle-seconds", type=int, default=240, help="Idle duration metadata for excessive_idle")
-    parser.add_argument("--alert-halt-seconds", type=int, default=240, help="Halt duration metadata for stop/halt alerts")
-    parser.add_argument("--route-deviation-offset-m", type=float, default=120.0, help="Coordinate offset for deviation/geofence scenarios")
-    parser.add_argument("--gps-signal-loss-age-seconds", type=int, default=360, help="Backdate GPS signal loss events by this many seconds")
-    parser.add_argument("--vehicle-offline-age-seconds", type=int, default=720, help="Backdate vehicle offline events by this many seconds")
     parser.add_argument("--seed", type=int, default=None, help="Optional random seed for repeatable speed profile")
     parser.add_argument("--point-interval-sec", type=float, default=2.0)
     parser.add_argument("--timeout-sec", type=float, default=10.0)

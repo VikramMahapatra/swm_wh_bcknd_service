@@ -424,8 +424,51 @@ class ApiService {
     return this.fetchApi(`/alerts${suffix}`);
   }
 
+  async getAlertsPage(filters?: {
+    status?: string;
+    severity?: string;
+    truck_id?: string;
+    alert_type?: string;
+    zone_id?: string;
+    ward_id?: string;
+    route_id?: string;
+    search?: string;
+    date_from?: string;
+    date_to?: string;
+    page?: number;
+    page_size?: number;
+  }): Promise<any> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/alerts/page${suffix}`);
+  }
+
   async getActiveAlerts(): Promise<Alert[]> {
     return this.fetchApi('/alerts/active');
+  }
+
+  async getAlertSummary(): Promise<any> {
+    return this.fetchApi('/alerts/summary');
+  }
+
+  async acknowledgeAlert(alertId: string, notes?: string): Promise<any> {
+    return this.fetchApi(`/alerts/${alertId}/acknowledge`, {
+      method: 'POST',
+      body: JSON.stringify({ notes }),
+    });
+  }
+
+  async resolveAlert(alertId: string, notes?: string): Promise<any> {
+    return this.fetchApi(`/alerts/${alertId}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ notes }),
+    });
+  }
+
+  async escalateAlert(alertId: string, notes?: string): Promise<any> {
+    return this.fetchApi(`/alerts/${alertId}/escalate`, {
+      method: 'POST',
+      body: JSON.stringify({ notes, escalation_status: 'escalated' }),
+    });
   }
 
   async getExpiryAlerts(): Promise<any> {
@@ -757,8 +800,8 @@ class ApiService {
 
   // Tickets
   async getTickets(filters?: { status?: string; priority?: string; category?: string }): Promise<any[]> {
-    const params = new URLSearchParams(filters as Record<string, string>);
-    return this.fetchApi(`/tickets/?${params.toString()}`);
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/tickets${suffix}`);
   }
 
   // Drivers
@@ -871,6 +914,145 @@ class ApiService {
 
   async getCollectionRateTrends(): Promise<any[]> {
     return this.fetchApi('/analytics/trends/collection-rate');
+  }
+
+  async getAnalyticsReport(period: 'daily' | 'monthly' | 'quarterly' | 'half-yearly' | 'annual', filters?: {
+    date_from?: string;
+    date_to?: string;
+    vehicle_id?: string;
+    vendor_id?: string;
+  }): Promise<any> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/analytics/reports/${period}${suffix}`);
+  }
+
+  async getAnalyticsTrips(filters?: {
+    started_from?: string;
+    started_to?: string;
+    vehicle_id?: string;
+    vendor_id?: string;
+    limit?: string;
+  }): Promise<any> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/analytics/trips${suffix}`);
+  }
+
+  async getAnalyticsIdleSegments(filters?: {
+    started_from?: string;
+    started_to?: string;
+    vehicle_id?: string;
+    vendor_id?: string;
+    limit?: string;
+  }): Promise<any> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/analytics/idle-segments${suffix}`);
+  }
+
+  async getAnalyticsOverspeedEvents(filters?: {
+    from_ts?: string;
+    to_ts?: string;
+    vehicle_id?: string;
+    vendor_id?: string;
+    limit?: string;
+  }): Promise<any> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/analytics/overspeed-events${suffix}`);
+  }
+
+  async getAnalyticsGeofenceEvents(filters?: {
+    from_ts?: string;
+    to_ts?: string;
+    vehicle_id?: string;
+    event_type?: string;
+    limit?: string;
+  }): Promise<any> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/analytics/geofence-events${suffix}`);
+  }
+
+  async getAnalyticsVehicleStates(filters?: {
+    vehicle_id?: string;
+    limit?: string;
+  }): Promise<any> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/analytics/vehicle-state${suffix}`);
+  }
+
+  async getAnalyticsGeofenceSummary(filters?: {
+    from_ts?: string;
+    to_ts?: string;
+    vehicle_id?: string;
+    geofence_code?: string;
+    limit?: string;
+  }): Promise<any> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/analytics/geofence-summary${suffix}`);
+  }
+
+  async getAnalyticsVehicleUtilization(filters?: {
+    date_from?: string;
+    date_to?: string;
+    vehicle_id?: string;
+    vendor_id?: string;
+    limit?: string;
+  }): Promise<any> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/analytics/vehicle-utilization${suffix}`);
+  }
+
+  async getAnalyticsRouteDeviationSummary(filters?: {
+    from_ts?: string;
+    to_ts?: string;
+    vehicle_id?: string;
+    limit?: string;
+  }): Promise<any> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/analytics/route-deviation-summary${suffix}`);
+  }
+
+  async getAnalyticsFuelEfficiency(filters?: {
+    date_from?: string;
+    date_to?: string;
+    vehicle_id?: string;
+    vendor_id?: string;
+    limit?: string;
+  }): Promise<any> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/analytics/fuel-efficiency${suffix}`);
+  }
+
+  async getAnalyticsSpeedAnalysis(filters?: {
+    from_ts?: string;
+    to_ts?: string;
+    vehicle_id?: string;
+    vendor_id?: string;
+    limit?: string;
+  }): Promise<any> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/analytics/speed-analysis${suffix}`);
+  }
+
+  async getAnalyticsIdleSummary(filters?: {
+    date_from?: string;
+    date_to?: string;
+    vehicle_id?: string;
+    vendor_id?: string;
+    limit?: string;
+  }): Promise<any> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/analytics/idle-summary${suffix}`);
+  }
+
+  async getAnalyticsPickupPointCrossings(filters?: {
+    from_ts?: string;
+    to_ts?: string;
+    vehicle_id?: string;
+    route_id?: string;
+    pickup_point_id?: string;
+    limit?: string;
+  }): Promise<any> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/analytics/pickup-point-crossings${suffix}`);
   }
 
   // GTC Checkpoints

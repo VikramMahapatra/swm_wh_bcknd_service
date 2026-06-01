@@ -21,7 +21,9 @@ import {
 } from "lucide-react";
 import { useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
+import { apiService } from "@/services/api";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -37,6 +39,14 @@ export default function Header() {
   const { user, logout, isAdmin } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const { data: activeAlerts = [] } = useQuery({
+    queryKey: ["alerts", "active", "bell"],
+    queryFn: () => apiService.getActiveAlerts(),
+    refetchInterval: 30 * 1000,
+    staleTime: 20 * 1000,
+  });
+  const visibleAlerts = activeAlerts.slice(0, 5);
+  const actionableCount = activeAlerts.filter((alert: any) => ["critical", "high"].includes(String(alert.severity || "").toLowerCase())).length || activeAlerts.length;
 
   const breadcrumbs = useMemo(() => {
     const segmentMeta: Record<string, { label: string; icon: typeof LayoutDashboard }> = {
@@ -122,31 +132,52 @@ export default function Header() {
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" className="relative h-9 w-9 text-muted-foreground hover:text-foreground">
               <Bell className="h-4 w-4" />
-              <Badge className="absolute -top-0.5 -right-0.5 h-4 w-4 flex items-center justify-center p-0 text-[10px]">
-                3
-              </Badge>
+              {actionableCount > 0 && (
+                <Badge className="absolute -top-0.5 -right-0.5 h-4 min-w-4 flex items-center justify-center p-0 px-1 text-[10px]">
+                  {actionableCount > 99 ? "99+" : actionableCount}
+                </Badge>
+              )}
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-80">
-            <DropdownMenuLabel>Notifications</DropdownMenuLabel>
+            <DropdownMenuLabel className="flex items-center justify-between">
+              <span>Live Alerts</span>
+              <Badge variant="outline">{activeAlerts.length} active</Badge>
+            </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem>
-              <div className="flex flex-col gap-1">
-                <p className="text-sm font-medium">Route Deviation - MH-12-1234</p>
-                <p className="text-xs text-muted-foreground">2 minutes ago</p>
-              </div>
-            </DropdownMenuItem>
-            <DropdownMenuItem>
-              <div className="flex flex-col gap-1">
-                <p className="text-sm font-medium">Missed Pickup - Zone A</p>
-                <p className="text-xs text-muted-foreground">15 minutes ago</p>
-              </div>
-            </DropdownMenuItem>
-            <DropdownMenuItem>
-              <div className="flex flex-col gap-1">
-                <p className="text-sm font-medium">Device Offline - MH-12-5678</p>
-                <p className="text-xs text-muted-foreground">1 hour ago</p>
-              </div>
+            {visibleAlerts.length === 0 ? (
+              <DropdownMenuItem disabled>
+                <div className="flex flex-col gap-1">
+                  <p className="text-sm font-medium">No active alerts</p>
+                  <p className="text-xs text-muted-foreground">Operations are clear right now.</p>
+                </div>
+              </DropdownMenuItem>
+            ) : (
+              visibleAlerts.map((alert: any) => (
+                <DropdownMenuItem key={alert.id} onClick={() => navigate("/alerts")} className="cursor-pointer">
+                  <div className="flex w-full flex-col gap-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="truncate text-sm font-medium">{alert.title || alert.alert_type || "Alert"}</p>
+                      <Badge
+                        className={
+                          alert.severity === "critical"
+                            ? "bg-destructive/15 text-destructive"
+                            : alert.severity === "high"
+                            ? "bg-orange-500/15 text-orange-600"
+                            : "bg-muted text-muted-foreground"
+                        }
+                      >
+                        {alert.severity || "medium"}
+                      </Badge>
+                    </div>
+                    <p className="truncate text-xs text-muted-foreground">{alert.vehicle_id || alert.imei || "No vehicle"} | {alert.status}</p>
+                  </div>
+                </DropdownMenuItem>
+              ))
+            )}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => navigate("/alerts")} className="cursor-pointer font-medium">
+              View all alerts
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
