@@ -19,7 +19,8 @@ import {
   Link2,
   Car,
   LogOut,
-  ClipboardCheck
+  ClipboardCheck,
+  Scale
 } from 'lucide-react';
 import { NavLink } from '@/components/NavLink';
 import { useAuth } from '@/hooks/useAuth';
@@ -50,7 +51,7 @@ const menuItems = [
   { title: 'Alerts', url: '/alerts', icon: AlertTriangle },
   { title: 'Reports', url: '/reports', icon: FileText },
   { title: 'Analytics', url: '/analytics', icon: BarChart3 },
-  { title: 'GTC Checkpoint', url: '/gtc-checkpoint', icon: ClipboardCheck },
+  { title: 'GTS Checkpoint', url: '/gtc-checkpoint', icon: ClipboardCheck },
   { title: 'Twitter Mentions', url: '/twitter', icon: Twitter },
   { title: 'Tickets', url: '/tickets', icon: Ticket },
   { title: 'Users', url: '/users', icon: Users },
@@ -58,13 +59,15 @@ const menuItems = [
 ];
 
 const masterItems = [
-  { title: 'Drivers', url: '/master/drivers', icon: User },
+  { title: 'Crew', url: '/master/drivers', icon: User },
   { title: 'Vendors', url: '/master/vendors', icon: Building2 },
   { title: 'Vehicles', url: '/master/vehicles', icon: Car },
   { title: 'Devices', url: '/master/devices', icon: Cpu },
   { title: 'Device Assignments', url: '/master/device-assignments', icon: Link2 },
   { title: 'Zones & Wards', url: '/master/zones-wards', icon: MapPin },
   { title: 'Routes & Pickups', url: '/master/routes-pickups', icon: Route },
+  { title: 'GTS & Dump Yards', url: '/master/gts-dump-yards', icon: Building2 },
+  { title: 'Dump Yard Weighment', url: '/master/dump-yard-weighment-entry', icon: Scale },
 ];
 
 export function AppSidebar() {

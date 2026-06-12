@@ -80,6 +80,9 @@ const getTruckFitnessDate = (truck: any) =>
 const getDriverLicenseDate = (driver: any) =>
   getDateValue(driver.licenseExpiry ?? driver.license_expiry);
 
+const isDriverPerson = (person: any) =>
+  String(person?.personType ?? person?.person_type ?? person?.type ?? "driver") === "driver";
+
 export default function Reports() {
   const [searchParams] = useSearchParams();
   const initialTab = searchParams.get("tab") || "daily";
@@ -95,6 +98,7 @@ export default function Reports() {
   // State for API data
   const [trucks, setTrucks] = useState<any[]>([]);
   const [drivers, setDrivers] = useState<any[]>([]);
+  const driverPeople = useMemo(() => drivers.filter(isDriverPerson), [drivers]);
   
   // Sync API data to state
   useEffect(() => {
@@ -142,7 +146,23 @@ export default function Reports() {
     });
   }, [selectedZone, selectedWard, vehiclesData, wardsData]);
   const routeOptions = useMemo(() => routesData as any[], [routesData]);
+  const reportTypeByTab: Record<string, string> = {
+    daily: "daily_pickup_coverage",
+    route: "route_performance",
+    truck: "truck_utilization",
+    "trips-completed": "trip_completed",
+    fuel: "fuel_consumption",
+    driver: "driver_attendance",
+    "late-arrival": "late_arrival",
+    behavior: "driver_behavior",
+    "vehicle-status": "vehicle_status",
+    "spare-usage": "spare_usage",
+    complaints: "complaints",
+    dumpyard: "material_wise_collection",
+    expiry: "expiry",
+  };
   const { data: reportsData = {}, isLoading: isLoadingReports } = useReportsData({
+    report_type: reportTypeByTab[activeTab],
     date_from: activeTab === "vehicle-status" ? undefined : appliedFilters.dateFrom,
     date_to: activeTab === "vehicle-status" ? undefined : appliedFilters.dateTo,
     zone_id: appliedFilters.selectedZone === "all" ? undefined : appliedFilters.selectedZone,
@@ -159,6 +179,7 @@ export default function Reports() {
   const driverAttendanceData: any[] = (reportsData as any).driver_attendance || [];
   const complaintsData: any[] = (reportsData as any).complaints || [];
   const dumpYardData: any[] = (reportsData as any).dump_yard || [];
+  const materialWiseCollectionData: any[] = (reportsData as any).material_wise_collection || dumpYardData;
   const zoneWiseData: any[] = (reportsData as any).zone_wise || [];
   const lateArrivalData: any[] = (reportsData as any).late_arrival || [];
   const driverBehaviorData: any[] = (reportsData as any).driver_behavior || [];
@@ -172,6 +193,9 @@ export default function Reports() {
   const tripTotalPickupPoints = tripCompletedData.reduce((sum, row) => sum + (Number(row.pickups) || 0), 0);
   const tripTotalMinutes = tripCompletedData.reduce((sum, row) => sum + (Number(row.durationMinutes) || 0), 0);
   const tripAvgMinutes = tripTotalCompleted > 0 ? Math.round(tripTotalMinutes / tripTotalCompleted) : 0;
+  const dumpYardTotalEntries = materialWiseCollectionData.reduce((sum, row) => sum + (Number(row.tripCount) || 0), 0);
+  const dumpYardTotalTons = materialWiseCollectionData.reduce((sum, row) => sum + (Number(row.netWeightTon) || 0), 0);
+  const dumpYardAvgTons = dumpYardTotalEntries > 0 ? dumpYardTotalTons / dumpYardTotalEntries : 0;
   
   // Email export dialog state
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
@@ -468,10 +492,10 @@ export default function Reports() {
     return widths.join("");
   };
 
-  const buildExcelWorkbook = (reportTitle: string, sections: ExportSection[]) => {
+  const buildExcelWorkbook = (reportTitle: string, sections: ExportSection[], reportKey = "") => {
     const generatedAt = format(new Date(), "yyyy-MM-dd HH:mm:ss");
     const filterText =
-      reportType === "vehicle_status"
+      reportKey === "vehicle_status"
         ? `Filters: Spot/current status, Zone ${appliedFilters.selectedZone}, Ward ${appliedFilters.selectedWard}, Route ${appliedFilters.selectedRoute}`
         : `Filters: ${appliedFilters.dateFrom} to ${appliedFilters.dateTo}, Zone ${appliedFilters.selectedZone}, Ward ${appliedFilters.selectedWard}, Truck ${appliedFilters.selectedTruck}`;
     const maxColumns = Math.max(
@@ -516,7 +540,7 @@ export default function Reports() {
           );
           rows.push(excelRow(section.childColumns.map((column) => excelCell(column.label, "SubHeader", 0, column.align))));
           childRows.forEach((child) => {
-            const childStyle = child.status === "missed" ? "MissedCell" : child.isGtcPoint ? "GtcCell" : "ChildCell";
+            const childStyle = child.status === "missed" ? "MissedCell" : child.isGTSPoint ? "GTSCell" : "ChildCell";
             rows.push(
               excelRow(section.childColumns!.map((column) => excelCell(getValue(child, column.key), childStyle, 0, column.align)))
             );
@@ -585,9 +609,9 @@ export default function Reports() {
   <Style ss:ID="MissedCell" ss:Parent="ChildCell"><Font ss:Color="#B91C1C"/><Interior ss:Color="#FFF1F2" ss:Pattern="Solid"/></Style>
   <Style ss:ID="MissedCellCenter" ss:Parent="MissedCell"><Alignment ss:Horizontal="Center"/></Style>
   <Style ss:ID="MissedCellRight" ss:Parent="MissedCell"><Alignment ss:Horizontal="Right"/></Style>
-  <Style ss:ID="GtcCell" ss:Parent="ChildCell"><Font ss:Color="#1D4ED8" ss:Bold="1"/><Interior ss:Color="#DBEAFE" ss:Pattern="Solid"/></Style>
-  <Style ss:ID="GtcCellCenter" ss:Parent="GtcCell"><Alignment ss:Horizontal="Center"/></Style>
-  <Style ss:ID="GtcCellRight" ss:Parent="GtcCell"><Alignment ss:Horizontal="Right"/></Style>
+  <Style ss:ID="GTSCell" ss:Parent="ChildCell"><Font ss:Color="#1D4ED8" ss:Bold="1"/><Interior ss:Color="#DBEAFE" ss:Pattern="Solid"/></Style>
+  <Style ss:ID="GTSCellCenter" ss:Parent="GTSCell"><Alignment ss:Horizontal="Center"/></Style>
+  <Style ss:ID="GTSCellRight" ss:Parent="GTSCell"><Alignment ss:Horizontal="Right"/></Style>
   <Style ss:ID="Muted"><Font ss:Color="#6B7280" ss:Italic="1"/></Style>
   <Style ss:ID="Blank"><Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/></Style>
  </Styles>
@@ -598,8 +622,8 @@ export default function Reports() {
 </Workbook>`;
   };
 
-  const downloadExcelWorkbook = (reportTitle: string, sections: ExportSection[]) => {
-    const workbookXml = buildExcelWorkbook(reportTitle, sections);
+  const downloadExcelWorkbook = (reportTitle: string, sections: ExportSection[], reportKey = "") => {
+    const workbookXml = buildExcelWorkbook(reportTitle, sections, reportKey);
     const blob = new Blob([workbookXml], { type: "application/vnd.ms-excel;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -679,9 +703,9 @@ export default function Reports() {
         { key: "zone", label: "Zone", width: 120 },
         { key: "ward", label: "Ward", width: 120 },
         { key: "startTime", label: "Start", width: 80, align: "Center" },
-        { key: "endTime", label: "GTC Entry", width: 90, align: "Center" },
+        { key: "endTime", label: "GTS Entry", width: 90, align: "Center" },
         { key: "duration", label: "Duration", width: 90, align: "Center" },
-        { key: "gtcPoint", label: "GTC Point", width: 230 },
+        { key: "GTSPoint", label: "GTS Point", width: 230 },
         { key: "status", label: "Status", width: 90, align: "Center" },
       ],
       late_arrival: [
@@ -883,14 +907,20 @@ export default function Reports() {
           { key: "resolutionTime", label: "Resolution Time", width: 120 },
         ]);
       case "dumpyard_log":
-        return simpleReport("Dump Yard Log Report", dumpYardData, [
+        return simpleReport("Material Wise Collection Report", materialWiseCollectionData, [
           { key: "date", label: "Date", width: 95 },
-          { key: "truck", label: "Truck", width: 130 },
-          { key: "site", label: "Site", width: 180 },
-          { key: "entryTime", label: "Entry Time", width: 90, align: "Center" },
-          { key: "exitTime", label: "Exit Time", width: 90, align: "Center" },
-          { key: "weight", label: "Weight", width: 90, align: "Right" },
-          { key: "capacity", label: "Capacity %", width: 100, align: "Center" },
+          { key: "zone", label: "Zone", width: 120 },
+          { key: "ward", label: "Ward", width: 120 },
+          { key: "GTS", label: "GTS", width: 200 },
+          { key: "dumpYard", label: "Dump Yard", width: 180 },
+          { key: "vehicle", label: "Vehicle", width: 130 },
+          { key: "registration", label: "Registration", width: 130 },
+          { key: "material", label: "Material", width: 150 },
+          { key: "tripCount", label: "Trips", width: 70, align: "Center" },
+          { key: "grossWeightKg", label: "Gross KG", width: 100, align: "Right" },
+          { key: "tareWeightKg", label: "Tare KG", width: 100, align: "Right" },
+          { key: "netWeightKg", label: "Net KG", width: 100, align: "Right" },
+          { key: "netWeightTon", label: "Net Ton", width: 100, align: "Right" },
         ]);
       case "spare_usage":
         return simpleReport("Spare Vehicle Usage Report", spareUsageData, [
@@ -918,7 +948,7 @@ export default function Reports() {
             },
             {
               title: "Driver License Expiry",
-              rows: drivers,
+              rows: driverPeople,
               columns: [
                 { key: "name", label: "Driver", width: 150 },
                 { key: "license_number", label: "License No.", width: 140 },
@@ -937,7 +967,7 @@ export default function Reports() {
   const handleDownload = (reportType: string, format: string) => {
     if (format === "excel") {
       const exportConfig = makeSectionsForReport(reportType);
-      downloadExcelWorkbook(exportConfig.title, exportConfig.sections);
+      downloadExcelWorkbook(exportConfig.title, exportConfig.sections, reportType);
       toast({
         title: "Excel Download Started",
         description: `${exportConfig.title} has been exported with formatted grids and subgrids.`,
@@ -954,7 +984,7 @@ export default function Reports() {
   const handlePrint = (reportType: string) => {
     window.print();
   };
-  
+
   const handleEmailExport = (reportType: string) => {
     setEmailReportType(reportType);
     setEmailDialogOpen(true);
@@ -2184,7 +2214,7 @@ export default function Reports() {
                   <CheckCircle2 className="h-5 w-5 text-primary" />
                   Trips Completed Report
                 </CardTitle>
-                <CardDescription>Completed trips by truck using route visit, GTC entry, and halt-time logic</CardDescription>
+                <CardDescription>Completed trips by truck using route visit, GTS entry, and halt-time logic</CardDescription>
               </div>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" onClick={() => handleDownload("trips_completed", "excel")}>
@@ -2233,9 +2263,9 @@ export default function Reports() {
                       <TableHead>Zone</TableHead>
                       <TableHead>Ward</TableHead>
                       <TableHead className="text-center">Start</TableHead>
-                      <TableHead className="text-center">GTC Entry</TableHead>
+                      <TableHead className="text-center">GTS Entry</TableHead>
                       <TableHead className="text-center">Duration</TableHead>
-                      <TableHead className="text-center">GTC Point</TableHead>
+                      <TableHead className="text-center">GTS Point</TableHead>
                       <TableHead>Status</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -2268,7 +2298,7 @@ export default function Reports() {
                             <TableCell className="text-center">{row.startTime}</TableCell>
                             <TableCell className="text-center">{row.endTime}</TableCell>
                             <TableCell className="text-center">{row.duration}</TableCell>
-                            <TableCell className="text-center">{row.gtcPoint || "-"}</TableCell>
+                            <TableCell className="text-center">{row.GTSPoint || "-"}</TableCell>
                             <TableCell>
                               <Badge className="bg-green-500/20 text-green-700 border-green-500/30">
                                 completed
@@ -2283,7 +2313,7 @@ export default function Reports() {
                                     <div>
                                       <p className="text-sm font-semibold">Trip Details</p>
                                       <p className="text-xs text-muted-foreground">
-                                        Trip: {row.id || "-"} | Truck: {row.truck} | Route: {row.route || "-"} | Halt rule: {row.haltSeconds || 0}s inside {row.gtcRadiusM || 0}m GTC
+                                        Trip: {row.id || "-"} | Truck: {row.truck} | Route: {row.route || "-"} | Halt rule: {row.haltSeconds || 0}s inside {row.GTSRadiusM || 0}m GTS
                                       </p>
                                     </div>
                                     <Badge variant="outline">{tripDetails.length} route points</Badge>
@@ -2316,9 +2346,9 @@ export default function Reports() {
                                               <TableCell className="font-medium">
                                                 <div className="flex flex-wrap items-center gap-2">
                                                   <span>{point.pickupName || "-"}</span>
-                                                  {point.isGtcPoint && (
+                                                  {point.isGTSPoint && (
                                                     <Badge variant="outline" className="border-blue-500/30 bg-blue-500/10 text-blue-700">
-                                                      GTC
+                                                      GTS
                                                     </Badge>
                                                   )}
                                                 </div>
@@ -3485,9 +3515,9 @@ export default function Reports() {
               <div>
                 <CardTitle className="flex items-center gap-2">
                   <Scale className="h-5 w-5 text-primary" />
-                  Dump Yard & GTP Log Report
+                  Material Wise Collection Report
                 </CardTitle>
-                <CardDescription>Entry counts, weight per trip, and site capacity utilization</CardDescription>
+                <CardDescription>Secondary vehicle weighment by GTS, dump yard, and material category</CardDescription>
               </div>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" onClick={() => handleDownload("dumpyard_log", "excel")}>
@@ -3504,86 +3534,67 @@ export default function Reports() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <Card className="bg-primary/10 border-primary/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-primary">123</p>
-                    <p className="text-xs text-muted-foreground">Total Entries</p>
+                    <p className="text-2xl font-bold text-primary">{dumpYardTotalEntries}</p>
+                    <p className="text-xs text-muted-foreground">Total Trips</p>
                   </CardContent>
                 </Card>
                 <Card className="bg-blue-500/10 border-blue-500/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-blue-600">561.7 T</p>
-                    <p className="text-xs text-muted-foreground">Total Weight</p>
+                    <p className="text-2xl font-bold text-blue-600">{dumpYardTotalTons.toFixed(2)} T</p>
+                    <p className="text-xs text-muted-foreground">Net Collection</p>
                   </CardContent>
                 </Card>
                 <Card className="bg-green-500/10 border-green-500/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-green-600">4.57 T</p>
+                    <p className="text-2xl font-bold text-green-600">{dumpYardAvgTons.toFixed(2)} T</p>
                     <p className="text-xs text-muted-foreground">Avg per Entry</p>
                   </CardContent>
                 </Card>
                 <Card className="bg-orange-500/10 border-orange-500/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-orange-600">56.5%</p>
-                    <p className="text-xs text-muted-foreground">Avg Capacity</p>
+                    <p className="text-2xl font-bold text-orange-600">{new Set(materialWiseCollectionData.map((row) => row.materialType)).size}</p>
+                    <p className="text-xs text-muted-foreground">Material Types</p>
                   </CardContent>
                 </Card>
               </div>
 
-              <div className="grid md:grid-cols-2 gap-6">
-                <div className="h-64">
-                  <p className="text-sm font-medium mb-2 text-muted-foreground">Zone-wise Distribution</p>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={zoneWiseData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={40}
-                        outerRadius={80}
-                        paddingAngle={5}
-                        dataKey="value"
-                        label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                      >
-                        {zoneWiseData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.color} />
-                        ))}
-                      </Pie>
-                      <Tooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-
-                <div className="rounded-md border">
-                  <Table>
-                    <TableHeader>
-                      <TableRow className="bg-muted/50">
-                        <TableHead>Site</TableHead>
-                        <TableHead className="text-center">Entries</TableHead>
-                        <TableHead className="text-center">Total (T)</TableHead>
-                        <TableHead className="text-center">Avg (T)</TableHead>
-                        <TableHead>Capacity</TableHead>
+              <div className="rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/50">
+                      <TableHead>Date</TableHead>
+                      <TableHead>Zone</TableHead>
+                      <TableHead>Ward</TableHead>
+                      <TableHead>GTS</TableHead>
+                      <TableHead>Dump Yard</TableHead>
+                      <TableHead>Vehicle</TableHead>
+                      <TableHead>Material</TableHead>
+                      <TableHead className="text-center">Trips</TableHead>
+                      <TableHead className="text-right">Net KG</TableHead>
+                      <TableHead className="text-right">Net Ton</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {paginate(materialWiseCollectionData, dumpYardPage).length === 0 ? (
+                      <TableRow><TableCell colSpan={10} className="text-center text-muted-foreground py-8">No dump yard weighment records for the selected filters.</TableCell></TableRow>
+                    ) : paginate(materialWiseCollectionData, dumpYardPage).map((row) => (
+                      <TableRow key={row.id}>
+                        <TableCell>{row.date}</TableCell>
+                        <TableCell>{row.zone}</TableCell>
+                        <TableCell>{row.ward}</TableCell>
+                        <TableCell>{row.GTS}</TableCell>
+                        <TableCell>{row.dumpYard}</TableCell>
+                        <TableCell><div className="font-medium">{row.vehicle}</div><div className="text-xs text-muted-foreground">{row.registration}</div></TableCell>
+                        <TableCell><Badge variant="secondary">{row.material}</Badge></TableCell>
+                        <TableCell className="text-center">{row.tripCount}</TableCell>
+                        <TableCell className="text-right">{Number(row.netWeightKg || 0).toFixed(1)}</TableCell>
+                        <TableCell className="text-right font-semibold">{Number(row.netWeightTon || 0).toFixed(3)}</TableCell>
                       </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {dumpYardData.map((row, idx) => (
-                        <TableRow key={idx}>
-                          <TableCell className="font-medium">{row.site}</TableCell>
-                          <TableCell className="text-center">{row.entries}</TableCell>
-                          <TableCell className="text-center">{row.totalWeight}</TableCell>
-                          <TableCell className="text-center">{row.avgWeight}</TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-2">
-                              <Progress value={row.capacity} className="h-2 w-16" />
-                              <span className={`text-xs ${row.capacity >= 70 ? "text-orange-600" : "text-green-600"}`}>
-                                {row.capacity}%
-                              </span>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
+                    ))}
+                  </TableBody>
+                </Table>
               </div>
+              {renderPagination(dumpYardPage, materialWiseCollectionData.length, setDumpYardPage)}
             </CardContent>
           </Card>
         </TabsContent>
@@ -3643,14 +3654,14 @@ export default function Reports() {
                   if (!fitnessParsed) return false;
                   return differenceInDays(fitnessParsed, today) < 0;
                 }).length;
-                const driverLicenseExpiring = drivers.filter((d) => {
+                const driverLicenseExpiring = driverPeople.filter((d) => {
                   const licenseDate = getDriverLicenseDate(d);
                   const licenseParsed = safeParseISO(licenseDate);
                   if (!licenseParsed) return false;
                   const days = differenceInDays(licenseParsed, today);
                   return days >= 0 && days <= 30;
                 }).length;
-                const driverLicenseExpired = drivers.filter((d) => {
+                const driverLicenseExpired = driverPeople.filter((d) => {
                   const licenseDate = getDriverLicenseDate(d);
                   const licenseParsed = safeParseISO(licenseDate);
                   if (!licenseParsed) return false;
@@ -3767,7 +3778,7 @@ export default function Reports() {
                     Driver License Expiry
                   </h3>
                   <Badge variant="outline" className="text-xs">
-                    {drivers.length} Drivers
+                    {driverPeople.length} Drivers
                   </Badge>
                 </div>
                 <div className="rounded-md border">
@@ -3784,7 +3795,7 @@ export default function Reports() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {paginate(drivers, expiryDriverPage).map((driver) => {
+                      {paginate(driverPeople, expiryDriverPage).map((driver) => {
                         const today = new Date();
                         const licenseDate = getDriverLicenseDate(driver);
                         const licenseParsed = safeParseISO(licenseDate);
@@ -3815,7 +3826,7 @@ export default function Reports() {
                     </TableBody>
                   </Table>
                 </div>
-                {renderPagination(expiryDriverPage, drivers.length, setExpiryDriverPage)}
+                {renderPagination(expiryDriverPage, driverPeople.length, setExpiryDriverPage)}
               </div>
             </CardContent>
           </Card>

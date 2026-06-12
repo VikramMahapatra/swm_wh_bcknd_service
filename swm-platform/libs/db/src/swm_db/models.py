@@ -99,6 +99,19 @@ _VEHICLE_NO_RE = re.compile(r"^[A-Z0-9-]{4,24}$")
 _REG_NO_RE = re.compile(r"^[A-Z0-9-]{4,24}$")
 _FUEL_TYPES = {"diesel", "petrol", "cng", "electric", "lng"}
 _VEHICLE_STATUSES = {"operational", "maintenance", "breakdown", "retired"}
+_VEHICLE_CATEGORIES = {"primary", "secondary"}
+_SECONDARY_WASTE_TYPES = {
+    "chicken_waste",
+    "biomedical_waste",
+    "construction_waste",
+    "dry_waste",
+    "green_waste",
+    "mandai",
+    "mix_waste",
+    "mixed_waste",
+    "plastic_waste",
+    "wet_waste",
+}
 _WARD_CODE_RE = re.compile(r"^[A-Z0-9_-]{2,24}$")
 _ROUTE_CODE_RE = re.compile(r"^[A-Z0-9_-]{2,24}$")
 _GEOFENCE_CODE_RE = re.compile(r"^[A-Z0-9_-]{2,32}$")
@@ -536,6 +549,14 @@ class VehicleORM(Base):
             "operational_status IN ('operational','maintenance','breakdown','retired')",
             name="ck_vehicles_operational_status",
         ),
+        CheckConstraint(
+            "vehicle_category IN ('primary','secondary')",
+            name="ck_vehicles_vehicle_category",
+        ),
+        CheckConstraint(
+            "secondary_waste_type IS NULL OR secondary_waste_type IN ('chicken_waste','biomedical_waste','construction_waste','dry_waste','green_waste','mandai','mix_waste','mixed_waste','plastic_waste','wet_waste')",
+            name="ck_vehicles_secondary_waste_type",
+        ),
         CheckConstraint("capacity_kg >= 0", name="ck_vehicles_capacity_kg_non_negative"),
         CheckConstraint(
             "capacity_cubic_meter >= 0",
@@ -559,6 +580,8 @@ class VehicleORM(Base):
     )
     vehicle_number: Mapped[str] = mapped_column(String(24), nullable=False, unique=True)
     registration_number: Mapped[str] = mapped_column(String(24), nullable=False, unique=True)
+    vehicle_category: Mapped[str] = mapped_column(String(16), nullable=False, default="primary", server_default=text("'primary'"))
+    secondary_waste_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     truck_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     capacity_kg: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     capacity_cubic_meter: Mapped[float] = mapped_column(Float, nullable=False, default=0)
@@ -599,6 +622,10 @@ class VehicleORM(Base):
     vendor: Mapped[VendorORM] = relationship()
     ward: Mapped[WardORM] = relationship(back_populates="vehicles")
     route: Mapped[RouteORM | None] = relationship(back_populates="vehicles")
+    secondary_assignments: Mapped[list["SecondaryVehicleAssignmentORM"]] = relationship(
+        back_populates="vehicle",
+        cascade="all, delete-orphan",
+    )
     assignments: Mapped[list["DeviceVehicleAssignmentORM"]] = relationship(
         back_populates="vehicle",
         cascade="all, delete-orphan",
@@ -631,6 +658,24 @@ class VehicleORM(Base):
         if normalized not in _VEHICLE_STATUSES:
             raise ValueError(
                 "operational_status must be one of: operational, maintenance, breakdown, retired"
+            )
+        return normalized
+
+    @validates("vehicle_category")
+    def validate_vehicle_category(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in _VEHICLE_CATEGORIES:
+            raise ValueError("vehicle_category must be one of: primary, secondary")
+        return normalized
+
+    @validates("secondary_waste_type")
+    def validate_secondary_waste_type(self, _: str, value: str | None) -> str | None:
+        if value is None or value == "":
+            return None
+        normalized = value.strip().lower()
+        if normalized not in _SECONDARY_WASTE_TYPES:
+            raise ValueError(
+                "secondary_waste_type must be one of: chicken_waste, dry_waste, green_waste, mandai, mix_waste, wet_waste"
             )
         return normalized
 
@@ -713,6 +758,157 @@ class DeviceVehicleAssignmentORM(Base):
             raise ValueError("assigned_to must be greater than or equal to assigned_from")
         return value
 
+
+class DumpYardORM(Base):
+    __tablename__ = "dump_yards"
+    __table_args__ = (
+        Index("ix_dump_yards_zone_id", "zone_id"),
+        Index("ix_dump_yards_active", "active"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    dump_yard_code: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    dump_yard_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    address: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    capacity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    zone_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("zones.id", ondelete="SET NULL"), nullable=True)
+    ward_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("wards.id", ondelete="SET NULL"), nullable=True)
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lng: Mapped[float | None] = mapped_column(Float, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class GtsPointORM(Base):
+    __tablename__ = "gts_points"
+    __table_args__ = (
+        Index("ix_gts_points_ward_id", "ward_id"),
+        Index("ix_gts_points_active", "active"),
+        Index("ix_gts_points_ward_name", "ward_id", "name", unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    address: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    zone_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("zones.id", ondelete="SET NULL"), nullable=True)
+    ward_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("wards.id", ondelete="SET NULL"), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class SecondaryVehicleAssignmentORM(Base):
+    __tablename__ = "secondary_vehicle_assignments"
+    __table_args__ = (
+        Index("ix_secondary_vehicle_assignments_vehicle", "vehicle_id", "active"),
+        Index("ix_secondary_vehicle_assignments_gtc", "gtc_pickup_point_id"),
+        Index("ix_secondary_vehicle_assignments_dump_yard", "dump_yard_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    vehicle_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("vehicles.id", ondelete="CASCADE"), nullable=False)
+    gtc_pickup_point_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("pickup_points.id", ondelete="RESTRICT"), nullable=False)
+    dump_yard_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("dump_yards.id", ondelete="RESTRICT"), nullable=False)
+    material_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    assigned_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    assigned_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    remarks: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    vehicle: Mapped[VehicleORM] = relationship(back_populates="secondary_assignments")
+    gtc_pickup_point: Mapped["PickupPointORM"] = relationship()
+    dump_yard: Mapped[DumpYardORM] = relationship()
+
+    @validates("material_type")
+    def validate_material_type(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in _SECONDARY_WASTE_TYPES:
+            raise ValueError("material_type must be a supported secondary waste type")
+        return normalized
+
+
+class DumpYardWeighmentORM(Base):
+    __tablename__ = "dump_yard_weighments"
+    __table_args__ = (
+        Index("ix_dump_yard_weighments_service_date", "service_date"),
+        Index("ix_dump_yard_weighments_vehicle_date", "vehicle_id", "service_date"),
+        Index("ix_dump_yard_weighments_material", "material_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    assignment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("secondary_vehicle_assignments.id", ondelete="SET NULL"), nullable=True)
+    vehicle_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("vehicles.id", ondelete="RESTRICT"), nullable=False)
+    gtc_pickup_point_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("pickup_points.id", ondelete="SET NULL"), nullable=True)
+    dump_yard_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("dump_yards.id", ondelete="RESTRICT"), nullable=False)
+    material_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    service_date: Mapped[date] = mapped_column(Date, nullable=False)
+    entry_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    gross_weight_kg: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    tare_weight_kg: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    net_weight_kg: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    slip_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    operator_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    remarks: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    assignment: Mapped[SecondaryVehicleAssignmentORM | None] = relationship()
+    vehicle: Mapped[VehicleORM] = relationship()
+    gtc_pickup_point: Mapped["PickupPointORM | None"] = relationship()
+    dump_yard: Mapped[DumpYardORM] = relationship()
+
+    @validates("material_type")
+    def validate_weighment_material_type(self, _: str, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in _SECONDARY_WASTE_TYPES:
+            raise ValueError("material_type must be a supported secondary waste type")
+        return normalized
+
     def close(self, *, assigned_to: datetime, remarks: str | None = None) -> None:
         self.assigned_to = assigned_to
         self.active = False
@@ -723,7 +919,12 @@ class DeviceVehicleAssignmentORM(Base):
 class DriverORM(Base):
     __tablename__ = "drivers"
     __table_args__ = (
+        CheckConstraint(
+            "person_type IN ('driver','helper','ic_member')",
+            name="ck_drivers_person_type",
+        ),
         Index("ix_drivers_name", "name"),
+        Index("ix_drivers_person_type", "person_type"),
         Index("ix_drivers_vendor_id", "vendor_id"),
         Index("ix_drivers_active", "active"),
     )
@@ -735,6 +936,7 @@ class DriverORM(Base):
         server_default=text("gen_random_uuid()"),
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    person_type: Mapped[str] = mapped_column(String(24), nullable=False, default="driver", server_default=text("'driver'"))
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
     license_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     license_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -804,6 +1006,8 @@ class PickupPointORM(Base):
     lng: Mapped[float | None] = mapped_column(Float, nullable=True)
     expected_pickup_time: Mapped[str | None] = mapped_column(String(32), nullable=True)
     pickup_radius_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_gts: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    gts_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("gts_points.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=text("CURRENT_TIMESTAMP"),

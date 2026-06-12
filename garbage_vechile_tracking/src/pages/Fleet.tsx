@@ -23,6 +23,36 @@ import { apiService } from "@/services/api";
 
 const containerStyle = { width: '100%', height: '100%' };
 
+const formatLocalDate = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const normalizeLookupKey = (value: unknown) => String(value ?? "").trim().toLowerCase();
+
+const isAssignedDriverName = (value: string | undefined) => {
+  const normalized = normalizeLookupKey(value);
+  return normalized && normalized !== "unassigned" && normalized !== "-";
+};
+
+const getCrewPersonType = (person: any) =>
+  normalizeLookupKey(person?.personType ?? person?.person_type ?? person?.type) || "driver";
+
+const formatTripProgress = (truck: TruckData) => {
+  const completed = Number(truck.tripsCompleted || 0);
+  const allowed = Number(truck.tripsAllowed || 0);
+  return allowed > 0 ? `${completed}/${allowed}` : `${completed}`;
+};
+
+const getTripProgressPercent = (truck: TruckData) => {
+  const completed = Number(truck.tripsCompleted || 0);
+  const allowed = Number(truck.tripsAllowed || 0);
+  if (!allowed) return completed > 0 ? 100 : 0;
+  return Math.min(100, Math.round((completed / allowed) * 100));
+};
+
 const statusConfig: Record<TruckStatus, { color: string; label: string; bgClass: string }> = {
   moving: { color: "#22c55e", label: "Moving", bgClass: "bg-success" },
   idle: { color: "#f59e0b", label: "Idle", bgClass: "bg-warning" },
@@ -52,14 +82,17 @@ export default function Fleet() {
   const [vehicles, setVehicles] = useState<any[]>([]);
   const [devices, setDevices] = useState<any[]>([]);
   const [deviceAssignments, setDeviceAssignments] = useState<any[]>([]);
+  const [drivers, setDrivers] = useState<any[]>([]);
+  const [completedTripRows, setCompletedTripRows] = useState<any[]>([]);
   const [isFiltersLoading, setIsFiltersLoading] = useState(false);
   const [isOverlayLoading, setIsOverlayLoading] = useState(false);
   const [isRouteDetailsLoading, setIsRouteDetailsLoading] = useState(false);
   const [crossedPickupPointIds, setCrossedPickupPointIds] = useState<Set<string>>(new Set());
   const mapRef = useRef<google.maps.Map | null>(null);
   const routeCycleResetIndexRef = useRef<Record<string, number>>({});
-  const gtcInsideRef = useRef<Record<string, boolean>>({});
-  const { trucks: liveMapTrucks, isConnected: isLiveFeedConnected, trails } = useSwmLiveFleet();
+  const GTSInsideRef = useRef<Record<string, boolean>>({});
+  const { trucks: rawLiveMapTrucks, isConnected: isLiveFeedConnected, trails } = useSwmLiveFleet();
+  const todayDate = useMemo(() => formatLocalDate(new Date()), []);
 
   const availableZones = useMemo(() => {
     return zones.map((zone) => ({ id: String(zone.id), name: String(zone.name || zone.zone_name || zone.id) }));
@@ -89,18 +122,20 @@ export default function Fleet() {
     const loadMasterData = async () => {
       setIsFiltersLoading(true);
       try {
-        const [zoneRows, wardRows, vehicleRows, deviceRows, assignmentRows] = await Promise.all([
+        const [zoneRows, wardRows, vehicleRows, deviceRows, assignmentRows, driverRows] = await Promise.all([
           apiService.getZones(),
           apiService.getWards(),
           apiService.getVehicles(),
           apiService.getDevices(),
           apiService.getDeviceAssignments(),
+          apiService.getDrivers(),
         ]);
         setZones(Array.isArray(zoneRows) ? zoneRows : []);
         setWards(Array.isArray(wardRows) ? wardRows : []);
         setVehicles(Array.isArray(vehicleRows) ? vehicleRows : []);
         setDevices(Array.isArray(deviceRows) ? deviceRows : []);
         setDeviceAssignments(Array.isArray(assignmentRows) ? assignmentRows : []);
+        setDrivers(Array.isArray(driverRows) ? driverRows : []);
       } finally {
         setIsFiltersLoading(false);
       }
@@ -122,6 +157,31 @@ export default function Fleet() {
     };
     loadRoutes();
   }, [filterZone, filterWard]);
+
+  useEffect(() => {
+    let disposed = false;
+
+    const loadCompletedTrips = async () => {
+      try {
+        const payload = await apiService.getCompletedTrips({
+          date_from: todayDate,
+          date_to: todayDate,
+        });
+        if (disposed) return;
+        const rows = Array.isArray(payload?.items) ? payload.items : [];
+        setCompletedTripRows(rows);
+      } catch {
+        if (!disposed) setCompletedTripRows([]);
+      }
+    };
+
+    loadCompletedTrips();
+    const timer = window.setInterval(loadCompletedTrips, 30 * 1000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [todayDate]);
 
   const routePolylineById = useMemo(() => {
     const map = new Map<string, Array<{ lat: number; lng: number }>>();
@@ -189,6 +249,96 @@ export default function Fleet() {
       null
     );
   }, [vehicleByTruckNumber, vehicleByDeviceIdentity]);
+
+  const driverByVehicleKey = useMemo(() => {
+    const map = new Map<string, any>();
+    const vehicleById = new Map<string, any>();
+
+    for (const vehicle of vehicles) {
+      const vehicleId = normalizeLookupKey(vehicle?.id);
+      if (vehicleId) vehicleById.set(vehicleId, vehicle);
+    }
+
+    const addDriverKey = (key: unknown, driver: any) => {
+      const normalized = normalizeLookupKey(key);
+      if (normalized && !map.has(normalized)) map.set(normalized, driver);
+    };
+
+    for (const driver of drivers) {
+      if (getCrewPersonType(driver) !== "driver") continue;
+      const assignedVehicleId =
+        driver?.assignedTruckId ??
+        driver?.assigned_truck_id ??
+        driver?.assigned_vehicle_id ??
+        driver?.vehicle_id;
+      if (!assignedVehicleId) continue;
+
+      addDriverKey(assignedVehicleId, driver);
+      const vehicle = vehicleById.get(normalizeLookupKey(assignedVehicleId));
+      if (vehicle) {
+        addDriverKey(vehicle.id, driver);
+        addDriverKey(vehicle.vehicle_number, driver);
+        addDriverKey(vehicle.vehicleNumber, driver);
+        addDriverKey(vehicle.registration_number, driver);
+        addDriverKey(vehicle.registrationNumber, driver);
+      }
+    }
+
+    return map;
+  }, [drivers, vehicles]);
+
+  const completedTripsByVehicleKey = useMemo(() => {
+    const map = new Map<string, number>();
+    const addTripKey = (key: unknown) => {
+      const normalized = normalizeLookupKey(key);
+      if (normalized) map.set(normalized, (map.get(normalized) || 0) + 1);
+    };
+
+    for (const trip of completedTripRows) {
+      addTripKey(trip?.vehicle_id);
+      addTripKey(trip?.vehicleId);
+      addTripKey(trip?.truck);
+      addTripKey(trip?.vehicle);
+      addTripKey(trip?.registration);
+      addTripKey(trip?.registration_number);
+    }
+
+    return map;
+  }, [completedTripRows]);
+
+  const liveMapTrucks = useMemo(() => {
+    return rawLiveMapTrucks.map((truck) => {
+      const linkedVehicle = getLinkedVehicle(truck);
+      const identityKeys = [
+        truck.id,
+        truck.truckNumber,
+        truck.gpsDevice?.imei,
+        linkedVehicle?.id,
+        linkedVehicle?.vehicle_number,
+        linkedVehicle?.vehicleNumber,
+        linkedVehicle?.registration_number,
+        linkedVehicle?.registrationNumber,
+      ];
+
+      const matchedDriver = identityKeys
+        .map((key) => driverByVehicleKey.get(normalizeLookupKey(key)))
+        .find(Boolean);
+      const matchedTripCount = identityKeys
+        .map((key) => completedTripsByVehicleKey.get(normalizeLookupKey(key)))
+        .find((count) => typeof count === "number");
+
+      const driverName = String(matchedDriver?.name || matchedDriver?.driver_name || "").trim();
+      const driverId = String(matchedDriver?.id || matchedDriver?.driver_id || "").trim();
+      const tripsCompleted = Math.max(Number(truck.tripsCompleted || 0), Number(matchedTripCount || 0));
+
+      return {
+        ...truck,
+        driver: isAssignedDriverName(truck.driver) ? truck.driver : driverName || truck.driver,
+        driverId: driverId || truck.driverId,
+        tripsCompleted,
+      };
+    });
+  }, [rawLiveMapTrucks, getLinkedVehicle, driverByVehicleKey, completedTripsByVehicleKey]);
 
   const activeRouteId = useMemo(() => {
     if (filterRoute !== "all") return filterRoute;
@@ -316,7 +466,7 @@ export default function Fleet() {
         setSelectedRoutePickupPoints([]);
         setCrossedPickupPointIds(new Set());
         routeCycleResetIndexRef.current = {};
-        gtcInsideRef.current = {};
+        GTSInsideRef.current = {};
         return;
       }
       setIsRouteDetailsLoading(true);
@@ -382,21 +532,21 @@ export default function Fleet() {
       const trackPoints = [...trailPoints, trackingTruck.position];
       const cycleKey = `${trackingTruck.id}:${activeRouteId || "route"}`;
 
-      // Reaching the last pickup point means the truck reached the GTC and the route cycle is complete.
-      // Once reset, the next trip starts from the next GPS point after this GTC entry.
-      const isLatestAtGtc =
+      // Reaching the last pickup point means the truck reached the GTS and the route cycle is complete.
+      // Once reset, the next trip starts from the next GPS point after this GTS entry.
+      const isLatestAtGTS =
         lastPickupPoint &&
         distanceMeters(trackingTruck.position, { lat: lastPickupPoint.lat, lng: lastPickupPoint.lng }) <= thresholdMeters;
-      if (isLatestAtGtc) {
+      if (isLatestAtGTS) {
         routeCycleResetIndexRef.current[cycleKey] = trackPoints.length - 1;
-        if (!gtcInsideRef.current[cycleKey]) {
-          gtcInsideRef.current[cycleKey] = true;
+        if (!GTSInsideRef.current[cycleKey]) {
+          GTSInsideRef.current[cycleKey] = true;
           setCrossedPickupPointIds(new Set());
         }
         return;
       }
 
-      gtcInsideRef.current[cycleKey] = false;
+      GTSInsideRef.current[cycleKey] = false;
     }
 
     const crossedNow = new Set<string>();
@@ -991,7 +1141,7 @@ export default function Fleet() {
                                 <p><span className="font-medium">Driver:</span> {truck.driver}</p>
                                 <p><span className="font-medium">Route:</span> {truck.route}</p>
                                 <p><span className="font-medium">Speed:</span> {truck.speed} km/h</p>
-                                <p><span className="font-medium">Trips:</span> {truck.tripsCompleted}/{truck.tripsAllowed}</p>
+                                <p><span className="font-medium">Trips:</span> {formatTripProgress(truck)}</p>
                                 {truck.assignedGTP && <p><span className="font-medium">GTP:</span> {truck.assignedGTP}</p>}
                                 <p className="text-xs text-blue-600">Live stream update</p>
                               </div>
@@ -1062,11 +1212,11 @@ export default function Fleet() {
                         <TrendingUp className="h-3 w-3" />
                         Trips Today
                       </p>
-                      <p className="font-semibold text-foreground">{currentSelectedTruck.tripsCompleted} / {currentSelectedTruck.tripsAllowed}</p>
+                      <p className="font-semibold text-foreground">{formatTripProgress(currentSelectedTruck)}</p>
                       <div className="relative h-2 bg-muted rounded-full overflow-hidden">
                         <div 
                           className="absolute inset-0 bg-gradient-to-r from-success to-success/80 rounded-full transition-all duration-500"
-                          style={{ width: `${(currentSelectedTruck.tripsCompleted / currentSelectedTruck.tripsAllowed) * 100}%` }}
+                          style={{ width: `${getTripProgressPercent(currentSelectedTruck)}%` }}
                         />
                       </div>
                     </CardContent>
@@ -1133,7 +1283,7 @@ export default function Fleet() {
                             {statusConfig[truck.status].label}
                           </Badge>
                         </td>
-                        <td className="p-3">{truck.tripsCompleted}/{truck.tripsAllowed}</td>
+                        <td className="p-3">{formatTripProgress(truck)}</td>
                         <td className="p-3">
                           <div className="flex items-center gap-1">
                             <Signal className={`h-3 w-3 ${truck.gpsDevice.status === "online" ? "text-success" : truck.gpsDevice.status === "warning" ? "text-warning" : "text-destructive"}`} />

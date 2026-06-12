@@ -16,11 +16,23 @@ import { Plus, Search, Edit, Trash2, Phone, Mail, User, Download, Loader2, UserC
 import { PageHeader } from '@/components/PageHeader';
 
 const UNASSIGNED_TRUCK_VALUE = 'unassigned';
+const CREW_TYPE_OPTIONS = [
+  { value: 'driver', label: 'Driver' },
+  { value: 'helper', label: 'Helper' },
+  { value: 'ic_member', label: 'IC Member' },
+] as const;
+
+const getCrewTypeLabel = (type?: string) =>
+  CREW_TYPE_OPTIONS.find((item) => item.value === type)?.label || 'Driver';
 
 function normalizeDriver(driver: any): Driver {
+  const personType = ['driver', 'helper', 'ic_member'].includes(String(driver?.personType ?? driver?.person_type ?? driver?.type ?? ''))
+    ? String(driver?.personType ?? driver?.person_type ?? driver?.type)
+    : 'driver';
   return {
     id: String(driver?.id ?? ''),
     name: String(driver?.name ?? ''),
+    personType: personType as Driver['personType'],
     phone: String(driver?.phone ?? ''),
     email: String(driver?.email ?? ''),
     licenseNumber: String(driver?.licenseNumber ?? driver?.license_number ?? ''),
@@ -60,6 +72,7 @@ export default function MasterDrivers() {
   const [trucks, setTrucks] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [typeFilter, setTypeFilter] = useState<string>('all');
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editingDriver, setEditingDriver] = useState<Driver | null>(null);
   
@@ -77,6 +90,7 @@ export default function MasterDrivers() {
     name: '',
     phone: '',
     email: '',
+    personType: 'driver',
     licenseNumber: '',
     licenseExpiry: '',
     address: '',
@@ -99,9 +113,11 @@ export default function MasterDrivers() {
                          driver.phone.includes(searchQuery) ||
                          driver.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
                          driver.licenseNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                         getCrewTypeLabel(driver.personType).toLowerCase().includes(searchQuery.toLowerCase()) ||
                          getTruckInfo(driver.assignedTruckId).toLowerCase().includes(searchQuery.toLowerCase());
     const matchesStatus = statusFilter === 'all' || driver.status === statusFilter;
-    return matchesSearch && matchesStatus;
+    const matchesType = typeFilter === 'all' || driver.personType === typeFilter;
+    return matchesSearch && matchesStatus && matchesType;
   });
 
   const getStatusBadge = (status: string) => {
@@ -117,6 +133,7 @@ export default function MasterDrivers() {
     try {
       const payload = {
         name: formData.name,
+        personType: formData.personType || 'driver',
         phone: formData.phone,
         email: formData.email,
         licenseNumber: formData.licenseNumber,
@@ -131,17 +148,17 @@ export default function MasterDrivers() {
       if (editingDriver) {
         const updated = normalizeDriver(await apiService.updateDriver(editingDriver.id, payload));
         setDrivers(prev => prev.map(d => d.id === editingDriver.id ? updated : d));
-        toast({ title: "Driver Updated", description: "Driver information has been updated." });
+        toast({ title: "Crew Member Updated", description: "Crew member information has been updated." });
       } else {
         const created = normalizeDriver(await apiService.createDriver(payload));
         setDrivers(prev => [...prev, created]);
-        toast({ title: "Driver Added", description: "New driver has been added successfully." });
+        toast({ title: "Crew Member Added", description: "New crew member has been added successfully." });
       }
       await queryClient.invalidateQueries({ queryKey: ['drivers'] });
       resetForm();
     } catch (error) {
       toast({
-        title: "Unable to save driver",
+        title: "Unable to save crew member",
         description: error instanceof Error ? error.message : "Please try again.",
         variant: "destructive",
       });
@@ -150,17 +167,17 @@ export default function MasterDrivers() {
 
   const handleDelete = async (id: string) => {
     const driver = drivers.find((item) => item.id === id);
-    if (!window.confirm(`Delete driver ${driver?.name || id}? This cannot be undone.`)) {
+    if (!window.confirm(`Delete crew member ${driver?.name || id}? This cannot be undone.`)) {
       return;
     }
     try {
       await apiService.deleteDriver(id);
       setDrivers(prev => prev.filter(d => d.id !== id));
       await queryClient.invalidateQueries({ queryKey: ['drivers'] });
-      toast({ title: "Driver Deleted", description: "Driver has been removed from the system." });
+      toast({ title: "Crew Member Deleted", description: "Crew member has been removed from the system." });
     } catch (error) {
       toast({
-        title: "Unable to delete driver",
+        title: "Unable to delete crew member",
         description: error instanceof Error ? error.message : "Please try again.",
         variant: "destructive",
       });
@@ -172,6 +189,7 @@ export default function MasterDrivers() {
       name: '',
       phone: '',
       email: '',
+      personType: 'driver',
       licenseNumber: '',
       licenseExpiry: '',
       address: '',
@@ -191,14 +209,14 @@ export default function MasterDrivers() {
   };
 
   const exportToCSV = () => {
-    const headers = ['ID', 'Name', 'Phone', 'Email', 'License Number', 'License Expiry', 'Join Date', 'Status', 'Assigned Truck', 'Emergency Contact', 'Address'];
-    const rows = filteredDrivers.map(d => [d.id, d.name, d.phone, d.email, d.licenseNumber, d.licenseExpiry, d.joinDate, d.status, getTruckInfo(d.assignedTruckId), d.emergencyContact, d.address]);
+    const headers = ['ID', 'Name', 'Type', 'Phone', 'Email', 'License Number', 'License Expiry', 'Join Date', 'Status', 'Assigned Truck', 'Emergency Contact', 'Address'];
+    const rows = filteredDrivers.map(d => [d.id, d.name, getCrewTypeLabel(d.personType), d.phone, d.email, d.licenseNumber, d.licenseExpiry, d.joinDate, d.status, getTruckInfo(d.assignedTruckId), d.emergencyContact, d.address]);
     const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'drivers.csv';
+    a.download = 'crew-members.csv';
     a.click();
   };
 
@@ -206,8 +224,8 @@ export default function MasterDrivers() {
     <div className="container mx-auto px-4 py-6 space-y-6">
       <PageHeader
         category="Master Data"
-        title="Driver Management"
-        description="Manage driver information, assignments, and licensing"
+        title="Crew Management"
+        description="Manage drivers, helpers, IC members, assignments, and licensing"
         icon={UserCheck}
         actions={
           <>
@@ -216,12 +234,12 @@ export default function MasterDrivers() {
             </Button>
             <Dialog open={isAddDialogOpen} onOpenChange={(open) => { if (!open) resetForm(); setIsAddDialogOpen(open); }}>
               <DialogTrigger asChild>
-                <Button><Plus className="h-4 w-4 mr-2" /> Add Driver</Button>
+                <Button><Plus className="h-4 w-4 mr-2" /> Add Crew Member</Button>
               </DialogTrigger>
             <DialogContent className="max-w-2xl">
               <DialogHeader>
-                <DialogTitle>{editingDriver ? 'Edit Driver' : 'Add New Driver'}</DialogTitle>
-                <DialogDescription>Enter the driver details below</DialogDescription>
+                <DialogTitle>{editingDriver ? 'Edit Crew Member' : 'Add New Crew Member'}</DialogTitle>
+                <DialogDescription>Enter the crew member details below</DialogDescription>
               </DialogHeader>
               <div className="grid gap-4 py-4">
                 <div className="grid grid-cols-2 gap-4">
@@ -232,6 +250,30 @@ export default function MasterDrivers() {
                   <div className="space-y-2">
                     <Label>Phone Number</Label>
                     <Input value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>Type</Label>
+                    <Select value={formData.personType || 'driver'} onValueChange={(value) => setFormData({ ...formData, personType: value as Driver['personType'] })}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {CREW_TYPE_OPTIONS.map((item) => (
+                          <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Status</Label>
+                    <Select value={formData.status} onValueChange={(value) => setFormData({ ...formData, status: value as Driver['status'] })}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="active">Active</SelectItem>
+                        <SelectItem value="inactive">Inactive</SelectItem>
+                        <SelectItem value="on_leave">On Leave</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -287,23 +329,12 @@ export default function MasterDrivers() {
                     <Label>Address</Label>
                     <Input value={formData.address} onChange={(e) => setFormData({ ...formData, address: e.target.value })} />
                   </div>
-                  <div className="space-y-2">
-                    <Label>Status</Label>
-                    <Select value={formData.status} onValueChange={(value) => setFormData({ ...formData, status: value as Driver['status'] })}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="active">Active</SelectItem>
-                        <SelectItem value="inactive">Inactive</SelectItem>
-                        <SelectItem value="on_leave">On Leave</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
                 </div>
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={resetForm}>Cancel</Button>
                 <Button onClick={handleSubmit} disabled={!formData.name?.trim()}>
-                  {editingDriver ? 'Update' : 'Add'} Driver
+                  {editingDriver ? 'Update' : 'Add'} Crew Member
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -316,10 +347,13 @@ export default function MasterDrivers() {
       <div className="grid gap-4 md:grid-cols-4">
         <Card className="bg-card/50 border-border/50">
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total Drivers</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Total Crew</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{drivers.length}</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {drivers.filter(d => d.personType === 'driver').length} drivers / {drivers.filter(d => d.personType === 'helper').length} helpers / {drivers.filter(d => d.personType === 'ic_member').length} IC
+            </div>
           </CardContent>
         </Card>
         <Card className="bg-success/10 border-success/30">
@@ -354,8 +388,17 @@ export default function MasterDrivers() {
           <div className="flex flex-col sm:flex-row gap-4">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input placeholder="Search by name, phone, email, license, truck..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-10" />
+              <Input placeholder="Search by name, type, phone, email, license, truck..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-10" />
             </div>
+            <Select value={typeFilter} onValueChange={setTypeFilter}>
+              <SelectTrigger className="w-[180px]"><SelectValue placeholder="Filter by type" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Types</SelectItem>
+                {CREW_TYPE_OPTIONS.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Select value={statusFilter} onValueChange={setStatusFilter}>
               <SelectTrigger className="w-[180px]"><SelectValue placeholder="Filter by status" /></SelectTrigger>
               <SelectContent>
@@ -375,7 +418,8 @@ export default function MasterDrivers() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Driver</TableHead>
+                <TableHead>Crew Member</TableHead>
+                <TableHead>Type</TableHead>
                 <TableHead>Contact</TableHead>
                 <TableHead>License</TableHead>
                 <TableHead>Assigned Truck</TableHead>
@@ -388,16 +432,16 @@ export default function MasterDrivers() {
             <TableBody>
               {isLoadingDrivers && (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
+                  <TableCell colSpan={9} className="py-8 text-center text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin inline mr-2" />
-                    Loading drivers...
+                    Loading crew members...
                   </TableCell>
                 </TableRow>
               )}
               {!isLoadingDrivers && filteredDrivers.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
-                    No drivers found.
+                  <TableCell colSpan={9} className="py-8 text-center text-muted-foreground">
+                    No crew members found.
                   </TableCell>
                 </TableRow>
               )}
@@ -413,6 +457,9 @@ export default function MasterDrivers() {
                         <div className="text-sm text-muted-foreground">{driver.id}</div>
                       </div>
                     </div>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="secondary">{getCrewTypeLabel(driver.personType)}</Badge>
                   </TableCell>
                   <TableCell>
                     <div className="space-y-1">

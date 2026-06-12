@@ -112,6 +112,7 @@ export function useExpiryAlerts(): UseQueryResult<any[], Error> {
 }
 
 export function useReportsData(filters?: {
+  report_type?: string;
   date_from?: string;
   date_to?: string;
   zone_id?: string;
@@ -281,16 +282,16 @@ export function useDrivers(): UseQueryResult<any[], Error> {
   });
 }
 
-// Hook for fetching GTC checkpoint entries
-export function useGtcCheckpoints(filters?: {
+// Hook for fetching GTS checkpoint entries
+export function useGTSCheckpoints(filters?: {
   truck_id?: string;
   date?: string;
   date_from?: string;
   date_to?: string;
 }): UseQueryResult<any[], Error> {
   return useQuery({
-    queryKey: ['gtc-checkpoints', filters],
-    queryFn: () => apiService.getGtcCheckpoints(filters),
+    queryKey: ['GTS-checkpoints', filters],
+    queryFn: () => apiService.getGTSCheckpoints(filters),
     staleTime: 30 * 1000, // 30 seconds
     gcTime: 5 * 60 * 1000, // 5 minutes
   });

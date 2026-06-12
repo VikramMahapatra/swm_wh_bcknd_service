@@ -50,6 +50,15 @@ ALERT_SCENARIOS = [
     "vehicle_offline",
 ]
 
+WEIGHMENT_WEIGHT_RANGES_KG = {
+    "wet_waste": (400, 1200),
+    "dry_waste": (200, 700),
+    "plastic_waste": (100, 300),
+    "construction_waste": (600, 1800),
+    "mixed_waste": (350, 1000),
+    "biomedical_waste": (40, 160),
+}
+
 
 def _parse_scenarios(raw: str) -> list[str]:
     if not raw.strip():
@@ -59,6 +68,172 @@ def _parse_scenarios(raw: str) -> list[str]:
     if unknown:
         raise ValueError(f"unknown alert scenario(s): {', '.join(unknown)}")
     return values
+
+
+def _parse_csv_values(raw: str) -> list[str]:
+    return [item.strip().lower() for item in raw.split(",") if item.strip()]
+
+
+async def _admin_login(client: httpx.AsyncClient, args: argparse.Namespace) -> dict[str, str] | None:
+    login_url = args.admin_api_url.rstrip("/") + "/v1/auth/login"
+    try:
+        resp = await client.post(
+            login_url,
+            json={"username": args.admin_username, "password": args.admin_password},
+        )
+        if resp.status_code >= 300:
+            print(f"Weighment generation disabled: admin login failed HTTP {resp.status_code} -> {resp.text[:160]}")
+            return None
+        token = resp.json().get("access_token")
+        if not token:
+            print("Weighment generation disabled: admin login did not return access_token")
+            return None
+        return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    except Exception as exc:
+        print(f"Weighment generation disabled: admin API unavailable ({exc})")
+        return None
+
+
+async def _prepare_weighment_context(
+    client: httpx.AsyncClient,
+    args: argparse.Namespace,
+) -> dict[str, Any] | None:
+    if not args.generate_weighments:
+        return None
+    headers = await _admin_login(client, args)
+    if headers is None:
+        return None
+
+    admin_base = args.admin_api_url.rstrip("/")
+    vehicle_query = args.weighment_vehicle_search or args.vehicle_id
+    try:
+        vehicle_resp = await client.get(
+            f"{admin_base}/vehicles/search",
+            params={"q": vehicle_query, "page_size": 10},
+            headers=headers,
+        )
+        vehicle_resp.raise_for_status()
+        vehicles = vehicle_resp.json()
+        vehicle = next(
+            (
+                item
+                for item in vehicles
+                if str(item.get("vehicle_number")) == args.vehicle_id
+                or str(item.get("registration_number")) == args.vehicle_id
+            ),
+            vehicles[0] if vehicles else None,
+        )
+        if not vehicle:
+            print(f"Weighment generation disabled: no vehicle found for {vehicle_query}")
+            return None
+
+        detail_resp = await client.get(f"{admin_base}/vehicles/{vehicle['id']}/details", headers=headers)
+        detail_resp.raise_for_status()
+        vehicle_details = detail_resp.json()
+
+        dump_yard_id = args.dump_yard_id or vehicle_details.get("dump_yard_id")
+        dump_yards: list[dict[str, Any]] = []
+        if not dump_yard_id:
+            yards_resp = await client.get(f"{admin_base}/dump-yards", params={"active": "true"}, headers=headers)
+            yards_resp.raise_for_status()
+            yards_payload = yards_resp.json()
+            dump_yards = yards_payload.get("items", yards_payload) if isinstance(yards_payload, dict) else yards_payload
+            if dump_yards:
+                dump_yard_id = dump_yards[0].get("id")
+        if not dump_yard_id:
+            print("Weighment generation disabled: no dump yard available")
+            return None
+
+        materials = _parse_csv_values(args.weighment_materials)
+        materials = [material for material in materials if material in WEIGHMENT_WEIGHT_RANGES_KG]
+        if not materials:
+            materials = list(WEIGHMENT_WEIGHT_RANGES_KG)
+
+        print(
+            "Weighment generation enabled: "
+            f"vehicle={vehicle_details.get('vehicle_number')}, dump_yard_id={dump_yard_id}, materials={','.join(materials)}"
+        )
+        return {
+            "headers": headers,
+            "vehicle": vehicle_details,
+            "dump_yard_id": dump_yard_id,
+            "materials": materials,
+            "created_keys": set(),
+        }
+    except Exception as exc:
+        print(f"Weighment generation disabled: failed to prepare admin context ({exc})")
+        return None
+
+
+def _simulated_weighment_time(service_day: datetime, lap: int, index: int, args: argparse.Namespace) -> datetime:
+    start = service_day.replace(hour=args.weighment_start_hour, minute=5, second=0, microsecond=0)
+    return start + timedelta(minutes=(lap - 1) * args.weighment_lap_spacing_min + index * args.weighment_entry_spacing_min)
+
+
+async def _create_weighments_for_completed_route(
+    client: httpx.AsyncClient,
+    args: argparse.Namespace,
+    rng: random.Random,
+    context: dict[str, Any] | None,
+    lap: int,
+) -> None:
+    if context is None:
+        return
+    now_local = datetime.now()
+    if now_local.hour < args.weighment_start_hour:
+        return
+
+    admin_base = args.admin_api_url.rstrip("/")
+    vehicle = context["vehicle"]
+    service_days = [
+        (now_local - timedelta(days=days_back)).replace(hour=0, minute=0, second=0, microsecond=0)
+        for days_back in range(args.weighment_days_back, -1, -1)
+    ]
+    for day_index, service_day in enumerate(service_days):
+        material = rng.choice(context["materials"])
+        low, high = WEIGHMENT_WEIGHT_RANGES_KG[material]
+        net_weight = round(rng.uniform(low, high), 1)
+        tare_weight = round(rng.uniform(args.weighment_tare_min_kg, args.weighment_tare_max_kg), 1)
+        gross_weight = round(net_weight + tare_weight, 1)
+        entry_time = _simulated_weighment_time(service_day, lap, day_index, args)
+        key = (vehicle.get("vehicle_id") or vehicle.get("id"), context["dump_yard_id"], material, entry_time.isoformat())
+        if key in context["created_keys"]:
+            continue
+        context["created_keys"].add(key)
+        payload = {
+            "vehicle_id": vehicle.get("vehicle_id") or vehicle.get("id"),
+            "gts_pickup_point_id": vehicle.get("gts_pickup_point_id"),
+            "dump_yard_id": context["dump_yard_id"],
+            "material_type": material,
+            "service_date": service_day.date().isoformat(),
+            "entry_time": entry_time.isoformat(),
+            "gross_weight_kg": gross_weight,
+            "tare_weight_kg": tare_weight,
+            "net_weight_kg": net_weight,
+            "slip_number": f"SIM-{service_day:%Y%m%d}-{args.vehicle_id}-{lap}-{day_index}",
+            "operator_name": "Load Test Simulator",
+            "remarks": (
+                f"Simulated weighment for {args.vehicle_id}; "
+                f"route={vehicle.get('route_name')}, ward={vehicle.get('ward_name')}, zone={vehicle.get('zone_name')}"
+            ),
+        }
+        try:
+            resp = await client.post(
+                f"{admin_base}/dump-yard-weighment",
+                headers=context["headers"],
+                json=payload,
+            )
+            if resp.status_code == 409:
+                print(f"[lap {lap}] skipped duplicate weighment {payload['slip_number']}")
+            elif resp.status_code >= 300:
+                print(f"[lap {lap}] weighment HTTP {resp.status_code} -> {resp.text[:200]}")
+            else:
+                print(
+                    f"[lap {lap}] weighment {payload['service_date']} {material} "
+                    f"net={net_weight}kg truck={args.vehicle_id}"
+                )
+        except Exception as exc:
+            print(f"[lap {lap}] weighment send failed: {exc}")
 
 
 def _offset_from_route(lat: float, lng: float, meters: float) -> tuple[float, float]:
@@ -172,6 +347,7 @@ async def run(args: argparse.Namespace) -> None:
 
     timeout = httpx.Timeout(args.timeout_sec)
     async with httpx.AsyncClient(timeout=timeout) as client:
+        weighment_context = await _prepare_weighment_context(client, args)
         lap = 0
         while True:
             lap += 1
@@ -218,6 +394,7 @@ async def run(args: argparse.Namespace) -> None:
                     print(f"[{lap}:{i}] send failed: {exc}")
 
                 await asyncio.sleep(args.point_interval_sec)
+            await _create_weighments_for_completed_route(client, args, rng, weighment_context, lap)
 
 
 if __name__ == "__main__":
@@ -252,6 +429,23 @@ if __name__ == "__main__":
     parser.add_argument("--timeout-sec", type=float, default=10.0)
     parser.add_argument("--webhook-secret", default="", help="Webhook secret value if ingestion webhook auth is enabled")
     parser.add_argument("--webhook-secret-header", default="X-Webhook-Secret", help="Webhook secret header name")
+    parser.add_argument("--generate-weighments", action="store_true", help="Create dump yard weighments after each completed lap when local time is after --weighment-start-hour")
+    parser.add_argument("--admin-api-url", default="http://127.0.0.1:9003", help="Admin API base URL for weighment creation")
+    parser.add_argument("--admin-username", default="admin", help="Admin API username for weighment creation")
+    parser.add_argument("--admin-password", default="admin123", help="Admin API password for weighment creation")
+    parser.add_argument("--weighment-vehicle-search", default="", help="Optional search text for matching the vehicle in Admin API")
+    parser.add_argument("--dump-yard-id", default="", help="Optional dump yard UUID override")
+    parser.add_argument("--weighment-start-hour", type=int, default=14, help="Local hour after which simulated weighments are generated")
+    parser.add_argument("--weighment-days-back", type=int, default=1, help="Generate records from this many days back through today")
+    parser.add_argument(
+        "--weighment-materials",
+        default="wet_waste,dry_waste,plastic_waste,construction_waste,mixed_waste,biomedical_waste",
+        help="Comma-separated material types for simulated weighments",
+    )
+    parser.add_argument("--weighment-tare-min-kg", type=float, default=2200.0, help="Minimum simulated tare weight")
+    parser.add_argument("--weighment-tare-max-kg", type=float, default=5200.0, help="Maximum simulated tare weight")
+    parser.add_argument("--weighment-lap-spacing-min", type=int, default=17, help="Minutes between weighments for consecutive completed laps")
+    parser.add_argument("--weighment-entry-spacing-min", type=int, default=19, help="Minutes between generated historical service-day entries")
 
     args = parser.parse_args()
     asyncio.run(run(args))

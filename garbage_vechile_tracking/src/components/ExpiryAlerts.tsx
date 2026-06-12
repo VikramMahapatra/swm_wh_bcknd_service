@@ -74,7 +74,7 @@ const getExpiryItems = (trucks: any[], drivers: any[]): ExpiryItem[] => {
     }
   });
 
-  drivers.forEach(driver => {
+  drivers.filter(driver => (driver.personType ?? driver.person_type ?? driver.type ?? 'driver') === 'driver').forEach(driver => {
     // Only process if licenseExpiry exists
     if (driver.licenseExpiry) {
       const daysLeft = differenceInDays(parseISO(driver.licenseExpiry), today);

@@ -84,7 +84,7 @@ const OperationalStats = () => {
     { label: "Wards", value: activeWards, total: wards.length, icon: Building2, color: "text-chart-2", bgColor: "bg-chart-2/10", route: "/master/zones-wards" },
     { label: "Vendors", value: activeVendors, total: vendors.length, icon: Users, color: "text-chart-3", bgColor: "bg-chart-3/10", route: "/master/vendors" },
     { label: "Trucks", value: activeTrucks, total: trucks.length, icon: Truck, color: "text-chart-4", bgColor: "bg-chart-4/10", route: "/master/vehicles" },
-    { label: "Drivers", value: activeDrivers, total: drivers.length, icon: UserCheck, color: "text-primary", bgColor: "bg-primary/10", route: "/master/drivers" },
+    { label: "Crew", value: activeDrivers, total: drivers.length, icon: UserCheck, color: "text-primary", bgColor: "bg-primary/10", route: "/master/drivers" },
     { label: "Routes", value: activeRoutes, total: routes.length, icon: Route, color: "text-chart-5", bgColor: "bg-chart-5/10", route: "/master/routes-pickups" },
   ];
 

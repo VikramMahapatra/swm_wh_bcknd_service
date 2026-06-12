@@ -8,6 +8,8 @@ type SnapshotTruck = {
   imei: string;
   device_id?: string | null;
   vehicle_id?: string | null;
+  registration_number?: string | null;
+  vehicle_number?: string | null;
   lat: number;
   lng: number;
   speed_kph?: number | null;
@@ -16,6 +18,15 @@ type SnapshotTruck = {
   event_ts?: string | null;
   status?: string | null;
   vendor_id?: string | null;
+  zone_id?: string | null;
+  zone_name?: string | null;
+  zone_code?: string | null;
+  ward_id?: string | null;
+  ward_name?: string | null;
+  ward_code?: string | null;
+  route_id?: string | null;
+  route_name?: string | null;
+  vehicle_category?: string | null;
 };
 
 type SnapshotResponse = {
@@ -62,20 +73,20 @@ function buildTruckFromSnapshot(item: SnapshotTruck): TruckData | null {
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
 
   const speed = Number(item.speed_kph ?? 0);
-  const truckNumber = (item.vehicle_id || imei).trim();
+  const truckNumber = (item.registration_number || item.vehicle_number || item.vehicle_id || imei).trim();
   const eventTs = item.event_ts || new Date().toISOString();
 
   return {
     id: imei,
     truckNumber,
-    truckType: toTruckType(item.vehicle_id),
+    truckType: item.vehicle_category === "secondary" ? "secondary" : toTruckType(item.vehicle_id),
     vehicleType: "compactor",
     position: { lat, lng },
     status: toTruckStatus(item.status, speed),
     driver: "Unassigned",
     driverId: "-",
-    route: "Live Feed",
-    routeId: "",
+    route: item.route_name || "Live Feed",
+    routeId: item.route_id || "",
     speed,
     assignedGTP: undefined,
     assignedDumpingSite: undefined,
@@ -91,8 +102,8 @@ function buildTruckFromSnapshot(item: SnapshotTruck): TruckData | null {
     vehicleCapacity: "-",
     lastUpdate: eventTs,
     vendorId: item.vendor_id || "",
-    zoneId: "",
-    wardId: "",
+    zoneId: item.zone_name || item.zone_code || item.zone_id || "",
+    wardId: item.ward_name || item.ward_code || item.ward_id || "",
     isSpare: false,
     bearing: Number(item.heading ?? 0),
   };

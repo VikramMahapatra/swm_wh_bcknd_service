@@ -15,13 +15,28 @@ import { PageHeader } from '@/components/PageHeader';
 
 interface User {
   id: string;
-  email: string;
-  name: string;
-  role: string;
-  is_active: boolean;
-  created_at: string;
-  last_login?: string;
+  email: string | null;
+  name: string | null;
+  role: string | null;
+  is_active: boolean | null;
+  created_at: string | null;
+  last_login?: string | null;
 }
+
+const safeText = (value: unknown, fallback = '') => {
+  if (value === null || value === undefined) return fallback;
+  return String(value);
+};
+
+const normalizeUser = (user: any): User => ({
+  id: safeText(user?.id || user?.username || user?.email || crypto.randomUUID()),
+  email: safeText(user?.email, ''),
+  name: safeText(user?.name || user?.full_name || user?.username || user?.email, 'Unnamed user'),
+  role: safeText(user?.role || user?.role_key || user?.roles?.[0], 'user'),
+  is_active: Boolean(user?.is_active ?? user?.active ?? true),
+  created_at: safeText(user?.created_at || user?.createdAt || new Date().toISOString()),
+  last_login: user?.last_login || user?.lastLogin || null,
+});
 
 export default function Users() {
   const { toast } = useToast();
@@ -51,7 +66,7 @@ export default function Users() {
       // For demo, we'll use mock data if API fails
       try {
         const data = await apiService.getUsers();
-        setUsers(data);
+        setUsers((Array.isArray(data) ? data : []).map(normalizeUser));
       } catch (error) {
         // Use mock data
         setUsers([
@@ -95,9 +110,12 @@ export default function Users() {
   };
 
   const filteredUsers = users.filter(user => {
-    const matchesSearch = user.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         user.name.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesRole = roleFilter === 'all' || user.role === roleFilter;
+    const query = searchQuery.toLowerCase();
+    const email = safeText(user.email).toLowerCase();
+    const name = safeText(user.name).toLowerCase();
+    const role = safeText(user.role, 'user');
+    const matchesSearch = email.includes(query) || name.includes(query);
+    const matchesRole = roleFilter === 'all' || role === roleFilter;
     const matchesStatus = statusFilter === 'all' || 
                          (statusFilter === 'active' && user.is_active) ||
                          (statusFilter === 'inactive' && !user.is_active);
@@ -140,11 +158,11 @@ export default function Users() {
   const handleEditUser = (user: User) => {
     setEditingUser(user);
     setFormData({
-      email: user.email,
-      name: user.name,
+      email: safeText(user.email),
+      name: safeText(user.name),
       password: '',
-      role: user.role,
-      is_active: user.is_active
+      role: safeText(user.role, 'user'),
+      is_active: Boolean(user.is_active)
     });
     setIsAddDialogOpen(true);
   };
@@ -226,8 +244,8 @@ export default function Users() {
     });
   };
 
-  const getRoleBadge = (role: string) => {
-    return role === 'admin' 
+  const getRoleBadge = (role: string | null) => {
+    return safeText(role, 'user') === 'admin' 
       ? <Badge className="bg-primary/20 text-primary border-primary/30"><Shield className="h-3 w-3 mr-1" />Admin</Badge>
       : <Badge variant="outline"><User className="h-3 w-3 mr-1" />User</Badge>;
   };
@@ -361,7 +379,7 @@ export default function Users() {
               <div>
                 <p className="text-sm text-muted-foreground">Administrators</p>
                 <p className="text-2xl font-bold text-primary">
-                  {users.filter(u => u.role === 'admin').length}
+                  {users.filter(u => safeText(u.role, 'user') === 'admin').length}
                 </p>
               </div>
               <div className="h-12 w-12 rounded-xl bg-primary/10 flex items-center justify-center">
@@ -376,7 +394,7 @@ export default function Users() {
               <div>
                 <p className="text-sm text-muted-foreground">Regular Users</p>
                 <p className="text-2xl font-bold text-foreground">
-                  {users.filter(u => u.role === 'user').length}
+                  {users.filter(u => safeText(u.role, 'user') === 'user').length}
                 </p>
               </div>
               <div className="h-12 w-12 rounded-xl bg-warning/10 flex items-center justify-center">
@@ -461,13 +479,13 @@ export default function Users() {
                           <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center">
                             <User className="h-4 w-4 text-primary" />
                           </div>
-                          {user.name}
+                          {safeText(user.name, 'Unnamed user')}
                         </div>
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <Mail className="h-4 w-4 text-muted-foreground" />
-                          {user.email}
+                          {safeText(user.email, '-')}
                         </div>
                       </TableCell>
                       <TableCell>{getRoleBadge(user.role)}</TableCell>
@@ -475,7 +493,7 @@ export default function Users() {
                       <TableCell>
                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
                           <Calendar className="h-3 w-3" />
-                          {new Date(user.created_at).toLocaleDateString()}
+                          {user.created_at ? new Date(user.created_at).toLocaleDateString() : '-'}
                         </div>
                       </TableCell>
                       <TableCell>

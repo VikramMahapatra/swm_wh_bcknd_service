@@ -56,7 +56,7 @@ export interface Statistics {
   active_alerts: number;
 }
 
-export interface GtcCheckpointEntry {
+export interface GTSCheckpointEntry {
   id: number;
   truck_id: string;
   arrived_at: string;
@@ -66,7 +66,8 @@ export interface GtcCheckpointEntry {
   is_plastic: boolean;
   is_sanitary: boolean;
   truck_cleanliness_score: number | null;
-  gtc_cleanliness_score: number | null;
+  gtc_cleanliness_score?: number | null;
+  GTS_cleanliness_score: number | null;
   remarks: string | null;
   truck_registration_number?: string | null;
 }
@@ -74,12 +75,23 @@ export interface GtcCheckpointEntry {
 type RealtimeSnapshotTruck = {
   imei: string;
   vehicle_id?: string | null;
+  registration_number?: string | null;
+  vehicle_number?: string | null;
   lat: number;
   lng: number;
   speed_kph?: number | null;
   status?: string | null;
   event_ts?: string | null;
   vendor_id?: string | null;
+  zone_id?: string | null;
+  zone_name?: string | null;
+  zone_code?: string | null;
+  ward_id?: string | null;
+  ward_name?: string | null;
+  ward_code?: string | null;
+  route_id?: string | null;
+  route_name?: string | null;
+  vehicle_category?: string | null;
 };
 
 type RealtimeSnapshotResponse = {
@@ -144,6 +156,38 @@ class ApiService {
     return Array.isArray(payload.items) ? payload.items : [];
   }
 
+  private async fetchBlob(endpoint: string, options?: RequestInit): Promise<Blob> {
+    const doFetch = async (accessToken?: string | null) =>
+      fetch(`${this.baseUrl}${endpoint}`, {
+        ...options,
+        headers: {
+          ...(accessToken ? { 'Authorization': `Bearer ${accessToken}` } : {}),
+          ...options?.headers,
+        },
+      });
+
+    try {
+      const token = getAccessToken();
+      let response = await doFetch(token);
+
+      if (response.status === 401 && token && !endpoint.startsWith('/v1/auth/refresh')) {
+        const nextToken = await this.tryRefreshToken();
+        if (nextToken) {
+          response = await doFetch(nextToken);
+        }
+      }
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.statusText}`);
+      }
+
+      return await response.blob();
+    } catch (error) {
+      console.error(`API blob fetch error for ${endpoint}:`, error);
+      throw error;
+    }
+  }
+
   private async tryRefreshToken(): Promise<string | null> {
     const refreshToken = getRefreshToken();
     if (!refreshToken) return null;
@@ -177,9 +221,9 @@ class ApiService {
   private toLegacyTruckModel(item: RealtimeSnapshotTruck): TruckLive {
     return {
       id: item.imei,
-      registration_number: item.vehicle_id || item.imei,
+      registration_number: item.registration_number || item.vehicle_number || item.vehicle_id || item.imei,
       type: 'compactor',
-      route_type: (item.vehicle_id || '').toLowerCase().includes('s') ? 'secondary' : 'primary',
+      route_type: item.vehicle_category || ((item.vehicle_id || '').toLowerCase().includes('s') ? 'secondary' : 'primary'),
       latitude: Number.isFinite(Number(item.lat)) ? Number(item.lat) : null,
       longitude: Number.isFinite(Number(item.lng)) ? Number(item.lng) : null,
       current_status: item.status || 'idle',
@@ -187,10 +231,10 @@ class ApiService {
       trips_completed: 0,
       trips_allowed: 0,
       driver_name: null,
-      route_name: 'Live Feed',
+      route_name: item.route_name || 'Live Feed',
       vendor_id: item.vendor_id || '',
-      zone_id: '',
-      ward_id: '',
+      zone_id: item.zone_name || item.zone_code || item.zone_id || '',
+      ward_id: item.ward_name || item.ward_code || item.ward_id || '',
       is_spare: false,
       last_update: item.event_ts || null,
     };
@@ -476,6 +520,7 @@ class ApiService {
   }
 
   async getReportsData(filters?: {
+    report_type?: string;
     date_from?: string;
     date_to?: string;
     zone_id?: string;
@@ -690,6 +735,16 @@ class ApiService {
     return this.fetchApi(`/vehicles/${vehicleId}`);
   }
 
+  async searchVehicles(q: string, pageSize = 20): Promise<any[]> {
+    const suffix = this.toQueryString({ q, page_size: String(pageSize) });
+    const payload = await this.fetchApi<any>(`/vehicles/search${suffix}`);
+    return Array.isArray(payload) ? payload : Array.isArray(payload?.items) ? payload.items : [];
+  }
+
+  async getVehicleDetails(vehicleId: string): Promise<any> {
+    return this.fetchApi(`/vehicles/${vehicleId}/details`);
+  }
+
   async createVehicle(payload: any): Promise<any> {
     return this.fetchApi('/vehicles', {
       method: 'POST',
@@ -708,6 +763,140 @@ class ApiService {
     return this.fetchApi(`/vehicles/${vehicleId}`, {
       method: 'DELETE',
     });
+  }
+
+  async getSecondaryWasteTypes(): Promise<any[]> {
+    return this.fetchApi('/secondary-waste-types');
+  }
+
+  async getDumpYards(filters?: { active?: string; zone_id?: string }): Promise<any[]> {
+    const suffix = this.toQueryString(filters);
+    const payload = await this.fetchApi<any>(`/dump-yards${suffix}`);
+    return Array.isArray(payload) ? payload : Array.isArray(payload?.items) ? payload.items : [];
+  }
+
+  async createDumpYard(payload: any): Promise<any> {
+    return this.fetchApi('/dump-yards', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateDumpYard(dumpYardId: string, payload: any): Promise<any> {
+    return this.fetchApi(`/dump-yards/${dumpYardId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async deleteDumpYard(dumpYardId: string): Promise<any> {
+    return this.fetchApi(`/dump-yards/${dumpYardId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getGts(filters?: { q?: string; ward_id?: string; active?: string; page?: string; page_size?: string }): Promise<any> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/gts${suffix}`);
+  }
+
+  async createGts(payload: any): Promise<any> {
+    return this.fetchApi('/gts', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateGts(gtsId: string, payload: any): Promise<any> {
+    return this.fetchApi(`/gts/${gtsId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async deleteGts(gtsId: string): Promise<any> {
+    return this.fetchApi(`/gts/${gtsId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getSecondaryVehicleAssignments(filters?: { vehicle_id?: string; active?: string; material_type?: string }): Promise<any[]> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/secondary-vehicle-assignments${suffix}`);
+  }
+
+  async createSecondaryVehicleAssignment(payload: any): Promise<any> {
+    return this.fetchApi('/secondary-vehicle-assignments', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateSecondaryVehicleAssignment(assignmentId: string, payload: any): Promise<any> {
+    return this.fetchApi(`/secondary-vehicle-assignments/${assignmentId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async deleteSecondaryVehicleAssignment(assignmentId: string): Promise<any> {
+    return this.fetchApi(`/secondary-vehicle-assignments/${assignmentId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getDumpYardWeighments(filters?: {
+    date_from?: string;
+    date_to?: string;
+    vehicle_id?: string;
+    material_type?: string;
+    dump_yard_id?: string;
+  }): Promise<any[]> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/dump-yard-weighments${suffix}`);
+  }
+
+  async createDumpYardWeighment(payload: any): Promise<any> {
+    return this.fetchApi('/dump-yard-weighments', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async getDumpYardWeighment(filters?: {
+    date_from?: string;
+    date_to?: string;
+    vehicle_id?: string;
+    material_type?: string;
+    dump_yard_id?: string;
+  }): Promise<any[]> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchApi(`/dump-yard-weighment${suffix}`);
+  }
+
+  async createDumpYardWeighmentEntry(payload: any): Promise<any> {
+    return this.fetchApi('/dump-yard-weighment', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateDumpYardWeighment(weighmentId: string, payload: any): Promise<any> {
+    return this.fetchApi(`/dump-yard-weighment/${weighmentId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async downloadDumpYardWeighmentExcel(filters?: {
+    date_from?: string;
+    date_to?: string;
+    vehicle_id?: string;
+    material_type?: string;
+    dump_yard_id?: string;
+  }): Promise<Blob> {
+    const suffix = this.toQueryString(filters);
+    return this.fetchBlob(`/dump-yard-weighment/export.xlsx${suffix}`);
   }
 
   // Device Assignments
@@ -1055,13 +1244,13 @@ class ApiService {
     return this.fetchApi(`/analytics/pickup-point-crossings${suffix}`);
   }
 
-  // GTC Checkpoints
-  async getGtcCheckpoints(filters?: {
+  // GTS Checkpoints
+  async getGTSCheckpoints(filters?: {
     truck_id?: string;
     date?: string;
     date_from?: string;
     date_to?: string;
-  }): Promise<GtcCheckpointEntry[]> {
+  }): Promise<GTSCheckpointEntry[]> {
     const params = new URLSearchParams();
     if (filters) {
       Object.entries(filters).forEach(([key, value]) => {
@@ -1072,10 +1261,14 @@ class ApiService {
     }
     const query = params.toString();
     const suffix = query ? `?${query}` : "";
-    return this.fetchApi(`/gtc-checkpoints${suffix}`);
+    const rows = await this.fetchApi<any[]>(`/gtc-checkpoints${suffix}`);
+    return (Array.isArray(rows) ? rows : []).map((row) => ({
+      ...row,
+      GTS_cleanliness_score: row.GTS_cleanliness_score ?? row.gtc_cleanliness_score ?? null,
+    }));
   }
 
-  async createGtcCheckpoint(payload: {
+  async createGTSCheckpoint(payload: {
     truck_id: string;
     arrived_at?: string;
     is_dry: boolean;
@@ -1084,13 +1277,21 @@ class ApiService {
     is_plastic: boolean;
     is_sanitary: boolean;
     truck_cleanliness_score?: number | null;
+    GTS_cleanliness_score?: number | null;
     gtc_cleanliness_score?: number | null;
     remarks?: string | null;
-  }): Promise<GtcCheckpointEntry> {
-    return this.fetchApi('/gtc-checkpoints', {
+  }): Promise<GTSCheckpointEntry> {
+    const response = await this.fetchApi<any>('/gtc-checkpoints', {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        ...payload,
+        gtc_cleanliness_score: payload.gtc_cleanliness_score ?? payload.GTS_cleanliness_score ?? null,
+      }),
     });
+    return {
+      ...response,
+      GTS_cleanliness_score: response.GTS_cleanliness_score ?? response.gtc_cleanliness_score ?? null,
+    };
   }
 }
 

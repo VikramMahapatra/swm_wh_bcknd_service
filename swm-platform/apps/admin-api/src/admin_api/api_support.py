@@ -83,6 +83,8 @@ class LiveMapTruckPosition(BaseModel):
     imei: str
     device_id: str | None = None
     vehicle_id: str | None = None
+    registration_number: str | None = None
+    vehicle_number: str | None = None
     lat: float
     lng: float
     speed_kph: float
@@ -91,6 +93,16 @@ class LiveMapTruckPosition(BaseModel):
     event_ts: datetime
     status: str | None = None
     vendor_id: str | None = None
+    zone_id: str | None = None
+    zone_name: str | None = None
+    zone_code: str | None = None
+    ward_id: str | None = None
+    ward_name: str | None = None
+    ward_code: str | None = None
+    route_id: str | None = None
+    route_name: str | None = None
+    vehicle_category: str | None = None
+    operational_status: str | None = None
 
 
 class LiveMapSnapshotResponse(BaseModel):

@@ -11,8 +11,8 @@ import { PageHeader } from '@/components/PageHeader';
 import { useToast } from '@/hooks/use-toast';
 import { useRoutes, useVehicles, useVendors, useWards } from '@/hooks/useDataQueries';
 import { apiService } from '@/services/api';
-import { useQueryClient } from '@tanstack/react-query';
-import { Car, Edit, Plus, Search, Trash2, Route as RouteIcon } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Building, Car, ClipboardCheck, Edit, Plus, Search, Trash2, Route as RouteIcon } from 'lucide-react';
 
 export default function MasterVehicles() {
   const { toast } = useToast();
@@ -21,6 +21,9 @@ export default function MasterVehicles() {
   const { data: vendors = [] } = useVendors();
   const { data: wards = [] } = useWards();
   const { data: routes = [] } = useRoutes();
+  const { data: pickupPoints = [] } = useQuery({ queryKey: ['pickup-points', 'vehicle-secondary'], queryFn: () => apiService.getPickupPoints() });
+  const { data: dumpYards = [] } = useQuery({ queryKey: ['dump-yards'], queryFn: () => apiService.getDumpYards({ active: 'true' }) });
+  const { data: wasteTypes = [] } = useQuery({ queryKey: ['secondary-waste-types'], queryFn: () => apiService.getSecondaryWasteTypes() });
 
   const [vehicles, setVehicles] = useState<any[]>([]);
   const [search, setSearch] = useState('');
@@ -29,10 +32,19 @@ export default function MasterVehicles() {
   const [editing, setEditing] = useState<any | null>(null);
   const [routeAssignVehicle, setRouteAssignVehicle] = useState<any | null>(null);
   const [routeToAssign, setRouteToAssign] = useState('');
+  const [secondaryAssignVehicle, setSecondaryAssignVehicle] = useState<any | null>(null);
+  const [secondaryAssignment, setSecondaryAssignment] = useState({
+    GTS_pickup_point_id: '',
+    dump_yard_id: '',
+    material_type: '',
+    remarks: '',
+  });
 
   const [form, setForm] = useState<any>({
     vehicle_number: '',
     registration_number: '',
+    vehicle_category: 'primary',
+    secondary_waste_type: '',
     vendor_id: '',
     ward_id: '',
     route_id: '',
@@ -61,6 +73,10 @@ export default function MasterVehicles() {
   );
   const wardById = useMemo(() => new Map((wards as any[]).map((w) => [String(w.id), w.ward_name || w.name])), [wards]);
   const routeById = useMemo(() => new Map((routes as any[]).map((r) => [String(r.id), r.name || r.route_name])), [routes]);
+  const wasteTypeByValue = useMemo(
+    () => new Map((wasteTypes as any[]).map((item) => [String(item.value), String(item.label)])),
+    [wasteTypes]
+  );
 
   const filtered = vehicles.filter((v) => {
     const q = search.toLowerCase();
@@ -72,6 +88,7 @@ export default function MasterVehicles() {
   const resetForm = () => {
     setForm({
       vehicle_number: '', registration_number: '', vendor_id: '', ward_id: '', route_id: '', truck_type: 'compactor',
+      vehicle_category: 'primary', secondary_waste_type: '',
       capacity_kg: 0, capacity_cubic_meter: 0, fuel_type: 'diesel', operational_status: 'operational', chassis_number: '',
       engine_number: '', manufacture_year: new Date().getFullYear(), active: true,
     });
@@ -83,6 +100,8 @@ export default function MasterVehicles() {
     setEditing(vehicle);
     setForm({
       ...vehicle,
+      vehicle_category: vehicle.vehicle_category || 'primary',
+      secondary_waste_type: vehicle.secondary_waste_type || '',
       vendor_id: vehicle.vendor_id || vehicle.vendorId || '',
     });
     setIsDialogOpen(true);
@@ -93,13 +112,19 @@ export default function MasterVehicles() {
       toast({ title: 'Missing required fields', description: 'Vehicle Number, Registration, Vendor, and Ward are required.', variant: 'destructive' });
       return;
     }
+    if (form.vehicle_category === 'secondary' && !form.secondary_waste_type) {
+      toast({ title: 'Select waste type', description: 'Secondary vehicles must be mapped to a material type.', variant: 'destructive' });
+      return;
+    }
     try {
       const payload = {
         ...form,
         vendor_id: form.vendor_id || form.vendorId,
+        route_id: form.vehicle_category === 'secondary' ? null : (form.route_id || null),
+        secondary_waste_type: form.vehicle_category === 'secondary' ? form.secondary_waste_type : null,
       };
       if (editing) {
-        const updated = await apiService.updateVehicle(String(editing.id), { ...payload, route_id: payload.route_id || null });
+        const updated = await apiService.updateVehicle(String(editing.id), payload);
         setVehicles((prev) => prev.map((v) => String(v.id) === String(editing.id) ? {
           ...v,
           ...updated,
@@ -107,7 +132,7 @@ export default function MasterVehicles() {
         } : v));
         toast({ title: 'Vehicle updated' });
       } else {
-        const created = await apiService.createVehicle({ ...payload, route_id: payload.route_id || null });
+        const created = await apiService.createVehicle(payload);
         setVehicles((prev) => [{ ...created, vendor_id: created.vendor_id || payload.vendor_id }, ...prev]);
         toast({ title: 'Vehicle created' });
       }
@@ -145,6 +170,36 @@ export default function MasterVehicles() {
     }
   };
 
+  const openSecondaryAssign = (vehicle: any) => {
+    setSecondaryAssignVehicle(vehicle);
+    setSecondaryAssignment({
+      GTS_pickup_point_id: '',
+      dump_yard_id: '',
+      material_type: vehicle.secondary_waste_type || '',
+      remarks: '',
+    });
+  };
+
+  const handleSecondaryAssign = async () => {
+    if (!secondaryAssignVehicle || !secondaryAssignment.GTS_pickup_point_id || !secondaryAssignment.dump_yard_id || !secondaryAssignment.material_type) {
+      toast({ title: 'Assignment incomplete', description: 'Select GTS pickup point, dump yard, and material type.', variant: 'destructive' });
+      return;
+    }
+    try {
+      await apiService.createSecondaryVehicleAssignment({
+        vehicle_id: String(secondaryAssignVehicle.id),
+        ...secondaryAssignment,
+        active: true,
+      });
+      toast({ title: 'Secondary vehicle assigned', description: 'Vehicle is now mapped from GTS to dump yard.' });
+      setSecondaryAssignVehicle(null);
+      setSecondaryAssignment({ GTS_pickup_point_id: '', dump_yard_id: '', material_type: '', remarks: '' });
+      await queryClient.invalidateQueries({ queryKey: ['vehicles'] });
+    } catch (error) {
+      toast({ title: 'Assignment failed', description: error instanceof Error ? error.message : 'Please try again', variant: 'destructive' });
+    }
+  };
+
   return (
     <div className='container mx-auto px-4 py-6 space-y-6'>
       <PageHeader
@@ -169,8 +224,12 @@ export default function MasterVehicles() {
                   <div><Label>Ward</Label><Select value={form.ward_id || ''} onValueChange={(v) => setForm({ ...form, ward_id: v })}><SelectTrigger><SelectValue placeholder='Select ward' /></SelectTrigger><SelectContent>{(wards as any[]).map((w) => <SelectItem key={w.id} value={String(w.id)}>{w.ward_name || w.name}</SelectItem>)}</SelectContent></Select></div>
                 </div>
                 <div className='grid grid-cols-2 gap-4'>
-                  <div><Label>Route</Label><Select value={form.route_id || 'none'} onValueChange={(v) => setForm({ ...form, route_id: v === 'none' ? '' : v })}><SelectTrigger><SelectValue placeholder='Optional route' /></SelectTrigger><SelectContent><SelectItem value='none'>Not Assigned</SelectItem>{(routes as any[]).map((r) => <SelectItem key={r.id} value={String(r.id)}>{r.name || r.route_name}</SelectItem>)}</SelectContent></Select></div>
+                  <div><Label>Vehicle Category</Label><Select value={form.vehicle_category || 'primary'} onValueChange={(v) => setForm({ ...form, vehicle_category: v, route_id: v === 'secondary' ? '' : form.route_id })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value='primary'>Primary</SelectItem><SelectItem value='secondary'>Secondary</SelectItem></SelectContent></Select></div>
                   <div><Label>Truck Type</Label><Input value={form.truck_type || ''} onChange={(e) => setForm({ ...form, truck_type: e.target.value })} /></div>
+                </div>
+                <div className='grid grid-cols-2 gap-4'>
+                  <div><Label>Route {form.vehicle_category === 'secondary' && <span className='text-xs text-muted-foreground'>(not needed)</span>}</Label><Select disabled={form.vehicle_category === 'secondary'} value={form.route_id || 'none'} onValueChange={(v) => setForm({ ...form, route_id: v === 'none' ? '' : v })}><SelectTrigger><SelectValue placeholder='Optional route' /></SelectTrigger><SelectContent><SelectItem value='none'>Not Assigned</SelectItem>{(routes as any[]).map((r) => <SelectItem key={r.id} value={String(r.id)}>{r.name || r.route_name}</SelectItem>)}</SelectContent></Select></div>
+                  <div><Label>Secondary Waste Type</Label><Select disabled={form.vehicle_category !== 'secondary'} value={form.secondary_waste_type || ''} onValueChange={(v) => setForm({ ...form, secondary_waste_type: v })}><SelectTrigger><SelectValue placeholder='Select material' /></SelectTrigger><SelectContent>{(wasteTypes as any[]).map((item) => <SelectItem key={item.value} value={String(item.value)}>{item.label}</SelectItem>)}</SelectContent></Select></div>
                 </div>
                 <div className='grid grid-cols-3 gap-4'>
                   <div><Label>Capacity KG</Label><Input type='number' value={form.capacity_kg ?? 0} onChange={(e) => setForm({ ...form, capacity_kg: Number(e.target.value) })} /></div>
@@ -197,18 +256,23 @@ export default function MasterVehicles() {
         <CardHeader><CardTitle>Vehicles ({filtered.length})</CardTitle></CardHeader>
         <CardContent>
           <Table>
-            <TableHeader><TableRow><TableHead>Vehicle</TableHead><TableHead>Vendor</TableHead><TableHead>Ward</TableHead><TableHead>Route</TableHead><TableHead>Status</TableHead><TableHead className='text-right'>Actions</TableHead></TableRow></TableHeader>
+            <TableHeader><TableRow><TableHead>Vehicle</TableHead><TableHead>Category</TableHead><TableHead>Vendor</TableHead><TableHead>Ward</TableHead><TableHead>Route / Material</TableHead><TableHead>Status</TableHead><TableHead className='text-right'>Actions</TableHead></TableRow></TableHeader>
             <TableBody>
-              {isLoading ? <TableRow><TableCell colSpan={6}>Loading...</TableCell></TableRow> : filtered.map((v) => (
+              {isLoading ? <TableRow><TableCell colSpan={7}>Loading...</TableCell></TableRow> : filtered.map((v) => (
                 <TableRow key={v.id}>
                   <TableCell><div className='font-medium'>{v.registration_number}</div><div className='text-xs text-muted-foreground'>{v.vehicle_number}</div></TableCell>
+                  <TableCell><Badge variant={v.vehicle_category === 'secondary' ? 'secondary' : 'default'}>{v.vehicle_category || 'primary'}</Badge></TableCell>
                   <TableCell>{vendorById.get(String(v.vendor_id || '')) || '-'}</TableCell>
                   <TableCell>{wardById.get(String(v.ward_id)) || '-'}</TableCell>
-                  <TableCell>{routeById.get(String(v.route_id || '')) || '-'}</TableCell>
+                  <TableCell>{v.vehicle_category === 'secondary' ? (wasteTypeByValue.get(String(v.secondary_waste_type || '')) || '-') : (routeById.get(String(v.route_id || '')) || '-')}</TableCell>
                   <TableCell><Badge variant={v.operational_status === 'operational' ? 'default' : 'secondary'}>{v.operational_status}</Badge></TableCell>
                   <TableCell className='text-right space-x-1'>
                     <Button size='icon' variant='ghost' onClick={() => openEdit(v)}><Edit className='h-4 w-4' /></Button>
-                    <Button size='icon' variant='ghost' onClick={() => { setRouteAssignVehicle(v); setRouteToAssign(String(v.route_id || '')); }}><RouteIcon className='h-4 w-4' /></Button>
+                    {v.vehicle_category === 'secondary' ? (
+                      <Button size='icon' variant='ghost' onClick={() => openSecondaryAssign(v)}><ClipboardCheck className='h-4 w-4' /></Button>
+                    ) : (
+                      <Button size='icon' variant='ghost' onClick={() => { setRouteAssignVehicle(v); setRouteToAssign(String(v.route_id || '')); }}><RouteIcon className='h-4 w-4' /></Button>
+                    )}
                     <Button size='icon' variant='ghost' className='text-destructive' onClick={() => handleDelete(String(v.id))}><Trash2 className='h-4 w-4' /></Button>
                   </TableCell>
                 </TableRow>
@@ -232,6 +296,44 @@ export default function MasterVehicles() {
             </Select>
           </div>
           <DialogFooter><Button variant='outline' onClick={() => setRouteAssignVehicle(null)}>Cancel</Button><Button onClick={handleRouteAssign}>Save Assignment</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!secondaryAssignVehicle} onOpenChange={(open) => { if (!open) setSecondaryAssignVehicle(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Assign Secondary Vehicle</DialogTitle>
+            <DialogDescription>Map this secondary vehicle from a GTS pickup point to a dump yard. Route assignment is not required.</DialogDescription>
+          </DialogHeader>
+          <div className='grid gap-4'>
+            <div className='rounded-lg border bg-muted/30 p-3 text-sm'>
+              <div className='font-semibold'>{secondaryAssignVehicle?.registration_number}</div>
+              <div className='text-muted-foreground'>{wasteTypeByValue.get(String(secondaryAssignVehicle?.secondary_waste_type || '')) || 'Secondary material'}</div>
+            </div>
+            <div>
+              <Label>GTS Pickup Point</Label>
+              <Select value={secondaryAssignment.GTS_pickup_point_id} onValueChange={(v) => setSecondaryAssignment({ ...secondaryAssignment, GTS_pickup_point_id: v })}>
+                <SelectTrigger><SelectValue placeholder='Select GTS pickup point' /></SelectTrigger>
+                <SelectContent>{(pickupPoints as any[]).map((p) => <SelectItem key={p.id} value={String(p.id)}>{p.pickup_name || p.name || p.id}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Dump Yard</Label>
+              <Select value={secondaryAssignment.dump_yard_id} onValueChange={(v) => setSecondaryAssignment({ ...secondaryAssignment, dump_yard_id: v })}>
+                <SelectTrigger><SelectValue placeholder='Select dump yard' /></SelectTrigger>
+                <SelectContent>{(dumpYards as any[]).map((d) => <SelectItem key={d.id} value={String(d.id)}>{d.dump_yard_name}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Material</Label>
+              <Select value={secondaryAssignment.material_type} onValueChange={(v) => setSecondaryAssignment({ ...secondaryAssignment, material_type: v })}>
+                <SelectTrigger><SelectValue placeholder='Select material' /></SelectTrigger>
+                <SelectContent>{(wasteTypes as any[]).map((item) => <SelectItem key={item.value} value={String(item.value)}>{item.label}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div><Label>Remarks</Label><Input value={secondaryAssignment.remarks} onChange={(e) => setSecondaryAssignment({ ...secondaryAssignment, remarks: e.target.value })} placeholder='Optional remarks' /></div>
+          </div>
+          <DialogFooter><Button variant='outline' onClick={() => setSecondaryAssignVehicle(null)}>Cancel</Button><Button onClick={handleSecondaryAssign}><Building className='h-4 w-4 mr-2' /> Save Assignment</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

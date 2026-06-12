@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import json
 import ipaddress
-from datetime import datetime
+import math
+from io import BytesIO
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.exc import NoResultFound
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.responses import StreamingResponse
 from swm_db import (
     AssignmentCreateInput,
     DeviceORM,
@@ -18,10 +21,16 @@ from swm_db import (
     DeviceVehicleAssignmentORM,
     DeviceVehicleAssignmentRepository,
     DeviceVehicleAssignmentService,
+    DriverORM,
+    DumpYardORM,
+    DumpYardWeighmentORM,
+    GtsPointORM,
     GeofenceORM,
     GeofenceRepository,
+    PickupPointORM,
     RouteORM,
     RouteRepository,
+    SecondaryVehicleAssignmentORM,
     VehicleORM,
     VehicleRepository,
     VendorORM,
@@ -47,6 +56,21 @@ from admin_api.api_support import (
 )
 
 router = APIRouter()
+
+SECONDARY_WASTE_TYPES = [
+    {"value": "chicken_waste", "label": "CHICKEN WASTE"},
+    {"value": "biomedical_waste", "label": "BIOMEDICAL WASTE"},
+    {"value": "construction_waste", "label": "CONSTRUCTION WASTE"},
+    {"value": "dry_waste", "label": "DRY WASTE"},
+    {"value": "green_waste", "label": "GREEN WASTE"},
+    {"value": "mandai", "label": "MANDAI"},
+    {"value": "mix_waste", "label": "MIX WASTE"},
+    {"value": "mixed_waste", "label": "MIXED WASTE"},
+    {"value": "plastic_waste", "label": "PLASTIC WASTE"},
+    {"value": "wet_waste", "label": "WET WASTE"},
+]
+
+SECONDARY_WASTE_TYPE_VALUES = {item["value"] for item in SECONDARY_WASTE_TYPES}
 
 
 def _parse_import_uuid(value: str | None, *, field: str, row_number: int, required: bool = True) -> UUID | None:
@@ -153,6 +177,15 @@ class VehicleIn(BaseModel):
     vendor_id: UUID = Field(validation_alias=AliasChoices("vendor_id", "vendorId", "contractor_id", "contractorId"))
     ward_id: UUID
     route_id: UUID | None = None
+    vehicle_category: Literal["primary", "secondary"] = "primary"
+    secondary_waste_type: Literal[
+        "chicken_waste",
+        "dry_waste",
+        "green_waste",
+        "mandai",
+        "mix_waste",
+        "wet_waste",
+    ] | None = None
     truck_type: str | None = None
     capacity_kg: float = Field(default=0, ge=0)
     capacity_cubic_meter: float = Field(default=0, ge=0)
@@ -163,6 +196,84 @@ class VehicleIn(BaseModel):
     manufacture_year: int | None = Field(default=None, ge=1950, le=2100)
     active: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DumpYardIn(BaseModel):
+    dump_yard_code: str | None = Field(default=None, min_length=2, max_length=32)
+    dump_yard_name: str | None = Field(default=None, min_length=1)
+    name: str | None = None
+    address: str | None = None
+    capacity: float | None = Field(default=None, ge=0)
+    zone_id: UUID | None = None
+    ward_id: UUID | None = None
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lng: float | None = Field(default=None, ge=-180, le=180)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    active: bool = True
+    is_active: bool | None = None
+
+
+class GtsIn(BaseModel):
+    name: str = Field(min_length=1)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    address: str | None = None
+    zone_id: UUID | None = None
+    ward_id: UUID | None = None
+    is_active: bool = True
+
+
+class SecondaryVehicleAssignmentIn(BaseModel):
+    vehicle_id: UUID
+    gtc_pickup_point_id: UUID
+    dump_yard_id: UUID
+    material_type: Literal[
+        "chicken_waste",
+        "biomedical_waste",
+        "construction_waste",
+        "dry_waste",
+        "green_waste",
+        "mandai",
+        "mix_waste",
+        "mixed_waste",
+        "plastic_waste",
+        "wet_waste",
+    ]
+    assigned_from: datetime | None = None
+    assigned_to: datetime | None = None
+    active: bool = True
+    remarks: str | None = None
+
+
+class DumpYardWeighmentIn(BaseModel):
+    assignment_id: UUID | None = None
+    vehicle_id: UUID
+    gtc_pickup_point_id: UUID | None = Field(
+        default=None,
+        validation_alias=AliasChoices("gtc_pickup_point_id", "gts_pickup_point_id", "GTS_pickup_point_id"),
+    )
+    dump_yard_id: UUID
+    material_type: Literal[
+        "chicken_waste",
+        "biomedical_waste",
+        "construction_waste",
+        "dry_waste",
+        "green_waste",
+        "mandai",
+        "mix_waste",
+        "mixed_waste",
+        "plastic_waste",
+        "wet_waste",
+    ]
+    service_date: date | None = None
+    entry_time: datetime | None = None
+    gross_weight_kg: float = Field(ge=0)
+    tare_weight_kg: float = Field(ge=0)
+    net_weight_kg: float | None = Field(default=None, ge=0)
+    slip_number: str | None = None
+    operator_name: str | None = None
+    remarks: str | None = None
 
 
 class WardIn(BaseModel):
@@ -203,6 +314,60 @@ class RouteIn(BaseModel):
     zone_id: UUID
     ward_id: UUID
     polyline_coordinates: list[list[float]] = Field(min_length=2)
+
+
+def _distance_km_between(
+    first: tuple[float | None, float | None],
+    second: tuple[float | None, float | None],
+) -> float:
+    if first[0] is None or first[1] is None or second[0] is None or second[1] is None:
+        return 0.0
+    lat1, lng1 = float(first[0]), float(first[1])
+    lat2, lng2 = float(second[0]), float(second[1])
+    radius_km = 6371.0
+    d_lat = math.radians(lat2 - lat1)
+    d_lng = math.radians(lng2 - lng1)
+    a = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(d_lng / 2) ** 2
+    )
+    return radius_km * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _minutes_from_hhmm(value: str | None) -> int | None:
+    if not value:
+        return None
+    try:
+        hours, minutes = str(value).strip()[:5].split(":")
+        return int(hours) * 60 + int(minutes)
+    except Exception:
+        return None
+
+
+def _route_stats_from_points(points: list[PickupPointORM]) -> dict[str, Any]:
+    ordered = sorted(points, key=lambda p: (p.sequence_no or 0, str(p.id)))
+    distance_km = 0.0
+    for first, second in zip(ordered, ordered[1:]):
+        distance_km += _distance_km_between((first.lat, first.lng), (second.lat, second.lng))
+
+    times = [_minutes_from_hhmm(point.expected_pickup_time) for point in ordered]
+    valid_times = [value for value in times if value is not None]
+    if len(valid_times) >= 2:
+        estimated_minutes = max(0, max(valid_times) - min(valid_times))
+    else:
+        estimated_minutes = int(round((distance_km / 14.0) * 60 + len(ordered) * 5)) if ordered else 0
+
+    return {
+        "total_pickup_points": len(ordered),
+        "totalPickupPoints": len(ordered),
+        "estimated_distance": round(distance_km, 2),
+        "estimatedDistance": round(distance_km, 2),
+        "distance": f"{distance_km:.1f} km",
+        "estimated_time": estimated_minutes,
+        "estimatedTime": estimated_minutes,
+        "has_gts": any(bool(getattr(point, "is_gts", False)) for point in ordered),
+        "hasGts": any(bool(getattr(point, "is_gts", False)) for point in ordered),
+    }
 
 
 class GeofenceIn(BaseModel):
@@ -606,6 +771,7 @@ async def list_vehicles(
     route_id: UUID | None = Query(default=None),
     fuel_type: str | None = Query(default=None),
     operational_status: str | None = Query(default=None),
+    vehicle_category: str | None = Query(default=None),
     sort_by: str = Query(default="created_at"),
     sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
     _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
@@ -626,6 +792,7 @@ async def list_vehicles(
             "route_id": route_id,
             "fuel_type": fuel_type,
             "operational_status": operational_status,
+            "vehicle_category": vehicle_category,
         },
     )
 
@@ -636,16 +803,20 @@ async def create_vehicle(
     _: RoleContext = Depends(require_roles("admin", "ops")),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
+    if payload.vehicle_category == "secondary" and not payload.secondary_waste_type:
+        raise HTTPException(status_code=422, detail="secondary_waste_type is required for secondary vehicles")
     repo = VehicleRepository(session)
     row = await repo.create(
         vehicle_number=payload.vehicle_number,
         registration_number=payload.registration_number,
+        vehicle_category=payload.vehicle_category,
+        secondary_waste_type=payload.secondary_waste_type if payload.vehicle_category == "secondary" else None,
         truck_type=payload.truck_type,
         capacity_kg=payload.capacity_kg,
         capacity_cubic_meter=payload.capacity_cubic_meter,
         vendor_id=payload.vendor_id,
         ward_id=payload.ward_id,
-        route_id=payload.route_id,
+        route_id=None if payload.vehicle_category == "secondary" else payload.route_id,
         fuel_type=payload.fuel_type,
         operational_status=payload.operational_status,
         chassis_number=payload.chassis_number,
@@ -655,6 +826,167 @@ async def create_vehicle(
         metadata_json=payload.metadata,
     )
     return _to_dict(row)
+
+
+def _material_label(value: str | None) -> str | None:
+    if not value:
+        return None
+    labels = {item["value"]: item["label"] for item in SECONDARY_WASTE_TYPES}
+    return labels.get(str(value), str(value).replace("_", " ").upper())
+
+
+def _vehicle_search_item(
+    vehicle: VehicleORM,
+    *,
+    ward: WardORM | None = None,
+    zone: ZoneORM | None = None,
+    route: RouteORM | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": str(vehicle.id),
+        "vehicle_id": str(vehicle.id),
+        "vehicle_number": vehicle.vehicle_number,
+        "registration_number": vehicle.registration_number,
+        "label": f"{vehicle.vehicle_number} | {vehicle.registration_number}",
+        "vehicle_category": vehicle.vehicle_category,
+        "vehicle_type": vehicle.truck_type,
+        "truck_type": vehicle.truck_type,
+        "material_type": vehicle.secondary_waste_type,
+        "material_label": _material_label(vehicle.secondary_waste_type),
+        "route_id": str(route.id) if route else (str(vehicle.route_id) if vehicle.route_id else None),
+        "route_name": getattr(route, "route_name", None),
+        "ward_id": str(ward.id) if ward else str(vehicle.ward_id),
+        "ward_name": getattr(ward, "ward_name", None),
+        "zone_id": str(zone.id) if zone else None,
+        "zone_name": getattr(zone, "zone_name", None),
+        "active": vehicle.active,
+    }
+
+
+@router.get("/vehicles/search")
+async def search_vehicles(
+    q: str = Query(default="", min_length=0),
+    page_size: int = Query(default=20, ge=1, le=50),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[dict[str, Any]]:
+    pattern = f"%{q.strip()}%"
+    stmt = (
+        select(VehicleORM, WardORM, ZoneORM, RouteORM)
+        .join(WardORM, VehicleORM.ward_id == WardORM.id)
+        .join(ZoneORM, WardORM.zone_id == ZoneORM.id)
+        .outerjoin(RouteORM, VehicleORM.route_id == RouteORM.id)
+        .where(VehicleORM.active.is_(True))
+        .order_by(VehicleORM.vehicle_number.asc())
+        .limit(page_size)
+    )
+    if q.strip():
+        stmt = stmt.where(
+            or_(
+                VehicleORM.vehicle_number.ilike(pattern),
+                VehicleORM.registration_number.ilike(pattern),
+                RouteORM.route_name.ilike(pattern),
+                WardORM.ward_name.ilike(pattern),
+                ZoneORM.zone_name.ilike(pattern),
+            )
+        )
+    rows = (await session.execute(stmt)).all()
+    return [_vehicle_search_item(vehicle, ward=ward, zone=zone, route=route) for vehicle, ward, zone, route in rows]
+
+
+@router.get("/vehicles/{vehicle_id}/details")
+async def get_vehicle_details(
+    vehicle_id: UUID,
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    result = await session.execute(
+        select(VehicleORM, WardORM, ZoneORM, RouteORM)
+        .join(WardORM, VehicleORM.ward_id == WardORM.id)
+        .join(ZoneORM, WardORM.zone_id == ZoneORM.id)
+        .outerjoin(RouteORM, VehicleORM.route_id == RouteORM.id)
+        .where(VehicleORM.id == vehicle_id)
+    )
+    row = result.first()
+    if row is None:
+        _raise_not_found("vehicle", vehicle_id)
+    vehicle, ward, zone, route = row
+    driver = (
+        await session.execute(
+            select(DriverORM)
+            .where(
+                DriverORM.assigned_vehicle_id == vehicle.id,
+                DriverORM.active.is_(True),
+                DriverORM.person_type == "driver",
+            )
+            .order_by(DriverORM.updated_at.desc())
+        )
+    ).scalars().first()
+    assignment = (
+        await session.execute(
+            select(SecondaryVehicleAssignmentORM)
+            .where(SecondaryVehicleAssignmentORM.vehicle_id == vehicle.id, SecondaryVehicleAssignmentORM.active.is_(True))
+            .order_by(SecondaryVehicleAssignmentORM.assigned_from.desc())
+        )
+    ).scalars().first()
+    gts_pickup = None
+    dump_yard = None
+    if assignment is not None:
+        await session.refresh(assignment, attribute_names=["gtc_pickup_point", "dump_yard"])
+        gts_pickup = assignment.gtc_pickup_point
+        dump_yard = assignment.dump_yard
+    if gts_pickup is None and vehicle.route_id is not None:
+        gts_pickup = (
+            await session.execute(
+                select(PickupPointORM)
+                .where(PickupPointORM.route_id == vehicle.route_id, PickupPointORM.is_gts.is_(True))
+                .order_by(PickupPointORM.sequence_no.desc())
+            )
+        ).scalars().first()
+    if dump_yard is None:
+        dump_yard = (
+            await session.execute(
+                select(DumpYardORM)
+                .where(DumpYardORM.active.is_(True))
+                .order_by(DumpYardORM.dump_yard_name.asc())
+            )
+        ).scalars().first()
+
+    base = _vehicle_search_item(vehicle, ward=ward, zone=zone, route=route)
+    base.update(
+        {
+            "driver_id": str(driver.id) if driver else None,
+            "driver_name": getattr(driver, "name", None),
+            "last_known_route": getattr(route, "route_name", None),
+            "current_assignment": {
+                "id": str(assignment.id),
+                "assigned_from": assignment.assigned_from.isoformat() if assignment.assigned_from else None,
+                "assigned_to": assignment.assigned_to.isoformat() if assignment.assigned_to else None,
+                "remarks": assignment.remarks,
+            }
+            if assignment
+            else None,
+            "gts": {
+                "id": str(gts_pickup.id),
+                "name": gts_pickup.pickup_name,
+                "latitude": gts_pickup.lat,
+                "longitude": gts_pickup.lng,
+            }
+            if gts_pickup
+            else None,
+            "gts_pickup_point_id": str(gts_pickup.id) if gts_pickup else None,
+            "dump_yard": {
+                "id": str(dump_yard.id),
+                "name": dump_yard.dump_yard_name,
+                "latitude": dump_yard.lat,
+                "longitude": dump_yard.lng,
+            }
+            if dump_yard
+            else None,
+            "dump_yard_id": str(dump_yard.id) if dump_yard else None,
+        }
+    )
+    return base
 
 
 @router.get("/vehicles/{vehicle_id}")
@@ -675,18 +1007,22 @@ async def update_vehicle(
     _: RoleContext = Depends(require_roles("admin", "ops")),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
+    if payload.vehicle_category == "secondary" and not payload.secondary_waste_type:
+        raise HTTPException(status_code=422, detail="secondary_waste_type is required for secondary vehicles")
     repo = VehicleRepository(session)
     try:
         row = await repo.update(
             vehicle_id,
             vehicle_number=payload.vehicle_number,
             registration_number=payload.registration_number,
+            vehicle_category=payload.vehicle_category,
+            secondary_waste_type=payload.secondary_waste_type if payload.vehicle_category == "secondary" else None,
             truck_type=payload.truck_type,
             capacity_kg=payload.capacity_kg,
             capacity_cubic_meter=payload.capacity_cubic_meter,
             vendor_id=payload.vendor_id,
             ward_id=payload.ward_id,
-            route_id=payload.route_id,
+            route_id=None if payload.vehicle_category == "secondary" else payload.route_id,
             fuel_type=payload.fuel_type,
             operational_status=payload.operational_status,
             chassis_number=payload.chassis_number,
@@ -735,6 +1071,8 @@ async def bulk_import_vehicles(
                 "vendor_id": _parse_import_uuid(row.get("vendor_id"), field="vendor_id", row_number=index),
                 "ward_id": _parse_import_uuid(row.get("ward_id"), field="ward_id", row_number=index),
                 "route_id": _parse_import_uuid(row.get("route_id"), field="route_id", row_number=index, required=False),
+                "vehicle_category": row.get("vehicle_category") or "primary",
+                "secondary_waste_type": row.get("secondary_waste_type") or None,
                 "truck_type": row.get("truck_type") or None,
                 "capacity_kg": _parse_import_float(row.get("capacity_kg"), field="capacity_kg", row_number=index, default=0.0),
                 "capacity_cubic_meter": _parse_import_float(
@@ -753,6 +1091,756 @@ async def bulk_import_vehicles(
         )
     created = await repo.bulk_create(payloads)
     return {"created": len(created)}
+
+
+@router.get("/secondary-waste-types")
+async def list_secondary_waste_types(
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+) -> list[dict[str, str]]:
+    return SECONDARY_WASTE_TYPES
+
+
+def _gts_to_dict(row: GtsPointORM) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "name": row.name,
+        "latitude": row.latitude,
+        "longitude": row.longitude,
+        "address": row.address,
+        "zone_id": str(row.zone_id) if row.zone_id else None,
+        "ward_id": str(row.ward_id) if row.ward_id else None,
+        "is_active": row.active,
+        "active": row.active,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+async def _ensure_unique_gts_name(session: AsyncSession, *, name: str, ward_id: UUID | None, exclude_id: UUID | None = None) -> None:
+    stmt = select(GtsPointORM).where(func.lower(GtsPointORM.name) == name.strip().lower())
+    if ward_id is None:
+        stmt = stmt.where(GtsPointORM.ward_id.is_(None))
+    else:
+        stmt = stmt.where(GtsPointORM.ward_id == ward_id)
+    if exclude_id is not None:
+        stmt = stmt.where(GtsPointORM.id != exclude_id)
+    exists = (await session.execute(stmt)).scalars().first()
+    if exists is not None:
+        raise HTTPException(status_code=409, detail="GTS name already exists for this ward")
+
+
+@router.get("/gts")
+async def list_gts(
+    q: str | None = Query(default=None),
+    ward_id: UUID | None = Query(default=None),
+    active: bool | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    stmt = select(GtsPointORM)
+    count_stmt = select(func.count(GtsPointORM.id))
+    filters = []
+    if q:
+        filters.append(GtsPointORM.name.ilike(f"%{q}%"))
+    if ward_id is not None:
+        filters.append(GtsPointORM.ward_id == ward_id)
+    if active is not None:
+        filters.append(GtsPointORM.active.is_(active))
+    for condition in filters:
+        stmt = stmt.where(condition)
+        count_stmt = count_stmt.where(condition)
+    total = int((await session.execute(count_stmt)).scalar() or 0)
+    rows = (
+        await session.execute(
+            stmt.order_by(GtsPointORM.name.asc()).offset((page - 1) * page_size).limit(page_size)
+        )
+    ).scalars().all()
+    return {"items": [_gts_to_dict(row) for row in rows], "total": total, "page": page, "page_size": page_size}
+
+
+@router.post("/gts")
+async def create_gts(
+    payload: GtsIn,
+    _: RoleContext = Depends(require_roles("admin", "ops")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    await _ensure_unique_gts_name(session, name=payload.name, ward_id=payload.ward_id)
+    row = GtsPointORM(
+        name=payload.name.strip(),
+        latitude=payload.latitude,
+        longitude=payload.longitude,
+        address=payload.address,
+        zone_id=payload.zone_id,
+        ward_id=payload.ward_id,
+        active=payload.is_active,
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return _gts_to_dict(row)
+
+
+@router.put("/gts/{gts_id}")
+async def update_gts(
+    gts_id: UUID,
+    payload: GtsIn,
+    _: RoleContext = Depends(require_roles("admin", "ops")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    row = (await session.execute(select(GtsPointORM).where(GtsPointORM.id == gts_id))).scalars().first()
+    if row is None:
+        _raise_not_found("GTS", gts_id)
+    await _ensure_unique_gts_name(session, name=payload.name, ward_id=payload.ward_id, exclude_id=gts_id)
+    row.name = payload.name.strip()
+    row.latitude = payload.latitude
+    row.longitude = payload.longitude
+    row.address = payload.address
+    row.zone_id = payload.zone_id
+    row.ward_id = payload.ward_id
+    row.active = payload.is_active
+    await session.commit()
+    await session.refresh(row)
+    return _gts_to_dict(row)
+
+
+@router.delete("/gts/{gts_id}", response_model=MessageResponse)
+async def delete_gts(
+    gts_id: UUID,
+    _: RoleContext = Depends(require_roles("admin")),
+    session: AsyncSession = Depends(get_db_session),
+) -> MessageResponse:
+    row = (await session.execute(select(GtsPointORM).where(GtsPointORM.id == gts_id))).scalars().first()
+    if row is None:
+        _raise_not_found("GTS", gts_id)
+    await session.delete(row)
+    await session.commit()
+    return MessageResponse(message="deleted")
+
+
+@router.get("/dump-yards")
+async def list_dump_yards(
+    active: bool | None = Query(default=None),
+    zone_id: UUID | None = Query(default=None),
+    q: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=200, ge=1, le=200),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    stmt = select(DumpYardORM).order_by(DumpYardORM.dump_yard_name.asc())
+    count_stmt = select(func.count(DumpYardORM.id))
+    if active is not None:
+        stmt = stmt.where(DumpYardORM.active.is_(active))
+        count_stmt = count_stmt.where(DumpYardORM.active.is_(active))
+    if zone_id is not None:
+        stmt = stmt.where(DumpYardORM.zone_id == zone_id)
+        count_stmt = count_stmt.where(DumpYardORM.zone_id == zone_id)
+    if q:
+        stmt = stmt.where(DumpYardORM.dump_yard_name.ilike(f"%{q}%"))
+        count_stmt = count_stmt.where(DumpYardORM.dump_yard_name.ilike(f"%{q}%"))
+    total = int((await session.execute(count_stmt)).scalar() or 0)
+    rows = (await session.execute(stmt.offset((page - 1) * page_size).limit(page_size))).scalars().all()
+    return {"items": [_dump_yard_to_dict(row) for row in rows], "total": total, "page": page, "page_size": page_size}
+
+
+def _dump_yard_payload(payload: DumpYardIn) -> dict[str, Any]:
+    name = (payload.dump_yard_name or payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Dump Yard name is required")
+    code = (payload.dump_yard_code or name.upper().replace(" ", "-")[:32]).strip().upper()
+    return {
+        "dump_yard_code": code,
+        "dump_yard_name": name,
+        "address": payload.address,
+        "capacity": payload.capacity,
+        "zone_id": payload.zone_id,
+        "ward_id": payload.ward_id,
+        "lat": payload.lat if payload.lat is not None else payload.latitude,
+        "lng": payload.lng if payload.lng is not None else payload.longitude,
+        "active": payload.active if payload.is_active is None else payload.is_active,
+    }
+
+
+def _dump_yard_to_dict(row: DumpYardORM) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "dump_yard_code": row.dump_yard_code,
+        "dump_yard_name": row.dump_yard_name,
+        "name": row.dump_yard_name,
+        "address": row.address,
+        "capacity": row.capacity,
+        "zone_id": str(row.zone_id) if row.zone_id else None,
+        "ward_id": str(row.ward_id) if row.ward_id else None,
+        "lat": row.lat,
+        "lng": row.lng,
+        "latitude": row.lat,
+        "longitude": row.lng,
+        "active": row.active,
+        "is_active": row.active,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+async def _ensure_unique_dump_yard_name(session: AsyncSession, *, name: str, exclude_id: UUID | None = None) -> None:
+    stmt = select(DumpYardORM).where(func.lower(DumpYardORM.dump_yard_name) == name.strip().lower())
+    if exclude_id is not None:
+        stmt = stmt.where(DumpYardORM.id != exclude_id)
+    exists = (await session.execute(stmt)).scalars().first()
+    if exists is not None:
+        raise HTTPException(status_code=409, detail="Dump Yard name already exists")
+
+
+@router.post("/dump-yards")
+async def create_dump_yard(
+    payload: DumpYardIn,
+    _: RoleContext = Depends(require_roles("admin", "ops")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    data = _dump_yard_payload(payload)
+    await _ensure_unique_dump_yard_name(session, name=data["dump_yard_name"])
+    row = DumpYardORM(**data)
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return _dump_yard_to_dict(row)
+
+
+@router.put("/dump-yards/{dump_yard_id}")
+async def update_dump_yard(
+    dump_yard_id: UUID,
+    payload: DumpYardIn,
+    _: RoleContext = Depends(require_roles("admin", "ops")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    row = (await session.execute(select(DumpYardORM).where(DumpYardORM.id == dump_yard_id))).scalars().first()
+    if row is None:
+        _raise_not_found("dump yard", dump_yard_id)
+    data = _dump_yard_payload(payload)
+    await _ensure_unique_dump_yard_name(session, name=data["dump_yard_name"], exclude_id=dump_yard_id)
+    for key, value in data.items():
+        setattr(row, key, value)
+    await session.commit()
+    await session.refresh(row)
+    return _dump_yard_to_dict(row)
+
+
+@router.delete("/dump-yards/{dump_yard_id}", response_model=MessageResponse)
+async def delete_dump_yard(
+    dump_yard_id: UUID,
+    _: RoleContext = Depends(require_roles("admin")),
+    session: AsyncSession = Depends(get_db_session),
+) -> MessageResponse:
+    row = (await session.execute(select(DumpYardORM).where(DumpYardORM.id == dump_yard_id))).scalars().first()
+    if row is None:
+        _raise_not_found("dump yard", dump_yard_id)
+    await session.delete(row)
+    await session.commit()
+    return MessageResponse(message="deleted")
+
+
+def _assignment_to_dict(row: SecondaryVehicleAssignmentORM) -> dict[str, Any]:
+    item = _to_dict(row)
+    vehicle = getattr(row, "vehicle", None)
+    gtc = getattr(row, "gtc_pickup_point", None)
+    dump_yard = getattr(row, "dump_yard", None)
+    item.update(
+        {
+            "vehicle_number": getattr(vehicle, "vehicle_number", None),
+            "registration_number": getattr(vehicle, "registration_number", None),
+            "secondary_waste_type": getattr(vehicle, "secondary_waste_type", None),
+            "gtc_name": getattr(gtc, "pickup_name", None),
+            "gts_name": getattr(gtc, "pickup_name", None),
+            "dump_yard_name": getattr(dump_yard, "dump_yard_name", None),
+        }
+    )
+    return item
+
+
+@router.get("/secondary-vehicle-assignments")
+async def list_secondary_vehicle_assignments(
+    vehicle_id: UUID | None = Query(default=None),
+    active: bool | None = Query(default=None),
+    material_type: str | None = Query(default=None),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[dict[str, Any]]:
+    stmt = (
+        select(SecondaryVehicleAssignmentORM)
+        .where(True)
+        .order_by(SecondaryVehicleAssignmentORM.created_at.desc())
+    )
+    if vehicle_id is not None:
+        stmt = stmt.where(SecondaryVehicleAssignmentORM.vehicle_id == vehicle_id)
+    if active is not None:
+        stmt = stmt.where(SecondaryVehicleAssignmentORM.active.is_(active))
+    if material_type:
+        stmt = stmt.where(SecondaryVehicleAssignmentORM.material_type == material_type)
+    rows = (await session.execute(stmt)).scalars().all()
+    for row in rows:
+        await session.refresh(row, attribute_names=["vehicle", "gtc_pickup_point", "dump_yard"])
+    return [_assignment_to_dict(row) for row in rows]
+
+
+@router.post("/secondary-vehicle-assignments")
+async def create_secondary_vehicle_assignment(
+    payload: SecondaryVehicleAssignmentIn,
+    _: RoleContext = Depends(require_roles("admin", "ops")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    vehicle = (await session.execute(select(VehicleORM).where(VehicleORM.id == payload.vehicle_id))).scalars().first()
+    if vehicle is None:
+        _raise_not_found("vehicle", payload.vehicle_id)
+    if vehicle.vehicle_category != "secondary":
+        raise HTTPException(status_code=422, detail="vehicle must be a secondary vehicle")
+    row = SecondaryVehicleAssignmentORM(
+        **payload.model_dump(exclude={"assigned_from"}),
+        assigned_from=payload.assigned_from or datetime.now(timezone.utc),
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return _to_dict(row)
+
+
+@router.put("/secondary-vehicle-assignments/{assignment_id}")
+async def update_secondary_vehicle_assignment(
+    assignment_id: UUID,
+    payload: SecondaryVehicleAssignmentIn,
+    _: RoleContext = Depends(require_roles("admin", "ops")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    row = (
+        await session.execute(select(SecondaryVehicleAssignmentORM).where(SecondaryVehicleAssignmentORM.id == assignment_id))
+    ).scalars().first()
+    if row is None:
+        _raise_not_found("secondary vehicle assignment", assignment_id)
+    vehicle = (await session.execute(select(VehicleORM).where(VehicleORM.id == payload.vehicle_id))).scalars().first()
+    if vehicle is None:
+        _raise_not_found("vehicle", payload.vehicle_id)
+    if vehicle.vehicle_category != "secondary":
+        raise HTTPException(status_code=422, detail="vehicle must be a secondary vehicle")
+    for key, value in payload.model_dump().items():
+        setattr(row, key, value)
+    if row.assigned_from is None:
+        row.assigned_from = datetime.now(timezone.utc)
+    await session.commit()
+    await session.refresh(row)
+    return _to_dict(row)
+
+
+@router.delete("/secondary-vehicle-assignments/{assignment_id}", response_model=MessageResponse)
+async def delete_secondary_vehicle_assignment(
+    assignment_id: UUID,
+    _: RoleContext = Depends(require_roles("admin")),
+    session: AsyncSession = Depends(get_db_session),
+) -> MessageResponse:
+    row = (
+        await session.execute(select(SecondaryVehicleAssignmentORM).where(SecondaryVehicleAssignmentORM.id == assignment_id))
+    ).scalars().first()
+    if row is None:
+        _raise_not_found("secondary vehicle assignment", assignment_id)
+    await session.delete(row)
+    await session.commit()
+    return MessageResponse(message="deleted")
+
+
+def _weighment_to_dict(row: DumpYardWeighmentORM) -> dict[str, Any]:
+    item = _to_dict(row)
+    item["service_date"] = row.service_date.isoformat() if row.service_date else None
+    vehicle = getattr(row, "vehicle", None)
+    gtc = getattr(row, "gtc_pickup_point", None)
+    dump_yard = getattr(row, "dump_yard", None)
+    ward = getattr(vehicle, "ward", None)
+    route = getattr(vehicle, "route", None)
+    zone = getattr(ward, "zone", None)
+    item.update(
+        {
+            "vehicle_number": getattr(vehicle, "vehicle_number", None),
+            "registration_number": getattr(vehicle, "registration_number", None),
+            "vehicle_category": getattr(vehicle, "vehicle_category", None),
+            "vehicle_type": getattr(vehicle, "truck_type", None),
+            "route_id": str(getattr(route, "id", "")) if route else None,
+            "route_name": getattr(route, "route_name", None),
+            "ward_id": str(getattr(ward, "id", "")) if ward else None,
+            "ward_name": getattr(ward, "ward_name", None),
+            "zone_id": str(getattr(zone, "id", "")) if zone else None,
+            "zone_name": getattr(zone, "zone_name", None),
+            "gtc_name": getattr(gtc, "pickup_name", None),
+            "gts_name": getattr(gtc, "pickup_name", None),
+            "gts_pickup_point_id": str(getattr(gtc, "id", "")) if gtc else None,
+            "material_label": _material_label(row.material_type),
+            "dump_yard_name": getattr(dump_yard, "dump_yard_name", None),
+        }
+    )
+    return item
+
+
+async def _fetch_dump_yard_weighment_rows(
+    session: AsyncSession,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    vehicle_id: UUID | None = None,
+    material_type: str | None = None,
+    dump_yard_id: UUID | None = None,
+) -> list[DumpYardWeighmentORM]:
+    stmt = select(DumpYardWeighmentORM).order_by(DumpYardWeighmentORM.entry_time.desc())
+    if date_from is not None:
+        stmt = stmt.where(DumpYardWeighmentORM.service_date >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(DumpYardWeighmentORM.service_date <= date_to)
+    if vehicle_id is not None:
+        stmt = stmt.where(DumpYardWeighmentORM.vehicle_id == vehicle_id)
+    if material_type:
+        stmt = stmt.where(DumpYardWeighmentORM.material_type == material_type)
+    if dump_yard_id is not None:
+        stmt = stmt.where(DumpYardWeighmentORM.dump_yard_id == dump_yard_id)
+    rows = (await session.execute(stmt)).scalars().all()
+    for row in rows:
+        await session.refresh(row, attribute_names=["vehicle", "gtc_pickup_point", "dump_yard"])
+        if row.vehicle:
+            await session.refresh(row.vehicle, attribute_names=["ward", "route"])
+            if row.vehicle.ward:
+                await session.refresh(row.vehicle.ward, attribute_names=["zone"])
+    return rows
+
+
+@router.get("/dump-yard-weighment")
+@router.get("/dump-yard-weighments")
+async def list_dump_yard_weighments(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    vehicle_id: UUID | None = Query(default=None),
+    material_type: str | None = Query(default=None),
+    dump_yard_id: UUID | None = Query(default=None),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[dict[str, Any]]:
+    rows = await _fetch_dump_yard_weighment_rows(
+        session,
+        date_from=date_from,
+        date_to=date_to,
+        vehicle_id=vehicle_id,
+        material_type=material_type,
+        dump_yard_id=dump_yard_id,
+    )
+    return [_weighment_to_dict(row) for row in rows]
+
+
+@router.get("/dump-yard-weighment/export.xlsx")
+async def export_dump_yard_weighments_xlsx(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    vehicle_id: UUID | None = Query(default=None),
+    material_type: str | None = Query(default=None),
+    dump_yard_id: UUID | None = Query(default=None),
+    _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
+    session: AsyncSession = Depends(get_db_session),
+) -> StreamingResponse:
+    from openpyxl import Workbook
+    from openpyxl.chart import BarChart, LineChart, Reference
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    rows = await _fetch_dump_yard_weighment_rows(
+        session,
+        date_from=date_from,
+        date_to=date_to,
+        vehicle_id=vehicle_id,
+        material_type=material_type,
+        dump_yard_id=dump_yard_id,
+    )
+    records = [_weighment_to_dict(row) for row in rows]
+    period_from = date_from or (min((row.service_date for row in rows), default=datetime.now(timezone.utc).date()))
+    period_to = date_to or (max((row.service_date for row in rows), default=datetime.now(timezone.utc).date()))
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Executive Summary"
+    detail_ws = wb.create_sheet("Detail Records")
+    daily_ws = wb.create_sheet("Daily Trend")
+    material_ws = wb.create_sheet("Material Summary")
+    vehicle_ws = wb.create_sheet("Vehicle Summary")
+
+    dark = "0F766E"
+    dark2 = "064E3B"
+    green = "D1FAE5"
+    pale = "F8FAFC"
+    amber = "FFFBEB"
+    line = Side(style="thin", color="CBD5E1")
+    border = Border(bottom=line)
+
+    def title(sheet, text: str, subtitle: str, cols: int) -> None:
+        sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=cols)
+        sheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=cols)
+        sheet["A1"] = text
+        sheet["A2"] = subtitle
+        sheet["A1"].font = Font(name="Aptos Display", size=20, bold=True, color=dark2)
+        sheet["A1"].fill = PatternFill("solid", fgColor=green)
+        sheet["A1"].alignment = Alignment(horizontal="center")
+        sheet["A2"].font = Font(name="Aptos", size=10, color="475569")
+        sheet["A2"].fill = PatternFill("solid", fgColor=pale)
+        sheet["A2"].alignment = Alignment(horizontal="center")
+
+    def header(sheet, row_idx: int, values: list[str]) -> None:
+        for col_idx, value in enumerate(values, start=1):
+            cell = sheet.cell(row_idx, col_idx, value)
+            cell.font = Font(name="Aptos", bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor=dark)
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = border
+
+    def style_table(sheet, min_row: int, max_row: int, max_col: int) -> None:
+        for row_idx in range(min_row, max_row + 1):
+            fill = PatternFill("solid", fgColor="FFFFFF" if row_idx % 2 else pale)
+            for col_idx in range(1, max_col + 1):
+                cell = sheet.cell(row_idx, col_idx)
+                cell.fill = fill
+                cell.border = border
+                cell.font = Font(name="Aptos", size=10, color="0F172A", bold=col_idx == 1)
+                if isinstance(cell.value, int | float):
+                    cell.number_format = "#,##0.00"
+                    cell.alignment = Alignment(horizontal="right")
+
+    material_totals: dict[str, dict[str, float]] = {}
+    daily_totals: dict[str, dict[str, float]] = {}
+    vehicle_totals: dict[str, dict[str, float]] = {}
+    total_net = total_gross = total_tare = 0.0
+    for record in records:
+        material = record.get("material_label") or str(record.get("material_type") or "-").replace("_", " ").upper()
+        day = record.get("service_date") or "-"
+        vehicle = record.get("vehicle_number") or record.get("registration_number") or "-"
+        gross = float(record.get("gross_weight_kg") or 0)
+        tare = float(record.get("tare_weight_kg") or 0)
+        net = float(record.get("net_weight_kg") or 0)
+        total_gross += gross
+        total_tare += tare
+        total_net += net
+        for bucket, key in ((material_totals, material), (daily_totals, day), (vehicle_totals, vehicle)):
+            item = bucket.setdefault(key, {"entries": 0, "gross": 0.0, "tare": 0.0, "net": 0.0})
+            item["entries"] += 1
+            item["gross"] += gross
+            item["tare"] += tare
+            item["net"] += net
+
+    title(ws, "Dump Yard Weighment Report", f"Period: {period_from} to {period_to} | Generated: {datetime.now().strftime('%d %b %Y %H:%M')}", 8)
+    kpis = [
+        ("Total Entries", len(records), "records"),
+        ("Net Collection", total_net / 1000, "tons"),
+        ("Gross Weight", total_gross / 1000, "tons"),
+        ("Tare Weight", total_tare / 1000, "tons"),
+        ("Average Net / Entry", total_net / max(len(records), 1), "kg"),
+        ("Active Trucks", len(vehicle_totals), "trucks"),
+        ("Material Types", len(material_totals), "types"),
+    ]
+    header(ws, 4, ["KPI", "Value", "Unit", "Operational Reading"])
+    for idx, (name, value, unit) in enumerate(kpis, start=5):
+        ws.cell(idx, 1, name)
+        ws.cell(idx, 2, value)
+        ws.cell(idx, 3, unit)
+        ws.cell(idx, 4, "Use this workbook for reconciliation, material analytics, and route-wise tonnage review." if idx == 5 else "")
+    style_table(ws, 5, 5 + len(kpis) - 1, 4)
+    ws.cell(14, 1, "Professional workbook tabs: Daily Trend, Material Summary, Vehicle Summary, and Detail Records.")
+    ws.cell(14, 1).fill = PatternFill("solid", fgColor=amber)
+    ws.cell(14, 1).font = Font(bold=True, color=dark2)
+
+    def write_summary(sheet, sheet_title: str, data: dict[str, dict[str, float]], first_col: str, chart_kind: str) -> None:
+        title(sheet, sheet_title, f"Period: {period_from} to {period_to}", 6)
+        header(sheet, 4, [first_col, "Entries", "Gross KG", "Tare KG", "Net KG", "Net Ton"])
+        ordered = sorted(data.items(), key=lambda item: item[1]["net"], reverse=True)
+        if first_col == "Date":
+            ordered = sorted(data.items(), key=lambda item: item[0])
+        for row_idx, (key, item) in enumerate(ordered, start=5):
+            sheet.append([key, int(item["entries"]), item["gross"], item["tare"], item["net"], item["net"] / 1000])
+        if ordered:
+            style_table(sheet, 5, 5 + len(ordered) - 1, 6)
+            chart = LineChart() if chart_kind == "line" else BarChart()
+            chart.title = sheet_title
+            chart.y_axis.title = "Net KG"
+            chart.x_axis.title = first_col
+            data_ref = Reference(sheet, min_col=5, min_row=4, max_row=4 + len(ordered))
+            cats = Reference(sheet, min_col=1, min_row=5, max_row=4 + len(ordered))
+            chart.add_data(data_ref, titles_from_data=True)
+            chart.set_categories(cats)
+            chart.height = 8
+            chart.width = 18
+            sheet.add_chart(chart, "H4")
+        sheet.freeze_panes = "A5"
+
+    write_summary(daily_ws, "Seven Day Collection Trend", daily_totals, "Date", "line")
+    write_summary(material_ws, "Material Wise Collection", material_totals, "Material", "bar")
+    write_summary(vehicle_ws, "Vehicle Wise Collection", vehicle_totals, "Vehicle", "bar")
+
+    detail_headers = [
+        "Date", "Entry Time", "Vehicle", "Registration", "Zone", "Ward", "Route", "GTS", "Dump Yard",
+        "Material", "Gross KG", "Tare KG", "Net KG", "Net Ton", "Slip Number", "Operator", "Remarks",
+    ]
+    title(detail_ws, "Detailed Weighment Register", f"Period: {period_from} to {period_to}", len(detail_headers))
+    header(detail_ws, 4, detail_headers)
+    for record in records:
+        detail_ws.append(
+            [
+                record.get("service_date"),
+                record.get("entry_time"),
+                record.get("vehicle_number"),
+                record.get("registration_number"),
+                record.get("zone_name"),
+                record.get("ward_name"),
+                record.get("route_name"),
+                record.get("gts_name"),
+                record.get("dump_yard_name"),
+                record.get("material_label") or str(record.get("material_type") or "").replace("_", " ").upper(),
+                float(record.get("gross_weight_kg") or 0),
+                float(record.get("tare_weight_kg") or 0),
+                float(record.get("net_weight_kg") or 0),
+                float(record.get("net_weight_kg") or 0) / 1000,
+                record.get("slip_number"),
+                record.get("operator_name"),
+                record.get("remarks"),
+            ]
+        )
+    if records:
+        style_table(detail_ws, 5, 5 + len(records) - 1, len(detail_headers))
+    detail_ws.freeze_panes = "A5"
+
+    for sheet in wb.worksheets:
+        for col_idx in range(1, sheet.max_column + 1):
+            max_len = max((len(str(sheet.cell(row_idx, col_idx).value or "")) for row_idx in range(1, sheet.max_row + 1)), default=12)
+            sheet.column_dimensions[get_column_letter(col_idx)].width = min(max(max_len + 3, 12), 36)
+
+    stream = BytesIO()
+    wb.save(stream)
+    stream.seek(0)
+    filename = f"dump_yard_weighment_{period_from}_{period_to}.xlsx"
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+async def _ensure_weighment_can_save(
+    session: AsyncSession,
+    payload: DumpYardWeighmentIn,
+    *,
+    entry_time: datetime,
+    service_date: date,
+    exclude_id: UUID | None = None,
+) -> None:
+    if payload.gross_weight_kg < payload.tare_weight_kg:
+        raise HTTPException(status_code=422, detail="gross_weight_kg cannot be less than tare_weight_kg")
+    if payload.net_weight_kg is not None and payload.net_weight_kg < 0:
+        raise HTTPException(status_code=422, detail="net_weight_kg cannot be negative")
+    duplicate_start = entry_time - timedelta(minutes=2)
+    duplicate_end = entry_time + timedelta(minutes=2)
+    duplicate_stmt = select(DumpYardWeighmentORM).where(
+        DumpYardWeighmentORM.vehicle_id == payload.vehicle_id,
+        DumpYardWeighmentORM.dump_yard_id == payload.dump_yard_id,
+        DumpYardWeighmentORM.material_type == payload.material_type,
+        DumpYardWeighmentORM.service_date == service_date,
+        DumpYardWeighmentORM.entry_time >= duplicate_start,
+        DumpYardWeighmentORM.entry_time <= duplicate_end,
+    )
+    if exclude_id is not None:
+        duplicate_stmt = duplicate_stmt.where(DumpYardWeighmentORM.id != exclude_id)
+    if payload.slip_number:
+        slip_stmt = select(DumpYardWeighmentORM).where(DumpYardWeighmentORM.slip_number == payload.slip_number)
+        if exclude_id is not None:
+            slip_stmt = slip_stmt.where(DumpYardWeighmentORM.id != exclude_id)
+        if (await session.execute(slip_stmt)).scalars().first() is not None:
+            raise HTTPException(status_code=409, detail="weighment slip number already exists")
+    if (await session.execute(duplicate_stmt)).scalars().first() is not None:
+        raise HTTPException(status_code=409, detail="possible duplicate weighment entry within 2 minutes")
+
+
+@router.post("/dump-yard-weighment")
+@router.post("/dump-yard-weighments")
+async def create_dump_yard_weighment(
+    payload: DumpYardWeighmentIn,
+    _: RoleContext = Depends(require_roles("admin", "ops")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    entry_time = payload.entry_time or datetime.now(timezone.utc)
+    service_date = payload.service_date or entry_time.date()
+    await _ensure_weighment_can_save(session, payload, entry_time=entry_time, service_date=service_date)
+    net_weight = payload.net_weight_kg
+    if net_weight is None:
+        net_weight = float(payload.gross_weight_kg) - float(payload.tare_weight_kg)
+    row = DumpYardWeighmentORM(
+        assignment_id=payload.assignment_id,
+        vehicle_id=payload.vehicle_id,
+        gtc_pickup_point_id=payload.gtc_pickup_point_id,
+        dump_yard_id=payload.dump_yard_id,
+        material_type=payload.material_type,
+        service_date=service_date,
+        entry_time=entry_time,
+        gross_weight_kg=payload.gross_weight_kg,
+        tare_weight_kg=payload.tare_weight_kg,
+        net_weight_kg=net_weight,
+        slip_number=payload.slip_number,
+        operator_name=payload.operator_name,
+        remarks=payload.remarks,
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    await session.refresh(row, attribute_names=["vehicle", "gtc_pickup_point", "dump_yard"])
+    if row.vehicle:
+        await session.refresh(row.vehicle, attribute_names=["ward", "route"])
+        if row.vehicle.ward:
+            await session.refresh(row.vehicle.ward, attribute_names=["zone"])
+    return _weighment_to_dict(row)
+
+
+@router.put("/dump-yard-weighment/{weighment_id}")
+@router.put("/dump-yard-weighments/{weighment_id}")
+async def update_dump_yard_weighment(
+    weighment_id: UUID,
+    payload: DumpYardWeighmentIn,
+    _: RoleContext = Depends(require_roles("admin", "ops")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    row = (
+        await session.execute(select(DumpYardWeighmentORM).where(DumpYardWeighmentORM.id == weighment_id))
+    ).scalars().first()
+    if row is None:
+        _raise_not_found("dump yard weighment", weighment_id)
+    entry_time = payload.entry_time or row.entry_time or datetime.now(timezone.utc)
+    service_date = payload.service_date or entry_time.date()
+    await _ensure_weighment_can_save(
+        session,
+        payload,
+        entry_time=entry_time,
+        service_date=service_date,
+        exclude_id=weighment_id,
+    )
+    net_weight = payload.net_weight_kg
+    if net_weight is None:
+        net_weight = float(payload.gross_weight_kg) - float(payload.tare_weight_kg)
+    row.assignment_id = payload.assignment_id
+    row.vehicle_id = payload.vehicle_id
+    row.gtc_pickup_point_id = payload.gtc_pickup_point_id
+    row.dump_yard_id = payload.dump_yard_id
+    row.material_type = payload.material_type
+    row.service_date = service_date
+    row.entry_time = entry_time
+    row.gross_weight_kg = payload.gross_weight_kg
+    row.tare_weight_kg = payload.tare_weight_kg
+    row.net_weight_kg = net_weight
+    row.slip_number = payload.slip_number
+    row.operator_name = payload.operator_name
+    row.remarks = payload.remarks
+    await session.commit()
+    await session.refresh(row)
+    await session.refresh(row, attribute_names=["vehicle", "gtc_pickup_point", "dump_yard"])
+    if row.vehicle:
+        await session.refresh(row.vehicle, attribute_names=["ward", "route"])
+        if row.vehicle.ward:
+            await session.refresh(row.vehicle.ward, attribute_names=["zone"])
+    return _weighment_to_dict(row)
 
 
 @router.get("/routes")
@@ -784,19 +1872,39 @@ async def list_routes(
         return result
 
     compat_items: list[dict[str, Any]] = []
+    route_ids = [UUID(str(route.get("id"))) for route in result.items if route.get("id")]
+    points_by_route: dict[str, list[PickupPointORM]] = {str(route_id): [] for route_id in route_ids}
+    if route_ids:
+        point_rows = (
+            await session.execute(
+                select(PickupPointORM)
+                .where(PickupPointORM.route_id.in_(route_ids))
+                .order_by(PickupPointORM.route_id.asc(), PickupPointORM.sequence_no.asc())
+            )
+        ).scalars().all()
+        for point in point_rows:
+            if point.route_id is not None:
+                points_by_route.setdefault(str(point.route_id), []).append(point)
 
     for route in result.items:
         route_zone_id = str(route.get("zone_id") or "")
         route_ward_id = str(route.get("ward_id") or "")
+        route_id = str(route.get("id") or "")
+        stats = _route_stats_from_points(points_by_route.get(route_id, []))
         mapped = {
-            "id": str(route.get("id") or ""),
+            "id": route_id,
             "name": route.get("route_name") or "",
+            "code": route.get("route_name") or "",
+            "route_name": route.get("route_name") or "",
             "type": "primary",
             "zone_id": route_zone_id,
+            "zoneId": route_zone_id,
             "ward_id": route_ward_id,
+            "wardId": route_ward_id,
             "polyline_coordinates": route.get("polyline_coordinates") or [],
             "status": "active",
             "active": True,
+            **stats,
         }
 
         if ward_id is not None and mapped["ward_id"] != str(ward_id):

@@ -4,6 +4,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { GoogleMap, Marker, Polyline } from "@react-google-maps/api";
 import { 
   Route, MapPin, Truck, Clock, ArrowRight, 
   Plus, Edit, Trash2, Eye, Search 
@@ -32,6 +34,7 @@ export default function RouteListView({
   onCreateRoute,
 }: RouteListViewProps) {
   const [searchQuery, setSearchQuery] = useState("");
+  const [isRouteMapOpen, setIsRouteMapOpen] = useState(false);
   const normalizedQuery = searchQuery.trim().toLowerCase();
 
   const filteredRoutes = routes.filter((route) => {
@@ -60,6 +63,22 @@ export default function RouteListView({
       default: return <div className="w-2 h-2 rounded-full bg-gray-500" />;
     }
   };
+
+  const isGtsPoint = (point: any) => Boolean(point.isGts ?? point.is_gts ?? point.is_GTS);
+  const pointLabel = (point: any) => isGtsPoint(point) ? "GTS" : String(point.type || "pickup");
+  const pointColorClass = (point: any) => {
+    if (isGtsPoint(point)) return "bg-sky-600";
+    return point.type === "pickup" ? "bg-green-500" : point.type === "gtp" ? "bg-amber-500" : "bg-red-500";
+  };
+
+  const pointColor = (point: any) => {
+    if (isGtsPoint(point)) return "#0284c7";
+    return point.type === "pickup" ? "#22c55e" : point.type === "gtp" ? "#f59e0b" : "#ef4444";
+  };
+  const mapPoints = (selectedRoute?.points || []).filter((point: any) =>
+    Number.isFinite(Number(point?.position?.lat)) && Number.isFinite(Number(point?.position?.lng))
+  );
+  const mapCenter = mapPoints[0]?.position || { lat: 18.6559, lng: 73.7714 };
 
   return (
     <div className="grid lg:grid-cols-3 gap-4">
@@ -179,6 +198,17 @@ export default function RouteListView({
                   <CardTitle className="flex items-center gap-2">
                     <Route className="h-5 w-5" />
                     {selectedRoute.name}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="ml-1 h-8 w-8 rounded-full text-sky-600 hover:bg-sky-100 hover:text-sky-700"
+                      title="Show all pickup points on map"
+                      disabled={!selectedRoute.points || selectedRoute.points.length === 0}
+                      onClick={() => setIsRouteMapOpen(true)}
+                    >
+                      <MapPin className="h-5 w-5" />
+                    </Button>
                   </CardTitle>
                   <div className="flex items-center gap-2 mt-2">
                     <Badge variant="outline" className="capitalize">{selectedRoute.type}</Badge>
@@ -225,18 +255,13 @@ export default function RouteListView({
                     {selectedRoute.points.map((point, index) => (
                     <div key={point.id} className="flex items-center gap-2">
                       <div className="flex flex-col items-center min-w-fit">
-                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white ${
-                          point.type === "pickup" ? "bg-green-500" :
-                          point.type === "gtp" ? "bg-amber-500" :
-                          "bg-red-500"
-                        }`}>
-                          {point.order}
-                        </div>
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white ring-2 ring-white shadow-sm ${pointColorClass(point)}`}>{point.order}</div>
                         <p className="text-xs mt-1 max-w-[80px] truncate text-center">{point.name}</p>
+                        {isGtsPoint(point) && <Badge className="mt-1 bg-sky-100 text-sky-700 border-sky-200 text-[10px]">GTS</Badge>}
                         {point.scheduledTime && (
-                          <p className="text-[10px] text-primary font-medium">⏰ {point.scheduledTime}</p>
+                          <p className="text-[10px] text-primary font-medium">Time {point.scheduledTime}</p>
                         )}
-                        <p className="text-[10px] text-muted-foreground capitalize">{point.type}</p>
+                        <p className="text-[10px] text-muted-foreground capitalize">{pointLabel(point)}</p>
                       </div>
                       {index < selectedRoute.points.length - 1 && (
                         <ArrowRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
@@ -253,18 +278,15 @@ export default function RouteListView({
                   <h4 className="font-semibold mb-3">Route Points Detail</h4>
                   <div className="space-y-2 max-h-[200px] overflow-y-auto">
                     {selectedRoute.points.map((point, index) => (
-                  <div key={point.id} className="flex items-center gap-3 p-3 bg-muted/30 rounded-lg">
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
-                      point.type === "pickup" ? "bg-green-500 text-white" :
-                      point.type === "gtp" ? "bg-amber-500 text-white" :
-                      "bg-red-500 text-white"
-                    }`}>
-                      {point.order}
-                    </div>
+                  <div key={point.id} className={`flex items-center gap-3 p-3 rounded-lg ${isGtsPoint(point) ? "bg-sky-50 border border-sky-200" : "bg-muted/30"}`}> 
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold text-white ${pointColorClass(point)}`}>{point.order}</div>
                     <div className="flex-1">
-                      <p className="font-medium">{point.name}</p>
                       <div className="flex items-center gap-2">
-                        <p className="text-xs text-muted-foreground capitalize">{point.type}</p>
+                        <p className="font-medium">{point.name}</p>
+                        {isGtsPoint(point) && <Badge className="bg-sky-100 text-sky-700 border-sky-200">GTS</Badge>}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <p className="text-xs text-muted-foreground capitalize">{pointLabel(point)}</p>
                         {point.scheduledTime && (
                           <>
                             <span className="text-xs text-muted-foreground">•</span>
@@ -315,6 +337,53 @@ export default function RouteListView({
           </CardContent>
         )}
       </Card>
+      <Dialog open={isRouteMapOpen} onOpenChange={setIsRouteMapOpen}>
+        <DialogContent className="max-w-5xl">
+          <DialogHeader>
+            <DialogTitle>{selectedRoute?.name || "Route"} Pickup Points Map</DialogTitle>
+          </DialogHeader>
+          <div className="h-[560px] overflow-hidden rounded-xl border">
+            {window.google?.maps ? (
+              <GoogleMap
+                mapContainerStyle={{ width: "100%", height: "100%" }}
+                center={mapCenter}
+                zoom={15}
+                options={{ streetViewControl: false, mapTypeControl: true, fullscreenControl: true }}
+              >
+                {mapPoints.length > 1 && (
+                  <Polyline
+                    path={mapPoints.map((point: any) => point.position)}
+                    options={{ strokeColor: "#0f766e", strokeOpacity: 0.85, strokeWeight: 4 }}
+                  />
+                )}
+                {mapPoints.map((point: any) => (
+                  <Marker
+                    key={point.id}
+                    position={point.position}
+                    title={`${point.order}. ${point.name}${isGtsPoint(point) ? " (GTS)" : ""}`}
+                    label={{
+                      text: isGtsPoint(point) ? "GTS" : String(point.order || ""),
+                      color: "#ffffff",
+                      fontSize: isGtsPoint(point) ? "9px" : "11px",
+                      fontWeight: "bold",
+                    }}
+                    icon={{
+                      path: window.google.maps.SymbolPath.CIRCLE,
+                      fillColor: pointColor(point),
+                      fillOpacity: 1,
+                      strokeColor: "#ffffff",
+                      strokeWeight: 3,
+                      scale: isGtsPoint(point) ? 14 : 11,
+                    }}
+                  />
+                ))}
+              </GoogleMap>
+            ) : (
+              <div className="flex h-full items-center justify-center text-muted-foreground">Map is loading...</div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

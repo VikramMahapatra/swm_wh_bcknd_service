@@ -26,10 +26,14 @@ from swm_db import (
     DeviceORM,
     DeviceVehicleAssignmentORM,
     DriverORM,
+    DumpYardORM,
+    DumpYardWeighmentORM,
+    GtsPointORM,
     GtcCheckpointORM,
     PickupPointCrossingORM,
     PickupPointORM,
     RouteORM,
+    SecondaryVehicleAssignmentORM,
     TicketCommentORM,
     TicketORM,
     VehicleORM,
@@ -160,6 +164,7 @@ class DriverCreateRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     name: str = Field(min_length=1)
+    person_type: str | None = Field(default=None, validation_alias=AliasChoices("person_type", "personType", "type"))
     phone: str | None = None
     license_number: str | None = Field(default=None, validation_alias=AliasChoices("license_number", "licenseNumber"))
     license_expiry: str | None = Field(default=None, validation_alias=AliasChoices("license_expiry", "licenseExpiry"))
@@ -179,12 +184,18 @@ class DriverCreateRequest(BaseModel):
     @classmethod
     def validate_optional_uuid_fields(cls, value: str | None) -> str | None:
         return _validate_optional_uuid_string(value)
+
+    @field_validator("person_type", mode="before")
+    @classmethod
+    def validate_person_type(cls, value: str | None) -> str | None:
+        return _normalize_driver_person_type(value)
 
 
 class DriverUpdateRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     name: str | None = None
+    person_type: str | None = Field(default=None, validation_alias=AliasChoices("person_type", "personType", "type"))
     phone: str | None = None
     license_number: str | None = Field(default=None, validation_alias=AliasChoices("license_number", "licenseNumber"))
     license_expiry: str | None = Field(default=None, validation_alias=AliasChoices("license_expiry", "licenseExpiry"))
@@ -204,6 +215,11 @@ class DriverUpdateRequest(BaseModel):
     @classmethod
     def validate_optional_uuid_fields(cls, value: str | None) -> str | None:
         return _validate_optional_uuid_string(value)
+
+    @field_validator("person_type", mode="before")
+    @classmethod
+    def validate_person_type(cls, value: str | None) -> str | None:
+        return _normalize_driver_person_type(value)
 
 
 class PickupCoordinate(BaseModel):
@@ -216,6 +232,8 @@ class PickupCoordinate(BaseModel):
         validation_alias=AliasChoices("expected_pickup_time", "expectedPickupTime", "pickup_times", "pickupTimes"),
     )
     pickup_radius_m: float | None = Field(default=None, validation_alias=AliasChoices("pickup_radius_m", "pickupRadiusM", "radius_m", "radiusM"))
+    is_gts: bool | None = Field(default=None, validation_alias=AliasChoices("is_gts", "isGts", "is_GTS"))
+    gts_id: str | None = Field(default=None, validation_alias=AliasChoices("gts_id", "gtsId"))
 
 
 class PickupPointCreateRequest(BaseModel):
@@ -233,6 +251,8 @@ class PickupPointCreateRequest(BaseModel):
         validation_alias=AliasChoices("expected_pickup_time", "expectedPickupTime", "pickup_times", "pickupTimes"),
     )
     pickup_radius_m: float | None = Field(default=None, validation_alias=AliasChoices("pickup_radius_m", "pickupRadiusM", "radius_m", "radiusM"))
+    is_gts: bool | None = Field(default=None, validation_alias=AliasChoices("is_gts", "isGts", "is_GTS"))
+    gts_id: str | None = Field(default=None, validation_alias=AliasChoices("gts_id", "gtsId"))
     pickup_points: list[PickupCoordinate] = Field(default_factory=list, validation_alias=AliasChoices("pickup_points", "pickupPoints", "points"))
 
     @field_validator("zone_id", "ward_id", "route_id", mode="before")
@@ -259,6 +279,8 @@ class PickupPointUpdateRequest(BaseModel):
         validation_alias=AliasChoices("expected_pickup_time", "expectedPickupTime", "pickup_times", "pickupTimes"),
     )
     pickup_radius_m: float | None = Field(default=None, validation_alias=AliasChoices("pickup_radius_m", "pickupRadiusM", "radius_m", "radiusM"))
+    is_gts: bool | None = Field(default=None, validation_alias=AliasChoices("is_gts", "isGts", "is_GTS"))
+    gts_id: str | None = Field(default=None, validation_alias=AliasChoices("gts_id", "gtsId"))
 
     @field_validator("zone_id", "ward_id", "route_id", mode="before")
     @classmethod
@@ -565,15 +587,37 @@ def _resolve_active(*, status: str | None, active: bool | None, default: bool = 
     return status.strip().lower() not in {"inactive", "disabled"}
 
 
+def _normalize_driver_person_type(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "driver": "driver",
+        "helper": "helper",
+        "ic": "ic_member",
+        "ic_member": "ic_member",
+        "icmember": "ic_member",
+        "in_charge": "ic_member",
+        "incharge": "ic_member",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    raise ValueError("person_type must be one of driver, helper, ic_member")
+
+
 def _driver_to_dict(row: DriverORM) -> dict:
     metadata = dict(row.metadata_json) if isinstance(row.metadata_json, dict) else {}
     license_expiry = row.license_expiry.isoformat() if row.license_expiry is not None else None
     assigned_truck_id = str(row.assigned_vehicle_id) if row.assigned_vehicle_id is not None else None
     vendor_id = str(row.vendor_id) if row.vendor_id is not None else None
     status = str(metadata.get("status") or ("active" if row.active else "inactive"))
+    person_type = _normalize_driver_person_type(getattr(row, "person_type", None)) or "driver"
     return {
         "id": str(row.id),
         "name": row.name,
+        "person_type": person_type,
+        "personType": person_type,
+        "type": person_type,
         "phone": row.phone,
         "email": metadata.get("email"),
         "address": metadata.get("address"),
@@ -621,6 +665,10 @@ def _pickup_point_to_dict(row: PickupPointORM) -> dict:
         "expectedPickupTime": row.expected_pickup_time,
         "pickup_radius_m": row.pickup_radius_m,
         "pickupRadiusM": row.pickup_radius_m,
+        "is_gts": bool(getattr(row, "is_gts", False)),
+        "isGts": bool(getattr(row, "is_gts", False)),
+        "gts_id": str(row.gts_id) if getattr(row, "gts_id", None) is not None else None,
+        "gtsId": str(row.gts_id) if getattr(row, "gts_id", None) is not None else None,
     }
 
 
@@ -1339,7 +1387,7 @@ async def trucks_list(
     ctx: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
-    realtime = await realtime_router.list_realtime_trucks(limit=50000, _=ctx)
+    realtime = await realtime_router.list_realtime_trucks(limit=50000, session=session, _=ctx)
 
     realtime_by_vehicle: dict[str, dict] = {}
     realtime_by_imei: dict[str, dict] = {}
@@ -1356,6 +1404,10 @@ async def trucks_list(
         }
         if item.vehicle_id:
             realtime_by_vehicle[item.vehicle_id] = record
+        if item.registration_number:
+            realtime_by_vehicle[item.registration_number] = record
+        if item.vehicle_number:
+            realtime_by_vehicle[item.vehicle_number] = record
         realtime_by_imei[item.imei] = record
 
     vehicle_rows = (
@@ -1373,7 +1425,11 @@ async def trucks_list(
 
     for vehicle, ward, route, zone in vehicle_rows:
         vehicle_key = vehicle.vehicle_number or vehicle.registration_number or str(vehicle.id)
-        rt = realtime_by_vehicle.get(vehicle_key)
+        rt = (
+            realtime_by_vehicle.get(vehicle_key)
+            or realtime_by_vehicle.get(vehicle.registration_number or "")
+            or realtime_by_vehicle.get(vehicle.vehicle_number or "")
+        )
 
         truck = {
             "id": str(vehicle.id),
@@ -1412,9 +1468,9 @@ async def trucks_list(
             continue
         truck = {
             "id": rt.imei,
-            "registration_number": rt.vehicle_id or rt.imei,
+            "registration_number": rt.registration_number or rt.vehicle_number or rt.vehicle_id or rt.imei,
             "type": "compactor",
-            "route_type": "primary",
+            "route_type": rt.vehicle_category or "primary",
             "latitude": rt.lat,
             "longitude": rt.lng,
             "current_status": rt.status or "idle",
@@ -1422,10 +1478,10 @@ async def trucks_list(
             "trips_completed": 0,
             "trips_allowed": 0,
             "driver_name": None,
-            "route_name": None,
+            "route_name": rt.route_name,
             "vendor_id": rt.vendor_id or "",
-            "zone_id": "",
-            "ward_id": "",
+            "zone_id": rt.zone_id or "",
+            "ward_id": rt.ward_id or "",
             "is_spare": False,
             "last_update": rt.event_ts.isoformat() if isinstance(rt.event_ts, datetime) else None,
         }
@@ -1647,7 +1703,7 @@ async def _has_gtc_halt(
         else:
             inside_since = None
 
-    # If telemetry is sparse/noisy, accept repeated evidence inside the GTC
+    # If telemetry is sparse/noisy, accept repeated evidence inside the GTS
     # geofence spanning the threshold. This matches geofence-entry style data
     # where only periodic points land exactly inside the center radius.
     if first_inside_any is not None and last_inside_any is not None:
@@ -1755,6 +1811,7 @@ async def _completed_trip_rows(
             select(DriverORM)
             .where(
                 DriverORM.active.is_(True),
+                DriverORM.person_type == "driver",
                 cast(DriverORM.assigned_vehicle_id, String).in_(vehicle_ids),
             )
             .order_by(DriverORM.name.asc())
@@ -1899,8 +1956,8 @@ async def _completed_trip_rows(
         completion_method = "gtc_halt"
         if not completed:
             # Some simulator/backfill data has reliable pickup-point crossings
-            # but no dense telemetry points at the GTC to prove the halt window.
-            # In that case, route visited + later GTC crossing is the best
+            # but no dense telemetry points at the GTS to prove the halt window.
+            # In that case, route visited + later GTS crossing is the best
             # available completion evidence, so keep the report populated.
             completed = True
             completed_at = crossing.crossed_at
@@ -1943,7 +2000,9 @@ async def _completed_trip_rows(
                 "pickups": pickup_count_by_route.get(route_id_str, 0),
                 "status": "completed",
                 "gtcPoint": last_pickup.pickup_name or f"Pickup {last_pickup.sequence_no}",
+                "gtsPoint": last_pickup.pickup_name or f"Pickup {last_pickup.sequence_no}",
                 "gtcRadiusM": float(settings.gtc_trip_radius_m),
+                "gtsRadiusM": float(settings.gtc_trip_radius_m),
                 "haltSeconds": int(settings.gtc_trip_halt_seconds),
                 "completionMethod": completion_method,
                 "tripDetails": trip_details,
@@ -3057,6 +3116,7 @@ async def _driver_attendance_rows(
         .outerjoin(VehicleORM, DriverORM.assigned_vehicle_id == VehicleORM.id)
         .outerjoin(WardORM, VehicleORM.ward_id == WardORM.id)
         .outerjoin(ZoneORM, WardORM.zone_id == ZoneORM.id)
+        .where(DriverORM.person_type == "driver")
         .order_by(DriverORM.name.asc())
     )
     if zone_id:
@@ -3178,7 +3238,7 @@ async def _vehicle_status_rows(
         .join(WardORM, VehicleORM.ward_id == WardORM.id)
         .join(ZoneORM, WardORM.zone_id == ZoneORM.id)
         .outerjoin(RouteORM, VehicleORM.route_id == RouteORM.id)
-        .outerjoin(DriverORM, DriverORM.assigned_vehicle_id == VehicleORM.id)
+        .outerjoin(DriverORM, and_(DriverORM.assigned_vehicle_id == VehicleORM.id, DriverORM.person_type == "driver"))
         .order_by(VehicleORM.vehicle_number.asc())
     )
     if zone_id:
@@ -3375,8 +3435,120 @@ async def _vehicle_status_rows(
     return sorted(rows, key=lambda row: (row["zone"], row["ward"], row["route"], row["truck"]))
 
 
+async def _material_wise_collection_rows(
+    session: AsyncSession,
+    *,
+    date_from: date,
+    date_to: date,
+    zone_id: str | None = None,
+    ward_id: str | None = None,
+    vehicle_id: str | None = None,
+) -> list[dict]:
+    stmt = (
+        select(
+            DumpYardWeighmentORM.service_date,
+            DumpYardWeighmentORM.material_type,
+            DumpYardWeighmentORM.vehicle_id,
+            VehicleORM.vehicle_number,
+            VehicleORM.registration_number,
+            ZoneORM.zone_name,
+            WardORM.ward_name,
+            PickupPointORM.pickup_name.label("gtc_name"),
+            DumpYardORM.dump_yard_name,
+            func.count(DumpYardWeighmentORM.id).label("trip_count"),
+            func.sum(DumpYardWeighmentORM.gross_weight_kg).label("gross_weight_kg"),
+            func.sum(DumpYardWeighmentORM.tare_weight_kg).label("tare_weight_kg"),
+            func.sum(DumpYardWeighmentORM.net_weight_kg).label("net_weight_kg"),
+        )
+        .join(VehicleORM, DumpYardWeighmentORM.vehicle_id == VehicleORM.id)
+        .join(WardORM, VehicleORM.ward_id == WardORM.id)
+        .join(ZoneORM, WardORM.zone_id == ZoneORM.id)
+        .outerjoin(PickupPointORM, DumpYardWeighmentORM.gtc_pickup_point_id == PickupPointORM.id)
+        .join(DumpYardORM, DumpYardWeighmentORM.dump_yard_id == DumpYardORM.id)
+        .where(DumpYardWeighmentORM.service_date >= date_from, DumpYardWeighmentORM.service_date <= date_to)
+        .group_by(
+            DumpYardWeighmentORM.service_date,
+            DumpYardWeighmentORM.material_type,
+            DumpYardWeighmentORM.vehicle_id,
+            VehicleORM.vehicle_number,
+            VehicleORM.registration_number,
+            ZoneORM.zone_name,
+            WardORM.ward_name,
+            PickupPointORM.pickup_name,
+            DumpYardORM.dump_yard_name,
+        )
+        .order_by(DumpYardWeighmentORM.service_date.asc(), ZoneORM.zone_name.asc(), DumpYardWeighmentORM.material_type.asc())
+    )
+    try:
+        if zone_id:
+            stmt = stmt.where(ZoneORM.id == UUID(zone_id))
+        if ward_id:
+            stmt = stmt.where(WardORM.id == UUID(ward_id))
+    except ValueError:
+        return []
+    if vehicle_id:
+        stmt = stmt.where(
+            or_(
+                cast(VehicleORM.id, String) == vehicle_id,
+                VehicleORM.vehicle_number == vehicle_id,
+                VehicleORM.registration_number == vehicle_id,
+            )
+        )
+
+    rows = (await session.execute(stmt)).all()
+    material_labels = {
+        "chicken_waste": "CHICKEN WASTE",
+        "biomedical_waste": "BIOMEDICAL WASTE",
+        "construction_waste": "CONSTRUCTION WASTE",
+        "dry_waste": "DRY WASTE",
+        "green_waste": "GREEN WASTE",
+        "mandai": "MANDAI",
+        "mix_waste": "MIX WASTE",
+        "mixed_waste": "MIXED WASTE",
+        "plastic_waste": "PLASTIC WASTE",
+        "wet_waste": "WET WASTE",
+    }
+    return [
+        {
+            "id": f"material-{service_date}-{vehicle_uuid}-{material}",
+            "date": service_date.isoformat() if service_date else None,
+            "zone": zone_name or "-",
+            "ward": ward_name or "-",
+            "gtc": gtc_name or "-",
+            "gts": gtc_name or "-",
+            "dumpYard": dump_yard_name or "-",
+            "vehicleId": str(vehicle_uuid),
+            "vehicle": vehicle_number or registration_number or str(vehicle_uuid),
+            "registration": registration_number or "-",
+            "materialType": material,
+            "material": material_labels.get(material, str(material).replace("_", " ").upper()),
+            "tripCount": int(trip_count or 0),
+            "grossWeightKg": round(float(gross_weight_kg or 0), 2),
+            "tareWeightKg": round(float(tare_weight_kg or 0), 2),
+            "netWeightKg": round(float(net_weight_kg or 0), 2),
+            "netWeightTon": round(float(net_weight_kg or 0) / 1000, 3),
+        }
+        for (
+            service_date,
+            material,
+            vehicle_uuid,
+            vehicle_number,
+            registration_number,
+            zone_name,
+            ward_name,
+            gtc_name,
+            dump_yard_name,
+            trip_count,
+            gross_weight_kg,
+            tare_weight_kg,
+            net_weight_kg,
+        ) in rows
+    ]
+
+
 @router.get("/reports/data")
 async def reports_data(
+    report_type: str | None = Query(default=None, description="Optional comma-separated report sections"),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     zone_id: str | None = Query(default=None),
@@ -3386,8 +3558,13 @@ async def reports_data(
     _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    weekly_trend = await _weekly_collection_trend(session)
-    zone_wise = await _zone_performance_rows(session)
+    requested = {value.strip() for value in (report_type or "").split(",") if value.strip()}
+    include_all = not requested
+
+    def wants(*names: str) -> bool:
+        return include_all or any(name in requested for name in names)
+
+    payload: dict[str, list | dict] = {}
     report_tz = timezone(timedelta(hours=5, minutes=30))
     if date_from is None and date_to is None:
         date_from, date_to, from_ts, to_ts = _report_date_window(date_from, date_to)
@@ -3400,7 +3577,6 @@ async def reports_data(
     else:
         _, _, from_ts, to_ts = _report_date_window(date_from, date_to)
 
-    local_cross_date = func.date(func.timezone("Asia/Kolkata", PickupPointCrossingORM.crossed_at))
     vehicle_filter_values: set[str] = set()
     if vehicle_id:
         vehicle_filter_values.add(vehicle_id)
@@ -3421,293 +3597,320 @@ async def reports_data(
                 }
             )
 
-    coverage_stmt = (
-        select(
-            PickupPointCrossingORM.vehicle_id.label("vehicle_id"),
-            PickupPointCrossingORM.route_id.label("route_id"),
-            local_cross_date.label("cross_date"),
-            func.count(func.distinct(PickupPointCrossingORM.pickup_point_id)).label("covered"),
-            func.max(PickupPointCrossingORM.crossed_at).label("last_crossed_at"),
-        )
-        .group_by(
-            PickupPointCrossingORM.vehicle_id,
-            PickupPointCrossingORM.route_id,
-            local_cross_date,
-        )
-        .order_by(local_cross_date.desc(), func.max(PickupPointCrossingORM.crossed_at).desc())
-    )
-    coverage_stmt = coverage_stmt.where(
-        PickupPointCrossingORM.crossed_at >= from_ts,
-        PickupPointCrossingORM.crossed_at < to_ts,
-    )
-    if vehicle_id:
-        coverage_stmt = coverage_stmt.where(PickupPointCrossingORM.vehicle_id.in_(vehicle_filter_values))
-    coverage_rows = (await session.execute(coverage_stmt)).all()
-
-    route_ids = {row.route_id for row in coverage_rows if row.route_id is not None}
-    route_total_points: dict[str, int] = {}
-    route_pickup_points: dict[str, list[dict]] = {}
-    if route_ids:
-        route_points_stmt = (
-            select(
-                PickupPointORM.route_id,
-                func.count(PickupPointORM.id).label("total_points"),
-            )
-            .where(PickupPointORM.route_id.in_(route_ids))
-            .group_by(PickupPointORM.route_id)
-        )
-        route_total_rows = (await session.execute(route_points_stmt)).all()
-        for row in route_total_rows:
-            route_total_points[str(row.route_id)] = int(row.total_points or 0)
-
-        pickup_points_stmt = (
-            select(
-                PickupPointORM.id,
-                PickupPointORM.route_id,
-                PickupPointORM.pickup_name,
-                PickupPointORM.sequence_no,
-                PickupPointORM.expected_pickup_time,
-            )
-            .where(PickupPointORM.route_id.in_(route_ids))
-            .order_by(PickupPointORM.route_id.asc(), PickupPointORM.sequence_no.asc())
-        )
-        pickup_point_rows = (await session.execute(pickup_points_stmt)).all()
-        for pickup in pickup_point_rows:
-            route_key = str(pickup.route_id)
-            route_pickup_points.setdefault(route_key, []).append(
-                {
-                    "id": str(pickup.id),
-                    "pickupName": pickup.pickup_name or f"Pickup Point {pickup.sequence_no}",
-                    "sequenceNo": int(pickup.sequence_no or 0),
-                    "expectedTime": pickup.expected_pickup_time,
-                }
-            )
-
-    vehicle_stmt = select(
-        cast(VehicleORM.id, String).label("vehicle_id"),
-        VehicleORM.vehicle_number,
-        VehicleORM.registration_number,
-        VehicleORM.route_id,
-        WardORM.ward_name,
-        ZoneORM.zone_name,
-    ).join(WardORM, VehicleORM.ward_id == WardORM.id).join(ZoneORM, WardORM.zone_id == ZoneORM.id)
-    if zone_id:
-        vehicle_stmt = vehicle_stmt.where(cast(ZoneORM.id, String) == zone_id)
-    if ward_id:
-        vehicle_stmt = vehicle_stmt.where(cast(WardORM.id, String) == ward_id)
-    vehicle_rows = (await session.execute(vehicle_stmt)).all()
-    vehicle_meta: dict[str, dict] = {}
-    for row in vehicle_rows:
-        info = {
-            "truck": row.vehicle_number,
-            "ward": row.ward_name,
-            "zone": row.zone_name,
-            "route_id": str(row.route_id) if row.route_id is not None else None,
-        }
-        for key in (row.vehicle_id, row.vehicle_number, row.registration_number):
-            if key is not None:
-                vehicle_meta[str(key)] = info
-
-    route_stmt = select(RouteORM.id, RouteORM.route_name)
-    route_rows = (await session.execute(route_stmt)).all()
-    route_name_by_id = {str(row.id): row.route_name for row in route_rows}
-
-    pickup_crossing_details: dict[tuple[str, str, str, str], dict] = {}
-    if route_ids:
-        detail_stmt = (
+    daily_pickup_coverage: list[dict] = []
+    if wants("daily_pickup_coverage"):
+        local_cross_date = func.date(func.timezone("Asia/Kolkata", PickupPointCrossingORM.crossed_at))
+        coverage_stmt = (
             select(
                 PickupPointCrossingORM.vehicle_id.label("vehicle_id"),
                 PickupPointCrossingORM.route_id.label("route_id"),
-                PickupPointCrossingORM.pickup_point_id.label("pickup_point_id"),
                 local_cross_date.label("cross_date"),
-                func.count(PickupPointCrossingORM.id).label("crossing_count"),
-                func.min(PickupPointCrossingORM.crossed_at).label("first_crossed_at"),
+                func.count(func.distinct(PickupPointCrossingORM.pickup_point_id)).label("covered"),
                 func.max(PickupPointCrossingORM.crossed_at).label("last_crossed_at"),
-                func.min(PickupPointCrossingORM.distance_m).label("nearest_distance_m"),
             )
-            .where(
-                PickupPointCrossingORM.crossed_at >= from_ts,
-                PickupPointCrossingORM.crossed_at < to_ts,
-                PickupPointCrossingORM.route_id.in_(route_ids),
-            )
-            .group_by(
-                PickupPointCrossingORM.vehicle_id,
-                PickupPointCrossingORM.route_id,
-                PickupPointCrossingORM.pickup_point_id,
-                local_cross_date,
-            )
+            .where(PickupPointCrossingORM.crossed_at >= from_ts, PickupPointCrossingORM.crossed_at < to_ts)
+            .group_by(PickupPointCrossingORM.vehicle_id, PickupPointCrossingORM.route_id, local_cross_date)
+            .order_by(local_cross_date.desc(), func.max(PickupPointCrossingORM.crossed_at).desc())
         )
         if vehicle_id:
-            detail_stmt = detail_stmt.where(PickupPointCrossingORM.vehicle_id.in_(vehicle_filter_values))
-        detail_rows = (await session.execute(detail_stmt)).all()
-        for detail in detail_rows:
-            pickup_crossing_details[
-                (
-                    str(detail.cross_date),
-                    str(detail.vehicle_id),
-                    str(detail.route_id),
-                    str(detail.pickup_point_id),
+            coverage_stmt = coverage_stmt.where(PickupPointCrossingORM.vehicle_id.in_(vehicle_filter_values))
+        coverage_rows = (await session.execute(coverage_stmt)).all()
+
+        route_ids = {row.route_id for row in coverage_rows if row.route_id is not None}
+        route_total_points: dict[str, int] = {}
+        route_pickup_points: dict[str, list[dict]] = {}
+        if route_ids:
+            route_total_rows = (
+                await session.execute(
+                    select(PickupPointORM.route_id, func.count(PickupPointORM.id).label("total_points"))
+                    .where(PickupPointORM.route_id.in_(route_ids))
+                    .group_by(PickupPointORM.route_id)
                 )
-            ] = {
-                "crossingCount": int(detail.crossing_count or 0),
-                "firstCrossedAt": detail.first_crossed_at,
-                "lastCrossedAt": detail.last_crossed_at,
-                "nearestDistanceM": float(detail.nearest_distance_m or 0),
+            ).all()
+            for row in route_total_rows:
+                route_total_points[str(row.route_id)] = int(row.total_points or 0)
+
+            pickup_point_rows = (
+                await session.execute(
+                    select(
+                        PickupPointORM.id,
+                        PickupPointORM.route_id,
+                        PickupPointORM.pickup_name,
+                        PickupPointORM.sequence_no,
+                        PickupPointORM.expected_pickup_time,
+                    )
+                    .where(PickupPointORM.route_id.in_(route_ids))
+                    .order_by(PickupPointORM.route_id.asc(), PickupPointORM.sequence_no.asc())
+                )
+            ).all()
+            for pickup in pickup_point_rows:
+                route_key = str(pickup.route_id)
+                route_pickup_points.setdefault(route_key, []).append(
+                    {
+                        "id": str(pickup.id),
+                        "pickupName": pickup.pickup_name or f"Pickup Point {pickup.sequence_no}",
+                        "sequenceNo": int(pickup.sequence_no or 0),
+                        "expectedTime": pickup.expected_pickup_time,
+                    }
+                )
+
+        vehicle_stmt = select(
+            cast(VehicleORM.id, String).label("vehicle_id"),
+            VehicleORM.vehicle_number,
+            VehicleORM.registration_number,
+            VehicleORM.route_id,
+            WardORM.ward_name,
+            ZoneORM.zone_name,
+        ).join(WardORM, VehicleORM.ward_id == WardORM.id).join(ZoneORM, WardORM.zone_id == ZoneORM.id)
+        if zone_id:
+            vehicle_stmt = vehicle_stmt.where(cast(ZoneORM.id, String) == zone_id)
+        if ward_id:
+            vehicle_stmt = vehicle_stmt.where(cast(WardORM.id, String) == ward_id)
+        vehicle_rows = (await session.execute(vehicle_stmt)).all()
+        vehicle_meta: dict[str, dict] = {}
+        for row in vehicle_rows:
+            info = {
+                "truck": row.vehicle_number,
+                "ward": row.ward_name,
+                "zone": row.zone_name,
+                "route_id": str(row.route_id) if row.route_id is not None else None,
             }
+            for key in (row.vehicle_id, row.vehicle_number, row.registration_number):
+                if key is not None:
+                    vehicle_meta[str(key)] = info
 
-    def _format_report_time(value: datetime | None) -> str | None:
-        if value is None:
-            return None
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(report_tz).strftime("%H:%M:%S")
+        route_rows = (await session.execute(select(RouteORM.id, RouteORM.route_name))).all()
+        route_name_by_id = {str(row.id): row.route_name for row in route_rows}
 
-    def _format_report_datetime(value: datetime | None) -> str | None:
-        if value is None:
-            return None
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(report_tz).isoformat()
-
-    daily_pickup_coverage: list[dict] = []
-    for index, row in enumerate(coverage_rows, start=1):
-        route_id = str(row.route_id) if row.route_id is not None else None
-        covered = int(row.covered or 0)
-        total_points = route_total_points.get(route_id or "", 0)
-        missed = max(total_points - covered, 0)
-        status = "completed" if total_points > 0 and covered >= total_points else "partial"
-        vehicle_info = vehicle_meta.get(str(row.vehicle_id), {})
-        if (zone_id or ward_id) and not vehicle_info:
-            continue
-        pickup_details: list[dict] = []
-        for pickup in route_pickup_points.get(route_id or "", []):
-            crossing = pickup_crossing_details.get(
-                (
-                    str(row.cross_date),
-                    str(row.vehicle_id),
-                    route_id or "",
-                    pickup["id"],
+        pickup_crossing_details: dict[tuple[str, str, str, str], dict] = {}
+        if route_ids:
+            detail_stmt = (
+                select(
+                    PickupPointCrossingORM.vehicle_id.label("vehicle_id"),
+                    PickupPointCrossingORM.route_id.label("route_id"),
+                    PickupPointCrossingORM.pickup_point_id.label("pickup_point_id"),
+                    local_cross_date.label("cross_date"),
+                    func.count(PickupPointCrossingORM.id).label("crossing_count"),
+                    func.min(PickupPointCrossingORM.crossed_at).label("first_crossed_at"),
+                    func.max(PickupPointCrossingORM.crossed_at).label("last_crossed_at"),
+                    func.min(PickupPointCrossingORM.distance_m).label("nearest_distance_m"),
+                )
+                .where(
+                    PickupPointCrossingORM.crossed_at >= from_ts,
+                    PickupPointCrossingORM.crossed_at < to_ts,
+                    PickupPointCrossingORM.route_id.in_(route_ids),
+                )
+                .group_by(
+                    PickupPointCrossingORM.vehicle_id,
+                    PickupPointCrossingORM.route_id,
+                    PickupPointCrossingORM.pickup_point_id,
+                    local_cross_date,
                 )
             )
-            first_crossed_at = crossing["firstCrossedAt"] if crossing else None
-            last_crossed_at = crossing["lastCrossedAt"] if crossing else None
-            pickup_details.append(
+            if vehicle_id:
+                detail_stmt = detail_stmt.where(PickupPointCrossingORM.vehicle_id.in_(vehicle_filter_values))
+            detail_rows = (await session.execute(detail_stmt)).all()
+            for detail in detail_rows:
+                pickup_crossing_details[
+                    (
+                        str(detail.cross_date),
+                        str(detail.vehicle_id),
+                        str(detail.route_id),
+                        str(detail.pickup_point_id),
+                    )
+                ] = {
+                    "crossingCount": int(detail.crossing_count or 0),
+                    "firstCrossedAt": detail.first_crossed_at,
+                    "lastCrossedAt": detail.last_crossed_at,
+                    "nearestDistanceM": float(detail.nearest_distance_m or 0),
+                }
+
+        def _format_report_time(value: datetime | None) -> str | None:
+            if value is None:
+                return None
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.astimezone(report_tz).strftime("%H:%M:%S")
+
+        def _format_report_datetime(value: datetime | None) -> str | None:
+            if value is None:
+                return None
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.astimezone(report_tz).isoformat()
+
+        for index, row in enumerate(coverage_rows, start=1):
+            route_id = str(row.route_id) if row.route_id is not None else None
+            covered = int(row.covered or 0)
+            total_points = route_total_points.get(route_id or "", 0)
+            missed = max(total_points - covered, 0)
+            status = "completed" if total_points > 0 and covered >= total_points else "partial"
+            vehicle_info = vehicle_meta.get(str(row.vehicle_id), {})
+            if (zone_id or ward_id) and not vehicle_info:
+                continue
+            pickup_details: list[dict] = []
+            for pickup in route_pickup_points.get(route_id or "", []):
+                crossing = pickup_crossing_details.get(
+                    (
+                        str(row.cross_date),
+                        str(row.vehicle_id),
+                        route_id or "",
+                        pickup["id"],
+                    )
+                )
+                first_crossed_at = crossing["firstCrossedAt"] if crossing else None
+                last_crossed_at = crossing["lastCrossedAt"] if crossing else None
+                pickup_details.append(
+                    {
+                        **pickup,
+                        "status": "covered" if crossing else "missed",
+                        "actualTime": _format_report_time(first_crossed_at),
+                        "firstCrossedAt": _format_report_datetime(first_crossed_at),
+                        "lastCrossedAt": _format_report_datetime(last_crossed_at),
+                        "lastCrossedTime": _format_report_time(last_crossed_at),
+                        "crossingCount": crossing["crossingCount"] if crossing else 0,
+                        "nearestDistanceM": crossing["nearestDistanceM"] if crossing else None,
+                    }
+                )
+            daily_pickup_coverage.append(
                 {
-                    **pickup,
-                    "status": "covered" if crossing else "missed",
-                    "actualTime": _format_report_time(first_crossed_at),
-                    "firstCrossedAt": _format_report_datetime(first_crossed_at),
-                    "lastCrossedAt": _format_report_datetime(last_crossed_at),
-                    "lastCrossedTime": _format_report_time(last_crossed_at),
-                    "crossingCount": crossing["crossingCount"] if crossing else 0,
-                    "nearestDistanceM": crossing["nearestDistanceM"] if crossing else None,
+                    "id": f"{row.cross_date}-{row.vehicle_id}-{route_id or 'na'}-{index}",
+                    "date": str(row.cross_date),
+                    "ward": vehicle_info.get("ward") or "-",
+                    "zone": vehicle_info.get("zone") or "-",
+                    "truck": vehicle_info.get("truck") or str(row.vehicle_id),
+                    "driver": "Unassigned",
+                    "route": route_name_by_id.get(route_id or "", route_id or "-"),
+                    "totalPoints": total_points,
+                    "covered": covered,
+                    "missed": missed,
+                    "weight": "0.0",
+                    "status": status,
+                    "lastCrossedAt": row.last_crossed_at.isoformat() if row.last_crossed_at else None,
+                    "pickupDetails": pickup_details,
                 }
             )
-        daily_pickup_coverage.append(
-            {
-                "id": f"{row.cross_date}-{row.vehicle_id}-{route_id or 'na'}-{index}",
-                "date": str(row.cross_date),
-                "ward": vehicle_info.get("ward") or "-",
-                "zone": vehicle_info.get("zone") or "-",
-                "truck": vehicle_info.get("truck") or str(row.vehicle_id),
-                "driver": "Unassigned",
-                "route": route_name_by_id.get(route_id or "", route_id or "-"),
-                "totalPoints": total_points,
-                "covered": covered,
-                "missed": missed,
-                "weight": "0.0",
-                "status": status,
-                "lastCrossedAt": row.last_crossed_at.isoformat() if row.last_crossed_at else None,
-                "pickupDetails": pickup_details,
-            }
+        payload["daily_pickup_coverage"] = daily_pickup_coverage
+
+    if wants("weekly_trend"):
+        payload["weekly_trend"] = await _weekly_collection_trend(session)
+    if wants("zone_wise"):
+        payload["zone_wise"] = await _zone_performance_rows(session)
+
+    needs_trip_completed = wants("trip_completed", "truck_utilization", "driver_attendance", "route_performance")
+    trip_completed = (
+        await _completed_trip_rows(
+            session,
+            date_from=date_from,
+            date_to=date_to,
+            zone_id=zone_id,
+            ward_id=ward_id,
+            vehicle_id=vehicle_id,
+        )
+        if needs_trip_completed
+        else []
+    )
+    if wants("trip_completed"):
+        payload["trip_completed"] = trip_completed
+
+    driver_behavior = (
+        await _driver_behavior_rows(
+            session,
+            date_from=date_from,
+            date_to=date_to,
+            zone_id=zone_id,
+            ward_id=ward_id,
+            vehicle_id=vehicle_id,
+        )
+        if wants("driver_behavior", "driver_attendance")
+        else []
+    )
+    if wants("driver_behavior"):
+        payload["driver_behavior"] = driver_behavior
+
+    if wants("late_arrival"):
+        payload["late_arrival"] = await _first_pickup_arrival_rows(
+            session,
+            date_from=date_from,
+            date_to=date_to,
+            zone_id=zone_id,
+            ward_id=ward_id,
+            vehicle_id=vehicle_id,
         )
 
-    trip_completed = await _completed_trip_rows(
-        session,
-        date_from=date_from,
-        date_to=date_to,
-        zone_id=zone_id,
-        ward_id=ward_id,
-        vehicle_id=vehicle_id,
-    )
-    first_pickup_arrivals = await _first_pickup_arrival_rows(
-        session,
-        date_from=date_from,
-        date_to=date_to,
-        zone_id=zone_id,
-        ward_id=ward_id,
-        vehicle_id=vehicle_id,
-    )
-    driver_behavior = await _driver_behavior_rows(
-        session,
-        date_from=date_from,
-        date_to=date_to,
-        zone_id=zone_id,
-        ward_id=ward_id,
-        vehicle_id=vehicle_id,
-    )
-    driver_attendance = await _driver_attendance_rows(
-        session,
-        trip_completed=trip_completed,
-        driver_behavior=driver_behavior,
-        zone_id=zone_id,
-        ward_id=ward_id,
-        vehicle_id=vehicle_id,
-    )
-    route_performance = await _route_performance_rows(
-        session,
-        date_from=date_from,
-        date_to=date_to,
-        zone_id=zone_id,
-        ward_id=ward_id,
-        vehicle_id=vehicle_id,
-        route_id=route_id,
-        trip_completed=trip_completed,
-    )
-    vehicle_status = await _vehicle_status_rows(
-        session,
-        date_from=date_from,
-        date_to=date_to,
-        zone_id=zone_id,
-        ward_id=ward_id,
-        vehicle_id=vehicle_id,
-        route_id=route_id,
-    )
+    if wants("driver_attendance"):
+        payload["driver_attendance"] = await _driver_attendance_rows(
+            session,
+            trip_completed=trip_completed,
+            driver_behavior=driver_behavior,
+            zone_id=zone_id,
+            ward_id=ward_id,
+            vehicle_id=vehicle_id,
+        )
+
+    if wants("route_performance"):
+        payload["route_performance"] = await _route_performance_rows(
+            session,
+            date_from=date_from,
+            date_to=date_to,
+            zone_id=zone_id,
+            ward_id=ward_id,
+            vehicle_id=vehicle_id,
+            route_id=route_id,
+            trip_completed=trip_completed,
+        )
+
+    if wants("vehicle_status"):
+        payload["vehicle_status"] = await _vehicle_status_rows(
+            session,
+            date_from=date_from,
+            date_to=date_to,
+            zone_id=zone_id,
+            ward_id=ward_id,
+            vehicle_id=vehicle_id,
+            route_id=route_id,
+        )
+
+    if wants("material_wise_collection", "dump_yard"):
+        material_wise_collection = await _material_wise_collection_rows(
+            session,
+            date_from=date_from,
+            date_to=date_to,
+            zone_id=zone_id,
+            ward_id=ward_id,
+            vehicle_id=vehicle_id,
+        )
+        payload["dump_yard"] = material_wise_collection
+        payload["material_wise_collection"] = material_wise_collection
+
     utilization_by_truck: dict[str, dict] = {}
-    for trip in trip_completed:
-        truck = trip["truck"]
-        row = utilization_by_truck.setdefault(
-            truck,
-            {
-                "truck": truck,
-                "type": trip.get("routeType") or "Vehicle",
-                "trips": 0,
-                "operatingHours": 0.0,
-                "idleTime": 0.0,
-                "distance": 0.0,
-                "utilization": 100,
-            },
-        )
-        row["trips"] += 1
-        row["operatingHours"] = round(float(row["operatingHours"]) + (float(trip.get("durationMinutes") or 0) / 60), 2)
+    if wants("truck_utilization"):
+        for trip in trip_completed:
+            truck = trip["truck"]
+            row = utilization_by_truck.setdefault(
+                truck,
+                {
+                    "truck": truck,
+                    "type": trip.get("routeType") or "Vehicle",
+                    "trips": 0,
+                    "operatingHours": 0.0,
+                    "idleTime": 0.0,
+                    "distance": 0.0,
+                    "utilization": 100,
+                },
+            )
+            row["trips"] += 1
+            row["operatingHours"] = round(float(row["operatingHours"]) + (float(trip.get("durationMinutes") or 0) / 60), 2)
+        payload["truck_utilization"] = list(utilization_by_truck.values())
 
-    # Compatibility payload for current UI tabs. Provide real aggregates where available.
-    return {
-        "daily_pickup_coverage": daily_pickup_coverage,
-        "route_performance": route_performance,
-        "truck_utilization": list(utilization_by_truck.values()),
-        "trip_completed": trip_completed,
-        "fuel_consumption": [],
-        "driver_attendance": driver_attendance,
-        "complaints": [],
-        "dump_yard": [],
-        "weekly_trend": weekly_trend,
-        "zone_wise": zone_wise,
-        "late_arrival": first_pickup_arrivals,
-        "driver_behavior": driver_behavior,
-        "vehicle_status": vehicle_status,
-        "spare_usage": [],
-    }
+    if wants("fuel_consumption"):
+        payload["fuel_consumption"] = []
+    if wants("complaints"):
+        payload["complaints"] = []
+    if wants("spare_usage"):
+        payload["spare_usage"] = []
+
+    return payload
 
 
 @router.get("/analytics/performance/overview")
@@ -3815,6 +4018,9 @@ async def drivers_list(
             drivers_by_id[driver_id] = {
                 "id": driver_id,
                 "name": driver_name,
+                "person_type": "driver",
+                "personType": "driver",
+                "type": "driver",
                 "phone": driver_phone,
                 "license_number": license_number,
                 "license_expiry": license_expiry,
@@ -3869,6 +4075,7 @@ async def driver_create(
 
     row = DriverORM(
         name=payload.name.strip(),
+        person_type=payload.person_type or "driver",
         phone=(payload.phone or None),
         license_number=(payload.license_number or None),
         license_expiry=license_expiry,
@@ -3906,6 +4113,8 @@ async def driver_update(
 
     if payload.name is not None:
         row.name = payload.name.strip()
+    if payload.person_type is not None:
+        row.person_type = payload.person_type
     if payload.phone is not None:
         row.phone = payload.phone or None
     if payload.license_number is not None:
@@ -4108,6 +4317,8 @@ async def pickup_points_create(
                 lng=point.lng,
                 expected_pickup_time=(point.expected_pickup_time or payload.expected_pickup_time),
                 pickup_radius_m=point.pickup_radius_m if point.pickup_radius_m is not None else payload.pickup_radius_m,
+                is_gts=bool(point.is_gts if point.is_gts is not None else payload.is_gts or False),
+                gts_id=_parse_uuid(point.gts_id or payload.gts_id),
             )
         )
     session.add_all(rows)
@@ -4151,6 +4362,10 @@ async def pickup_points_update(
         row.expected_pickup_time = payload.expected_pickup_time.strip()
     if payload.pickup_radius_m is not None:
         row.pickup_radius_m = payload.pickup_radius_m
+    if payload.is_gts is not None:
+        row.is_gts = bool(payload.is_gts)
+    if payload.gts_id is not None:
+        row.gts_id = _parse_uuid(payload.gts_id)
 
     await session.commit()
     await session.refresh(row)

@@ -161,8 +161,8 @@ export const tickets: Ticket[] = [
   ,
   {
     id: 'TKT006',
-    title: 'GTC Checkpoint - Low Truck Cleanliness Score',
-    description: 'Recent GTC checkpoint shows low cleanliness score for TRK003. Request inspection and cleaning.',
+    title: 'GTS Checkpoint - Low Truck Cleanliness Score',
+    description: 'Recent GTS checkpoint shows low cleanliness score for TRK003. Request inspection and cleaning.',
     category: 'vehicle_issue',
     priority: 'medium',
     status: 'open',
@@ -170,12 +170,12 @@ export const tickets: Ticket[] = [
     updatedAt: '2024-03-11T07:45:00Z',
     dueDate: '2024-03-12T12:00:00Z',
     assignedTo: 'Fleet Manager',
-    createdBy: 'GTC Checkpoint',
+    createdBy: 'GTS Checkpoint',
     relatedTruckId: 'TRK003',
     escalationLevel: 0,
     slaBreached: false,
     comments: [
-      { id: 'CMT010', ticketId: 'TKT006', author: 'GTC Checkpoint', content: 'Score recorded below 5.0', createdAt: '2024-03-11T07:45:00Z', isInternal: true }
+      { id: 'CMT010', ticketId: 'TKT006', author: 'GTS Checkpoint', content: 'Score recorded below 5.0', createdAt: '2024-03-11T07:45:00Z', isInternal: true }
     ]
   },
   {

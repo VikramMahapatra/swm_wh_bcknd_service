@@ -28,6 +28,8 @@ const MasterDevices = lazy(() => import("./pages/MasterDevices"));
 const MasterDeviceAssignments = lazy(() => import("./pages/MasterDeviceAssignments"));
 const MasterZonesWards = lazy(() => import("./pages/MasterZonesWards"));
 const MasterRoutesPickups = lazy(() => import("./pages/MasterRoutesPickups"));
+const MasterGtsDumpYards = lazy(() => import("./pages/MasterGtsDumpYards"));
+const MasterDumpYardWeighmentEntry = lazy(() => import("./pages/MasterDumpYardWeighmentEntry"));
 const SpareVehicles = lazy(() => import("./pages/SpareVehicles"));
 const ActiveTrucks = lazy(() => import("./pages/ActiveTrucks"));
 const TripsCompleted = lazy(() => import("./pages/TripsCompleted"));
@@ -87,6 +89,8 @@ const App = () => (
                 <Route path="/master/device-assignments" element={<ProtectedRoute><MasterDeviceAssignments /></ProtectedRoute>} />
                 <Route path="/master/zones-wards" element={<ProtectedRoute><MasterZonesWards /></ProtectedRoute>} />
                 <Route path="/master/routes-pickups" element={<ProtectedRoute><MasterRoutesPickups /></ProtectedRoute>} />
+                <Route path="/master/gts-dump-yards" element={<ProtectedRoute><MasterGtsDumpYards /></ProtectedRoute>} />
+                <Route path="/master/dump-yard-weighment-entry" element={<ProtectedRoute><MasterDumpYardWeighmentEntry /></ProtectedRoute>} />
                 <Route path="/active-trucks" element={<ProtectedRoute><ActiveTrucks /></ProtectedRoute>} />
                 <Route path="/trips-completed" element={<ProtectedRoute><TripsCompleted /></ProtectedRoute>} />
                 <Route path="/active-alerts" element={<ProtectedRoute><ActiveAlertsDetail /></ProtectedRoute>} />

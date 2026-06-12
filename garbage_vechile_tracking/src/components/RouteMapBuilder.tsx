@@ -11,8 +11,10 @@ import {
   Navigation, Target, CircleDot, Building2, Clock, Loader2
 } from "lucide-react";
 import { toast } from "sonner";
-import { KHARADI_CENTER, gtpLocations, finalDumpingSites, RoutePoint, RouteData, TruckType } from "@/data/fleetData";
+import { KHARADI_CENTER, RoutePoint, RouteData, TruckType } from "@/data/fleetData";
 import { useZones, useZoneWards } from "@/hooks/useDataQueries";
+import { useQuery } from "@tanstack/react-query";
+import { apiService } from "@/services/api";
 
 interface RouteMapBuilderProps {
   route?: RouteData | null;
@@ -44,6 +46,24 @@ export default function RouteMapBuilder({ route, routeType, onSave, onCancel }: 
   // Fetch zones and wards from API
   const { data: zonesData = [], isLoading: isLoadingZones } = useZones();
   const { data: wardsData = [], isLoading: isLoadingWards } = useZoneWards(zoneId);
+  const { data: gtsPayload = { items: [] } } = useQuery({
+    queryKey: ["gts", "route-builder"],
+    queryFn: () => apiService.getGts({ active: "true", page_size: "200" }),
+  });
+  const { data: dumpYards = [] } = useQuery({
+    queryKey: ["dump-yards", "route-builder"],
+    queryFn: () => apiService.getDumpYards({ active: "true" }),
+  });
+  const gtsLocations = (Array.isArray((gtsPayload as any)?.items) ? (gtsPayload as any).items : []).map((row: any) => ({
+    id: String(row.id),
+    name: String(row.name || "GTS"),
+    position: { lat: Number(row.latitude ?? row.lat ?? 0), lng: Number(row.longitude ?? row.lng ?? 0) },
+  })).filter((row: any) => Number.isFinite(row.position.lat) && Number.isFinite(row.position.lng));
+  const dumpingLocations = (dumpYards as any[]).map((row: any) => ({
+    id: String(row.id),
+    name: String(row.name || row.dump_yard_name || "Dump Yard"),
+    position: { lat: Number(row.latitude ?? row.lat ?? 0), lng: Number(row.longitude ?? row.lng ?? 0) },
+  })).filter((row: any) => Number.isFinite(row.position.lat) && Number.isFinite(row.position.lng));
 
   // Set default zone if not set and zones are loaded
   useEffect(() => {
@@ -225,7 +245,7 @@ export default function RouteMapBuilder({ route, routeType, onSave, onCancel }: 
     toast.success("Point added to route");
   };
 
-  // Add GTP/Dumping site from existing locations
+  // Add GTS/Dumping site from existing locations
   const addExistingLocation = (location: { id: string; name: string; position: { lat: number; lng: number } }, type: "gtp" | "dumping") => {
     // Calculate suggested time based on previous point
     const suggestedTime = points.length > 0 
@@ -331,19 +351,19 @@ export default function RouteMapBuilder({ route, routeType, onSave, onCancel }: 
     }
 
     if (routeType === "primary") {
-      // Primary: should end with GTP and include only one GTP
+      // Primary: should end with GTS and include only one GTS
       const lastPoint = points[points.length - 1];
       const gtpPoints = points.filter((point) => point.type === "gtp");
       if (gtpPoints.length !== 1 || lastPoint.type !== "gtp") {
-        toast.error("Primary routes must end with exactly one GTP (Garbage Transfer Point)");
+        toast.error("Primary routes must end with exactly one GTS (Garbage Transport Station)");
         return false;
       }
     } else {
-      // Secondary: should start with GTP and end with dumping
+      // Secondary: should start with GTS and end with dumping
       const firstPoint = points[0];
       const lastPoint = points[points.length - 1];
       if (firstPoint.type !== "gtp") {
-        toast.error("Secondary routes must start with a GTP");
+        toast.error("Secondary routes must start with a GTS");
         return false;
       }
       if (lastPoint.type !== "dumping") {
@@ -458,32 +478,32 @@ export default function RouteMapBuilder({ route, routeType, onSave, onCancel }: 
               </div>
             </div>
 
-            {/* Quick Add GTP/Dumping */}
+            {/* Quick Add GTS/Dumping */}
             <div className="space-y-2">
               <Label className="text-xs text-muted-foreground">Quick Add Location</Label>
               <div className="flex gap-2">
                 <Select onValueChange={(v) => {
-                  const gtp = gtpLocations.find(g => g.id === v);
+                  const gtp = gtsLocations.find((g: any) => g.id === v);
                   if (gtp) addExistingLocation(gtp, "gtp");
                 }}>
                   <SelectTrigger className="flex-1 h-8 text-xs">
-                    <SelectValue placeholder="Add GTP" />
+                    <SelectValue placeholder="Add GTS" />
                   </SelectTrigger>
                   <SelectContent>
-                    {gtpLocations.map(gtp => (
+                    {gtsLocations.map((gtp: any) => (
                       <SelectItem key={gtp.id} value={gtp.id}>{gtp.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
                 <Select onValueChange={(v) => {
-                  const site = finalDumpingSites.find(s => s.id === v);
+                  const site = dumpingLocations.find((s: any) => s.id === v);
                   if (site) addExistingLocation(site, "dumping");
                 }}>
                   <SelectTrigger className="flex-1 h-8 text-xs">
                     <SelectValue placeholder="Add Dump" />
                   </SelectTrigger>
                   <SelectContent>
-                    {finalDumpingSites.map(site => (
+                    {dumpingLocations.map((site: any) => (
                       <SelectItem key={site.id} value={site.id}>{site.name}</SelectItem>
                     ))}
                   </SelectContent>
@@ -524,7 +544,7 @@ export default function RouteMapBuilder({ route, routeType, onSave, onCancel }: 
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="pickup">Pickup Point</SelectItem>
-                      <SelectItem value="gtp">GTP</SelectItem>
+                      <SelectItem value="gtp">GTS</SelectItem>
                       <SelectItem value="dumping">Dumping Site</SelectItem>
                     </SelectContent>
                   </Select>
@@ -607,8 +627,8 @@ export default function RouteMapBuilder({ route, routeType, onSave, onCancel }: 
                     <p>No points added yet</p>
                     <p className="text-xs mt-1">
                       {routeType === "primary" 
-                        ? "Add pickup points, then a GTP as final point"
-                        : "Start with GTP, add points, end with Dumping Yard"}
+                        ? "Add pickup points, then a GTS as final point"
+                        : "Start with GTS, add points, end with Dumping Yard"}
                     </p>
                   </div>
                 )}
@@ -661,8 +681,8 @@ export default function RouteMapBuilder({ route, routeType, onSave, onCancel }: 
                   }}
                 />
               ))}
-              {/* Existing GTPs */}
-              {gtpLocations.map(gtp => (
+              {/* Existing GTS locations */}
+              {gtsLocations.map((gtp: any) => (
                 <Marker
                   key={gtp.id}
                   position={gtp.position}
@@ -679,7 +699,7 @@ export default function RouteMapBuilder({ route, routeType, onSave, onCancel }: 
               ))}
 
               {/* Existing Dumping Sites */}
-              {finalDumpingSites.map(site => (
+              {dumpingLocations.map((site: any) => (
                 <Marker
                   key={site.id}
                   position={site.position}
@@ -789,7 +809,7 @@ export default function RouteMapBuilder({ route, routeType, onSave, onCancel }: 
               </div>
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full bg-amber-500" />
-                  <span>GTP (Transfer Point)</span>
+                  <span>GTS (Transport Station)</span>
               </div>
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full bg-red-500" />

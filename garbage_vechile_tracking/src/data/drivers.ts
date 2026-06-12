@@ -3,6 +3,7 @@
 export interface Driver {
   id: string;
   name: string;
+  personType?: 'driver' | 'helper' | 'ic_member';
   phone: string;
   email: string;
   licenseNumber: string;

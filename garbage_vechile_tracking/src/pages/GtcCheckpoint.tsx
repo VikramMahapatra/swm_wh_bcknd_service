@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
 import { useToast } from "@/hooks/use-toast";
-import { useGtcCheckpoints, useTrucks } from "@/hooks/useDataQueries";
+import { useGTSCheckpoints, useTrucks } from "@/hooks/useDataQueries";
 import { apiService } from "@/services/api";
 import { CalendarClock, ClipboardCheck, Gauge, Search, ShieldCheck, Truck } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -41,7 +41,7 @@ const formatDateTime = (value?: string) => {
   return format(parsed, "yyyy-MM-dd HH:mm");
 };
 
-export default function GtcCheckpoint() {
+export default function GTSCheckpoint() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { data: trucksData = [] } = useTrucks();
@@ -52,7 +52,7 @@ export default function GtcCheckpoint() {
   );
   const [filterDateTo, setFilterDateTo] = useState<string>(format(new Date(), "yyyy-MM-dd"));
 
-  const { data: checkpoints = [], isLoading: isLoadingCheckpoints } = useGtcCheckpoints({
+  const { data: checkpoints = [], isLoading: isLoadingCheckpoints } = useGTSCheckpoints({
     truck_id: filterTruckId === "all" ? undefined : filterTruckId,
     date_from: filterDateFrom || undefined,
     date_to: filterDateTo || undefined,
@@ -75,7 +75,7 @@ export default function GtcCheckpoint() {
     sanitary: false,
   });
   const [truckScore, setTruckScore] = useState<string>("");
-  const [gtcScore, setGtcScore] = useState<string>("");
+  const [GTSScore, setGTSScore] = useState<string>("");
   const [remarks, setRemarks] = useState<string>("");
   const [isSaving, setIsSaving] = useState(false);
 
@@ -85,22 +85,22 @@ export default function GtcCheckpoint() {
     const truckScores = entries
       .map((entry) => entry.truck_cleanliness_score)
       .filter((value) => typeof value === "number") as number[];
-    const gtcScores = entries
-      .map((entry) => entry.gtc_cleanliness_score)
+    const GTSScores = entries
+      .map((entry) => entry.GTS_cleanliness_score)
       .filter((value) => typeof value === "number") as number[];
 
     const avgTruckScore = truckScores.length
       ? truckScores.reduce((sum, value) => sum + value, 0) / truckScores.length
       : null;
-    const avgGtcScore = gtcScores.length
-      ? gtcScores.reduce((sum, value) => sum + value, 0) / gtcScores.length
+    const avgGTSScore = GTSScores.length
+      ? GTSScores.reduce((sum, value) => sum + value, 0) / GTSScores.length
       : null;
 
     return {
       totalEntries: entries.length,
       uniqueTrucks: truckSet.size,
       avgTruckScore,
-      avgGtcScore,
+      avgGTSScore,
     };
   }, [checkpoints]);
 
@@ -122,12 +122,12 @@ export default function GtcCheckpoint() {
     return value >= SCORE_MIN && value <= SCORE_MAX;
   };
 
-  const handleSliderChange = (value: number[], target: "truck" | "gtc") => {
+  const handleSliderChange = (value: number[], target: "truck" | "GTS") => {
     const nextValue = value[0]?.toString() ?? "";
     if (target === "truck") {
       setTruckScore(nextValue);
     } else {
-      setGtcScore(nextValue);
+      setGTSScore(nextValue);
     }
   };
 
@@ -136,7 +136,7 @@ export default function GtcCheckpoint() {
     setFormArrivedAt(getLocalDateTimeValue());
     setFormWaste({ dry: false, wet: false, metal: false, plastic: false, sanitary: false });
     setTruckScore("");
-    setGtcScore("");
+    setGTSScore("");
     setRemarks("");
   };
 
@@ -152,9 +152,9 @@ export default function GtcCheckpoint() {
     }
 
     const parsedTruckScore = parseScore(truckScore);
-    const parsedGtcScore = parseScore(gtcScore);
+    const parsedGTSScore = parseScore(GTSScore);
 
-    if (!validateScore(parsedTruckScore) || !validateScore(parsedGtcScore)) {
+    if (!validateScore(parsedTruckScore) || !validateScore(parsedGTSScore)) {
       toast({
         title: "Invalid score",
         description: `Scores must be between ${SCORE_MIN} and ${SCORE_MAX}.`,
@@ -172,16 +172,16 @@ export default function GtcCheckpoint() {
       is_plastic: formWaste.plastic,
       is_sanitary: formWaste.sanitary,
       truck_cleanliness_score: parsedTruckScore,
-      gtc_cleanliness_score: parsedGtcScore,
+      GTS_cleanliness_score: parsedGTSScore,
       remarks: remarks.trim() ? remarks.trim() : null,
     };
 
     try {
       setIsSaving(true);
-      await apiService.createGtcCheckpoint(payload);
-      toast({ title: "Checkpoint saved", description: "GTC entry has been recorded." });
+      await apiService.createGTSCheckpoint(payload);
+      toast({ title: "Checkpoint saved", description: "GTS entry has been recorded." });
       resetForm();
-      queryClient.invalidateQueries({ queryKey: ["gtc-checkpoints"] });
+      queryClient.invalidateQueries({ queryKey: ["GTS-checkpoints"] });
     } catch (error) {
       toast({ title: "Save failed", description: "Could not save the checkpoint entry.", variant: "destructive" });
     } finally {
@@ -204,7 +204,7 @@ export default function GtcCheckpoint() {
     ));
   };
 
-  const renderScoreBadge = (score: number | null | undefined, label: "truck" | "gtc") => {
+  const renderScoreBadge = (score: number | null | undefined, label: "truck" | "GTS") => {
     if (score === null || score === undefined) {
       return <Badge variant="outline">-</Badge>;
     }
@@ -236,7 +236,7 @@ export default function GtcCheckpoint() {
       <div className="container mx-auto px-4 py-6 space-y-6">
         <PageHeader
           category="Verification"
-          title="GTC Checkpoint"
+          title="GTS Checkpoint"
           description="Log truck arrivals, garbage types, and cleanliness scores in real time"
           icon={ClipboardCheck}
           actions={
@@ -274,11 +274,11 @@ export default function GtcCheckpoint() {
             <CardContent className="p-0">
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="text-sm text-muted-foreground">Avg GTC Score</div>
+                  <div className="text-sm text-muted-foreground">Avg GTS Score</div>
                   <div className="text-2xl font-bold text-emerald-700">
-                    {summary.avgGtcScore === null ? "-" : summary.avgGtcScore.toFixed(1)}
+                    {summary.avgGTSScore === null ? "-" : summary.avgGTSScore.toFixed(1)}
                   </div>
-                  <div className="mt-1 text-xs text-muted-foreground">Cleanliness rating at GTC</div>
+                  <div className="mt-1 text-xs text-muted-foreground">Cleanliness rating at GTS</div>
                 </div>
                 <div className="h-12 w-12 rounded-xl bg-emerald-500/10 flex items-center justify-center">
                   <ShieldCheck className="h-6 w-6 text-emerald-700" />
@@ -403,22 +403,22 @@ export default function GtcCheckpoint() {
                 </div>
                 <div className="space-y-3 rounded-xl border border-emerald-100/70 bg-white/70 p-4 shadow-sm">
                   <div className="flex items-center justify-between">
-                    <Label>GTC Cleanliness Score</Label>
-                    <Badge className="bg-emerald-100 text-emerald-700">{gtcScore || "-"}</Badge>
+                    <Label>GTS Cleanliness Score</Label>
+                    <Badge className="bg-emerald-100 text-emerald-700">{GTSScore || "-"}</Badge>
                   </div>
                   <Slider
                     min={SCORE_MIN}
                     max={SCORE_MAX}
                     step={1}
-                    value={[parseScore(gtcScore) ?? SCORE_MIN]}
-                    onValueChange={(value) => handleSliderChange(value, "gtc")}
+                    value={[parseScore(GTSScore) ?? SCORE_MIN]}
+                    onValueChange={(value) => handleSliderChange(value, "GTS")}
                   />
                   <Input
                     type="number"
                     min={SCORE_MIN}
                     max={SCORE_MAX}
-                    value={gtcScore}
-                    onChange={(event) => setGtcScore(event.target.value)}
+                    value={GTSScore}
+                    onChange={(event) => setGTSScore(event.target.value)}
                     placeholder="Optional"
                   />
                 </div>
@@ -523,7 +523,7 @@ export default function GtcCheckpoint() {
                     <TableHead>Truck</TableHead>
                     <TableHead>Garbage Types</TableHead>
                     <TableHead>Truck Score</TableHead>
-                    <TableHead>GTC Score</TableHead>
+                    <TableHead>GTS Score</TableHead>
                     <TableHead>Remarks</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -545,7 +545,7 @@ export default function GtcCheckpoint() {
                       <TableRow 
                         key={entry.id} 
                         className={`hover:bg-muted/20 ${
-                          (entry.truck_cleanliness_score > 7 || entry.gtc_cleanliness_score > 7)
+                          (entry.truck_cleanliness_score > 7 || entry.GTS_cleanliness_score > 7)
                             ? 'bg-emerald-50/30 border-l-4 border-l-emerald-400'
                             : ''
                         }`}
@@ -556,7 +556,7 @@ export default function GtcCheckpoint() {
                         </TableCell>
                         <TableCell>{wasteBadges(entry)}</TableCell>
                         <TableCell>{renderScoreBadge(entry.truck_cleanliness_score, "truck")}</TableCell>
-                        <TableCell>{renderScoreBadge(entry.gtc_cleanliness_score, "gtc")}</TableCell>
+                        <TableCell>{renderScoreBadge(entry.GTS_cleanliness_score, "GTS")}</TableCell>
                         <TableCell className="max-w-[240px] truncate" title={entry.remarks || ""}>
                           {entry.remarks || "-"}
                         </TableCell>
