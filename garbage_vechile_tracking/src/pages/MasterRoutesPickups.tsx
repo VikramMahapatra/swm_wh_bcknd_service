@@ -18,6 +18,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Route, PickupPoint } from '@/data/masterData';
 import { Plus, Search, Edit, Trash2, MapPin, Route as RouteIcon, Clock, Globe, Maximize2, Minimize2 } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
+import { FieldError, RequiredMark, ValidationAlert, errorClass as validationErrorClass } from '@/components/FormValidation';
 
 function normalizeRoute(route: any): Route {
   const routeId = String(route?.id ?? '');
@@ -29,7 +30,7 @@ function normalizeRoute(route: any): Route {
     id: routeId,
     name: String(route?.name ?? route?.route_name ?? ''),
     code: String(route?.code ?? route?.route_code ?? `R-${routeId.slice(0, 8)}`),
-    type: 'primary' as Route['type'],
+    type: (String(route?.type ?? route?.route_type ?? 'primary') === 'secondary' ? 'secondary' : 'primary') as Route['type'],
     wardId: String(route?.wardId ?? route?.ward_id ?? ''),
     zoneId: String(route?.zoneId ?? route?.zone_id ?? ''),
     assignedTruckId: route?.assignedTruckId ?? route?.assigned_truck_id,
@@ -112,6 +113,10 @@ export default function MasterRoutesPickups() {
   
   const [routeForm, setRouteForm] = useState<Partial<Route> & { coordinates?: string }>({ name: '', code: '', type: 'primary', wardId: '', zoneId: '', assignedTruckId: '', totalPickupPoints: 0, estimatedDistance: 0, estimatedTime: 0, status: 'active', coordinates: '' });
   const [pickupForm, setPickupForm] = useState<Partial<PickupPoint> & { coordinates?: string; pickupTimes?: string; pickupRadiusM?: string | number }>({ name: '', zoneId: '', wardId: '', routeId: '', coordinates: '', pickupTimes: '', pickupRadiusM: '' });
+  const [routeFormErrors, setRouteFormErrors] = useState<Record<string, string>>({});
+  const [pickupFormErrors, setPickupFormErrors] = useState<Record<string, string>>({});
+  const [validationOpen, setValidationOpen] = useState(false);
+  const [validationSummary, setValidationSummary] = useState<string[]>([]);
   const [batchEditPoints, setBatchEditPoints] = useState<PickupPoint[] | null>(null);
   const [batchEditText, setBatchEditText] = useState('');
 
@@ -152,6 +157,26 @@ export default function MasterRoutesPickups() {
   const getTruckReg = (truckId?: string) => truckId ? trucks.find(t => t.id === truckId)?.registrationNumber || 'Unknown' : 'Not Assigned';
 
   // Route handlers
+  const setRouteField = (field: string, value: any) => {
+    setRouteForm((current) => ({ ...current, [field]: value }));
+    setRouteFormErrors((current) => {
+      if (!current[field]) return current;
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+  };
+
+  const setPickupField = (field: string, value: any) => {
+    setPickupForm((current) => ({ ...current, [field]: value }));
+    setPickupFormErrors((current) => {
+      if (!current[field]) return current;
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+  };
+
   const handleRouteSubmit = async () => {
     try {
       const polylineCoordinates = String(routeForm.coordinates || '')
@@ -163,12 +188,22 @@ export default function MasterRoutesPickups() {
           return [lng, lat];
         })
         .filter((point) => Number.isFinite(point[0]) && Number.isFinite(point[1]));
-      if (polylineCoordinates.length < 2) {
-        toast({ title: "Validation Error", description: "Please provide at least 2 coordinate points for route path.", variant: "destructive" });
+      const errors: Record<string, string> = {};
+      if (!String(routeForm.name || '').trim()) errors.name = 'Route Name is required.';
+      if (!routeForm.zoneId) errors.zoneId = 'Zone is required.';
+      if (!routeForm.wardId) errors.wardId = 'Ward is required.';
+      if (polylineCoordinates.length < 2) errors.coordinates = 'Please provide at least 2 coordinate points for route path.';
+      if (Object.keys(errors).length > 0) {
+        setRouteFormErrors(errors);
+        setValidationSummary(Object.values(errors));
+        setValidationOpen(true);
         return;
       }
+      setRouteFormErrors({});
+      setValidationSummary([]);
       const payload = {
         route_name: routeForm.name || '',
+        route_type: (routeForm.type || 'primary') as 'primary' | 'secondary',
         zone_id: String(routeForm.zoneId || ''),
         ward_id: String(routeForm.wardId || ''),
         polyline_coordinates: polylineCoordinates,
@@ -189,6 +224,7 @@ export default function MasterRoutesPickups() {
       const latestRoutes = await apiService.getRoutes();
       setRoutes((latestRoutes as any[]).map(normalizeRoute));
       await queryClient.invalidateQueries({ queryKey: ['routes'] });
+      await queryClient.refetchQueries({ queryKey: ['routes'] });
       await queryClient.invalidateQueries({ queryKey: ['trucks'] });
 
       toast({
@@ -227,6 +263,9 @@ export default function MasterRoutesPickups() {
   const resetRouteForm = () => {
     setRouteForm({ name: '', code: '', type: 'primary', wardId: '', zoneId: '', assignedTruckId: '', totalPickupPoints: 0, estimatedDistance: 0, estimatedTime: 0, status: 'active', coordinates: '' });
     setEditingRoute(null);
+    setRouteFormErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
     setIsRouteDialogOpen(false);
   };
 
@@ -243,14 +282,19 @@ export default function MasterRoutesPickups() {
         })
         .filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lng));
 
-      if (!pickupForm.zoneId || !pickupForm.wardId || !pickupForm.routeId) {
-        toast({ title: "Validation Error", description: "Please select zone, ward and route.", variant: "destructive" });
+      const errors: Record<string, string> = {};
+      if (!pickupForm.zoneId) errors.zoneId = 'Zone is required.';
+      if (!pickupForm.wardId) errors.wardId = 'Ward is required.';
+      if (!pickupForm.routeId) errors.routeId = 'Route is required.';
+      if (!editingPickup && parsedPoints.length === 0) errors.coordinates = 'Please provide at least one pickup coordinate.';
+      if (Object.keys(errors).length > 0) {
+        setPickupFormErrors(errors);
+        setValidationSummary(Object.values(errors));
+        setValidationOpen(true);
         return;
       }
-      if (!editingPickup && parsedPoints.length === 0) {
-        toast({ title: "Validation Error", description: "Please provide at least one pickup coordinate.", variant: "destructive" });
-        return;
-      }
+      setPickupFormErrors({});
+      setValidationSummary([]);
 
       const payload = {
         pickup_name: pickupForm.name || undefined,
@@ -312,6 +356,9 @@ export default function MasterRoutesPickups() {
   const resetPickupForm = () => {
     setPickupForm({ name: '', zoneId: '', wardId: '', routeId: '', coordinates: '', pickupTimes: '', pickupRadiusM: '' });
     setEditingPickup(null);
+    setPickupFormErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
     setIsPickupDialogOpen(false);
   };
 
@@ -513,53 +560,57 @@ export default function MasterRoutesPickups() {
                 </DialogHeader>
                 <div className="grid gap-4 py-4">
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2"><Label>Route Name</Label><Input value={routeForm.name} onChange={(e) => setRouteForm({ ...routeForm, name: e.target.value })} /></div>
-                    <div className="space-y-2"><Label>Route Code</Label><Input value={routeForm.code} onChange={(e) => setRouteForm({ ...routeForm, code: e.target.value })} /></div>
+                    <div className="space-y-2"><Label>Route Name <RequiredMark /></Label><Input className={validationErrorClass(routeFormErrors, 'name')} value={routeForm.name} onChange={(e) => setRouteField('name', e.target.value)} /><FieldError errors={routeFormErrors} field="name" /></div>
+                    <div className="space-y-2"><Label>Route Code</Label><Input value={routeForm.code} onChange={(e) => setRouteField('code', e.target.value)} /></div>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <Label>Type</Label>
-                      <Select value={routeForm.type} onValueChange={(v) => setRouteForm({ ...routeForm, type: v as 'primary' | 'secondary' })}>
+                      <Select value={routeForm.type} onValueChange={(v) => setRouteField('type', v as 'primary' | 'secondary')}>
                         <SelectTrigger><SelectValue /></SelectTrigger>
                         <SelectContent><SelectItem value="primary">Primary</SelectItem><SelectItem value="secondary">Secondary</SelectItem></SelectContent>
                       </Select>
                     </div>
                     <div className="space-y-2">
-                      <Label>Zone</Label>
-                      <Select value={routeForm.zoneId} onValueChange={(v) => setRouteForm({ ...routeForm, zoneId: v, wardId: '' })}>
-                        <SelectTrigger><SelectValue placeholder="Select zone" /></SelectTrigger>
+                      <Label>Zone <RequiredMark /></Label>
+                      <Select value={routeForm.zoneId} onValueChange={(v) => { setRouteField('zoneId', v); setRouteField('wardId', ''); }}>
+                        <SelectTrigger className={validationErrorClass(routeFormErrors, 'zoneId')}><SelectValue placeholder="Select zone" /></SelectTrigger>
                         <SelectContent>{zones.map(z => <SelectItem key={z.id} value={z.id}>{z.name}</SelectItem>)}</SelectContent>
                       </Select>
+                      <FieldError errors={routeFormErrors} field="zoneId" />
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <Label>Ward</Label>
-                      <Select value={routeForm.wardId} onValueChange={(v) => setRouteForm({ ...routeForm, wardId: v })}>
-                        <SelectTrigger><SelectValue placeholder="Select ward" /></SelectTrigger>
+                      <Label>Ward <RequiredMark /></Label>
+                      <Select value={routeForm.wardId} onValueChange={(v) => setRouteField('wardId', v)}>
+                        <SelectTrigger className={validationErrorClass(routeFormErrors, 'wardId')}><SelectValue placeholder="Select ward" /></SelectTrigger>
                         <SelectContent>{wards.filter(w => !routeForm.zoneId || w.zoneId === routeForm.zoneId).map(w => <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>)}</SelectContent>
                       </Select>
+                      <FieldError errors={routeFormErrors} field="wardId" />
                     </div>
                     <div className="space-y-2">
                       <Label>Assigned Truck</Label>
-                      <Select value={routeForm.assignedTruckId || 'none'} onValueChange={(v) => setRouteForm({ ...routeForm, assignedTruckId: v === 'none' ? '' : v })}>
+                      <Select value={routeForm.assignedTruckId || 'none'} onValueChange={(v) => setRouteField('assignedTruckId', v === 'none' ? '' : v)}>
                         <SelectTrigger><SelectValue placeholder="Select truck" /></SelectTrigger>
                         <SelectContent><SelectItem value="none">Not Assigned</SelectItem>{trucks.filter(t => t.status === 'active').map(t => <SelectItem key={t.id} value={t.id}>{t.registrationNumber}</SelectItem>)}</SelectContent>
                       </Select>
                     </div>
                   </div>
                   <div className="grid grid-cols-3 gap-4">
-                    <div className="space-y-2"><Label>Pickup Points</Label><Input type="number" value={routeForm.totalPickupPoints} onChange={(e) => setRouteForm({ ...routeForm, totalPickupPoints: Number(e.target.value) })} /></div>
-                    <div className="space-y-2"><Label>Distance (km)</Label><Input type="number" value={routeForm.estimatedDistance} onChange={(e) => setRouteForm({ ...routeForm, estimatedDistance: Number(e.target.value) })} /></div>
-                    <div className="space-y-2"><Label>Time (min)</Label><Input type="number" value={routeForm.estimatedTime} onChange={(e) => setRouteForm({ ...routeForm, estimatedTime: Number(e.target.value) })} /></div>
+                    <div className="space-y-2"><Label>Pickup Points</Label><Input type="number" value={routeForm.totalPickupPoints} onChange={(e) => setRouteField('totalPickupPoints', Number(e.target.value))} /></div>
+                    <div className="space-y-2"><Label>Distance (km)</Label><Input type="number" value={routeForm.estimatedDistance} onChange={(e) => setRouteField('estimatedDistance', Number(e.target.value))} /></div>
+                    <div className="space-y-2"><Label>Time (min)</Label><Input type="number" value={routeForm.estimatedTime} onChange={(e) => setRouteField('estimatedTime', Number(e.target.value))} /></div>
                   </div>
                   <div className="space-y-2">
-                    <Label>Route Coordinates (lat,lng;lat,lng)</Label>
+                    <Label>Route Coordinates (lat,lng;lat,lng) <RequiredMark /></Label>
                     <Input
+                      className={validationErrorClass(routeFormErrors, 'coordinates')}
                       value={routeForm.coordinates || ''}
-                      onChange={(e) => setRouteForm({ ...routeForm, coordinates: e.target.value })}
+                      onChange={(e) => setRouteField('coordinates', e.target.value)}
                       placeholder="18.6559,73.7714;18.6564,73.7715;18.6571,73.7716"
                     />
+                    <FieldError errors={routeFormErrors} field="coordinates" />
                   </div>
                 </div>
                 <DialogFooter>
@@ -625,6 +676,9 @@ export default function MasterRoutesPickups() {
                                 .map((p: any) => `${p.lat},${p.lng}`)
                                 .join(';');
                               setEditingRoute(route);
+                              setRouteFormErrors({});
+                              setValidationOpen(false);
+                              setValidationSummary([]);
                               setRouteForm({ ...route, coordinates });
                               setIsRouteDialogOpen(true);
                             }}
@@ -797,47 +851,52 @@ export default function MasterRoutesPickups() {
                   </div>
                 ) : (
                   <div className="grid gap-4 py-4 max-h-[60vh] overflow-y-auto">
-                    <div className="space-y-2"><Label>Pickup Name</Label><Input value={pickupForm.name || ''} onChange={(e) => setPickupForm({ ...pickupForm, name: e.target.value })} placeholder="R1 Pickup Points" /></div>
+                    <div className="space-y-2"><Label>Pickup Name</Label><Input value={pickupForm.name || ''} onChange={(e) => setPickupField('name', e.target.value)} placeholder="R1 Pickup Points" /></div>
                     <div className="grid grid-cols-3 gap-4">
                       <div className="space-y-2">
-                        <Label>Zone</Label>
-                        <Select value={pickupForm.zoneId || ''} onValueChange={(v) => setPickupForm({ ...pickupForm, zoneId: v, wardId: '', routeId: '' })}>
-                          <SelectTrigger><SelectValue placeholder="Select zone" /></SelectTrigger>
+                        <Label>Zone <RequiredMark /></Label>
+                        <Select value={pickupForm.zoneId || ''} onValueChange={(v) => { setPickupField('zoneId', v); setPickupField('wardId', ''); setPickupField('routeId', ''); }}>
+                          <SelectTrigger className={validationErrorClass(pickupFormErrors, 'zoneId')}><SelectValue placeholder="Select zone" /></SelectTrigger>
                           <SelectContent>{zones.map(z => <SelectItem key={z.id} value={z.id}>{z.name}</SelectItem>)}</SelectContent>
                         </Select>
+                        <FieldError errors={pickupFormErrors} field="zoneId" />
                       </div>
                       <div className="space-y-2">
-                        <Label>Ward</Label>
-                        <Select value={pickupForm.wardId || ''} onValueChange={(v) => setPickupForm({ ...pickupForm, wardId: v, routeId: '' })}>
-                          <SelectTrigger><SelectValue placeholder="Select ward" /></SelectTrigger>
+                        <Label>Ward <RequiredMark /></Label>
+                        <Select value={pickupForm.wardId || ''} onValueChange={(v) => { setPickupField('wardId', v); setPickupField('routeId', ''); }}>
+                          <SelectTrigger className={validationErrorClass(pickupFormErrors, 'wardId')}><SelectValue placeholder="Select ward" /></SelectTrigger>
                           <SelectContent>{wards.filter(w => !pickupForm.zoneId || w.zoneId === pickupForm.zoneId).map(w => <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>)}</SelectContent>
                         </Select>
+                        <FieldError errors={pickupFormErrors} field="wardId" />
                       </div>
                       <div className="space-y-2">
-                        <Label>Route</Label>
-                        <Select value={pickupForm.routeId || ''} onValueChange={(v) => setPickupForm({ ...pickupForm, routeId: v })}>
-                          <SelectTrigger><SelectValue placeholder="Select route" /></SelectTrigger>
+                        <Label>Route <RequiredMark /></Label>
+                        <Select value={pickupForm.routeId || ''} onValueChange={(v) => setPickupField('routeId', v)}>
+                          <SelectTrigger className={validationErrorClass(pickupFormErrors, 'routeId')}><SelectValue placeholder="Select route" /></SelectTrigger>
                           <SelectContent>
                             {routes
                               .filter(r => (!pickupForm.zoneId || r.zoneId === pickupForm.zoneId) && (!pickupForm.wardId || r.wardId === pickupForm.wardId))
                               .map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
                           </SelectContent>
                         </Select>
+                        <FieldError errors={pickupFormErrors} field="routeId" />
                       </div>
                     </div>
                     <div className="space-y-2">
-                      <Label>{editingPickup ? 'Pickup Coordinate (lat,lng)' : 'Pickup Coordinates (lat,lng;lat,lng)'}</Label>
+                      <Label>{editingPickup ? 'Pickup Coordinate (lat,lng)' : 'Pickup Coordinates (lat,lng;lat,lng)'} {!editingPickup && <RequiredMark />}</Label>
                       <Input
+                        className={validationErrorClass(pickupFormErrors, 'coordinates')}
                         value={pickupForm.coordinates || ''}
-                        onChange={(e) => setPickupForm({ ...pickupForm, coordinates: e.target.value })}
+                        onChange={(e) => setPickupField('coordinates', e.target.value)}
                         placeholder="18.65590324664102,73.77146106998136;18.65645416108611,73.77153575645825"
                       />
+                      <FieldError errors={pickupFormErrors} field="coordinates" />
                     </div>
                     <div className="space-y-2">
                       <Label>Pickup Times (comma separated)</Label>
                       <Input
                         value={pickupForm.pickupTimes || ''}
-                        onChange={(e) => setPickupForm({ ...pickupForm, pickupTimes: e.target.value })}
+                        onChange={(e) => setPickupField('pickupTimes', e.target.value)}
                         placeholder="06:00,07:00,08:00"
                       />
                     </div>
@@ -848,7 +907,7 @@ export default function MasterRoutesPickups() {
                         min={0}
                         step="1"
                         value={pickupForm.pickupRadiusM ?? ''}
-                        onChange={(e) => setPickupForm({ ...pickupForm, pickupRadiusM: e.target.value })}
+                        onChange={(e) => setPickupField('pickupRadiusM', e.target.value)}
                         placeholder="30"
                       />
                     </div>
@@ -967,6 +1026,9 @@ export default function MasterRoutesPickups() {
                                     title="Edit this pickup point"
                                     onClick={() => {
                                       setEditingPickup(pickup);
+                                      setPickupFormErrors({});
+                                      setValidationOpen(false);
+                                      setValidationSummary([]);
                                       setPickupForm({
                                         name: pickup.name,
                                         zoneId: pickup.zoneId,
@@ -1127,6 +1189,8 @@ export default function MasterRoutesPickups() {
           </Dialog>
         </TabsContent>
       </Tabs>
+
+      <ValidationAlert open={validationOpen} onOpenChange={setValidationOpen} messages={validationSummary} />
     </div>
   );
 }

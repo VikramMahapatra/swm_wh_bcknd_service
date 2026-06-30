@@ -15,6 +15,7 @@ import { useMemo } from 'react';
 import { Vendor } from '@/data/masterData';
 import { Plus, Search, Edit, Trash2, Phone, Mail, Building2, Download, Truck, Loader2 } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
+import { FieldError, RequiredMark, ValidationAlert, errorClass as validationErrorClass } from '@/components/FormValidation';
 
 export default function MasterVendors() {
   const { toast } = useToast();
@@ -27,18 +28,34 @@ export default function MasterVendors() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editingVendor, setEditingVendor] = useState<Vendor | null>(null);
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [validationOpen, setValidationOpen] = useState(false);
+  const [validationSummary, setValidationSummary] = useState<string[]>([]);
+
+  const normalizeDateValue = (value?: string | null) => (value ? value.slice(0, 10) : '');
+
+  const normalizeVendor = (vendor: any): Vendor => {
+    const metadata = vendor?.metadata && typeof vendor.metadata === 'object' ? vendor.metadata : {};
+    return {
+      ...vendor,
+      name: vendor.contact_person || vendor.contactPerson || vendor.name || '',
+      companyName: vendor.companyName || vendor.company_name || vendor.vendor_name || '',
+      gstNumber: vendor.gstNumber || vendor.gst_number || metadata.gstNumber || metadata.gst_number || '',
+      address: vendor.address || metadata.address || '',
+      contractStart: normalizeDateValue(
+        vendor.contractStart || vendor.contract_start || metadata.contractStart || metadata.contract_start,
+      ),
+      contractEnd: normalizeDateValue(
+        vendor.contractEnd || vendor.contract_end || metadata.contractEnd || metadata.contract_end,
+      ),
+      supervisorName: '',
+      supervisorPhone: '',
+      trucksOwned: vendor.trucksOwned || [],
+    } as Vendor;
+  };
 
   useEffect(() => {
-    const normalizedVendors = (vendorsData as any[]).map((vendor) => ({
-      ...vendor,
-      companyName: vendor.companyName || vendor.company_name,
-      gstNumber: vendor.gstNumber || vendor.gst_number,
-      contractStart: vendor.contractStart || vendor.contract_start,
-      contractEnd: vendor.contractEnd || vendor.contract_end,
-      supervisorName: vendor.supervisorName || vendor.supervisor_name,
-      supervisorPhone: vendor.supervisorPhone || vendor.supervisor_phone,
-      trucksOwned: vendor.trucksOwned || [],
-    })) as Vendor[];
+    const normalizedVendors = (vendorsData as any[]).map(normalizeVendor);
 
     setVendors(normalizedVendors);
   }, [vendorsData]);
@@ -53,8 +70,6 @@ export default function MasterVendors() {
     contractStart: '',
     contractEnd: '',
     status: 'active',
-    supervisorName: '',
-    supervisorPhone: '',
     trucksOwned: []
   });
 
@@ -97,39 +112,82 @@ export default function MasterVendors() {
     return base.length >= 3 ? base : 'VND_VENDOR';
   };
 
+  const setField = (field: keyof Vendor, value: any) => {
+    setFormData((current) => ({ ...current, [field]: value }));
+    setFormErrors((current) => {
+      if (!current[field as string]) return current;
+      const next = { ...current };
+      delete next[field as string];
+      return next;
+    });
+  };
+
+  const validateForm = () => {
+    const errors: Record<string, string> = {};
+    const vendorName = String(formData.companyName || '').trim();
+    const email = String(formData.email || '').trim();
+    const phone = String(formData.phone || '').trim();
+    const contractStart = String(formData.contractStart || '').trim();
+    const contractEnd = String(formData.contractEnd || '').trim();
+    if (!vendorName) errors.companyName = 'Company Name is required.';
+    if (!phone) errors.phone = 'Phone Number is required.';
+    if (!email) errors.email = 'Email is required.';
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.email = 'Email must be a valid email address.';
+    if (contractStart && contractEnd && contractEnd < contractStart) {
+      errors.contractEnd = 'Contract End Date must be greater than or equal to Contract Start Date.';
+    }
+    return errors;
+  };
+
   const handleSubmit = async () => {
     try {
-      const vendorName = (formData.companyName || formData.name || '').trim();
-      if (!vendorName) {
-        toast({ title: "Company name is required", description: "Please provide vendor company name.", variant: "destructive" });
+      const vendorName = String(formData.companyName || '').trim();
+      const errors = validateForm();
+      if (Object.keys(errors).length > 0) {
+        setFormErrors(errors);
+        setValidationSummary(Object.values(errors));
+        setValidationOpen(true);
         return;
       }
+      setFormErrors({});
+      setValidationSummary([]);
 
       if (editingVendor) {
         const existing = await apiService.getVendor(editingVendor.id);
+        const mergedMetadata = {
+          ...(existing?.metadata_json || existing?.metadata || {}),
+          gst_number: formData.gstNumber || null,
+          address: formData.address || null,
+        };
         const updated = await apiService.updateVendor(editingVendor.id, {
           vendor_code: existing?.vendor_code || buildVendorCode(vendorName),
           vendor_name: vendorName,
           contact_person: formData.name || null,
           phone: formData.phone || null,
           email: formData.email || null,
+          gst_number: formData.gstNumber || null,
+          address: formData.address || null,
+          contract_start: formData.contractStart || null,
+          contract_end: formData.contractEnd || null,
           active: formData.status !== 'inactive' && formData.status !== 'suspended',
           auth_type: existing?.auth_type || 'header',
           allowed_ips: Array.isArray(existing?.allowed_ips) ? existing.allowed_ips : [],
           callback_format: existing?.callback_format || {},
-          metadata: existing?.metadata_json || existing?.metadata || {},
+          metadata: mergedMetadata,
           webhook_secret: existing?.webhook_secret || null,
           signature_key: existing?.signature_key || null,
         });
 
-        setVendors(prev => prev.map(v => v.id === editingVendor.id ? {
+        setVendors(prev => prev.map(v => v.id === editingVendor.id ? normalizeVendor({
           ...v,
           ...formData,
+          ...updated,
           id: String(updated?.id || editingVendor.id),
           companyName: updated?.vendor_name || vendorName,
           name: updated?.contact_person || formData.name || '',
           status: updated?.active === false ? 'inactive' : 'active',
-        } as Vendor : v));
+          metadata: updated?.metadata || updated?.metadata_json || existing?.metadata_json || existing?.metadata || {},
+        }) : v));
         toast({ title: "Vendor Updated", description: "Vendor information has been updated." });
       } else {
         const created = await apiService.createVendor({
@@ -138,21 +196,30 @@ export default function MasterVendors() {
           contact_person: formData.name || null,
           phone: formData.phone || null,
           email: formData.email || null,
+          gst_number: formData.gstNumber || null,
+          address: formData.address || null,
+          contract_start: formData.contractStart || null,
+          contract_end: formData.contractEnd || null,
           active: formData.status !== 'inactive' && formData.status !== 'suspended',
           auth_type: 'header',
           allowed_ips: [],
           callback_format: {},
-          metadata: {},
+          metadata: {
+            gst_number: formData.gstNumber || null,
+            address: formData.address || null,
+          },
         });
 
-        const newVendor: Vendor = {
-          ...formData as Vendor,
+        const newVendor: Vendor = normalizeVendor({
+          ...(formData as Vendor),
+          ...created,
           id: String(created?.id || ''),
           companyName: created?.vendor_name || vendorName,
           name: created?.contact_person || formData.name || '',
           status: created?.active === false ? 'inactive' : 'active',
-          trucksOwned: []
-        };
+          metadata: created?.metadata || created?.metadata_json || {},
+          trucksOwned: [],
+        });
         setVendors(prev => [...prev, newVendor]);
         toast({ title: "Vendor Added", description: "New vendor has been added successfully." });
       }
@@ -184,14 +251,21 @@ export default function MasterVendors() {
   };
 
   const resetForm = () => {
-    setFormData({ name: '', companyName: '', phone: '', email: '', address: '', gstNumber: '', contractStart: '', contractEnd: '', status: 'active', supervisorName: '', supervisorPhone: '', trucksOwned: [] });
+    setFormData({ name: '', companyName: '', phone: '', email: '', address: '', gstNumber: '', contractStart: '', contractEnd: '', status: 'active', trucksOwned: [] });
     setEditingVendor(null);
     setIsAddDialogOpen(false);
+    setFormErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
   };
 
   const openEditDialog = (vendor: Vendor) => {
-    setEditingVendor(vendor);
-    setFormData(vendor);
+    const normalizedVendor = normalizeVendor(vendor);
+    setEditingVendor(normalizedVendor);
+    setFormData(normalizedVendor);
+    setFormErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
     setIsAddDialogOpen(true);
   };
 
@@ -242,21 +316,24 @@ export default function MasterVendors() {
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>Contact Person Name</Label>
-                    <Input value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} />
+                    <Input value={formData.name} onChange={(e) => setField('name', e.target.value)} />
                   </div>
                   <div className="space-y-2">
-                    <Label>Company Name</Label>
-                    <Input value={formData.companyName} onChange={(e) => setFormData({ ...formData, companyName: e.target.value })} />
+                    <Label>Company Name <RequiredMark /></Label>
+                    <Input className={validationErrorClass(formErrors, 'companyName')} value={formData.companyName} onChange={(e) => setField('companyName', e.target.value)} />
+                    <FieldError errors={formErrors} field="companyName" />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label>Phone Number</Label>
-                    <Input value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })} />
+                    <Label>Phone Number <RequiredMark /></Label>
+                    <Input className={validationErrorClass(formErrors, 'phone')} value={formData.phone} onChange={(e) => setField('phone', e.target.value)} />
+                    <FieldError errors={formErrors} field="phone" />
                   </div>
                   <div className="space-y-2">
-                    <Label>Email</Label>
-                    <Input type="email" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} />
+                    <Label>Email <RequiredMark /></Label>
+                    <Input className={validationErrorClass(formErrors, 'email')} type="email" value={formData.email} onChange={(e) => setField('email', e.target.value)} />
+                    <FieldError errors={formErrors} field="email" />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -272,26 +349,17 @@ export default function MasterVendors() {
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>Contract Start Date</Label>
-                    <Input type="date" value={formData.contractStart} onChange={(e) => setFormData({ ...formData, contractStart: e.target.value })} />
+                    <Input type="date" value={formData.contractStart} onChange={(e) => setField('contractStart', e.target.value)} />
                   </div>
                   <div className="space-y-2">
                     <Label>Contract End Date</Label>
-                    <Input type="date" value={formData.contractEnd} onChange={(e) => setFormData({ ...formData, contractEnd: e.target.value })} />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Supervisor Name</Label>
-                    <Input value={formData.supervisorName} onChange={(e) => setFormData({ ...formData, supervisorName: e.target.value })} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Supervisor Phone</Label>
-                    <Input value={formData.supervisorPhone} onChange={(e) => setFormData({ ...formData, supervisorPhone: e.target.value })} />
+                    <Input className={validationErrorClass(formErrors, 'contractEnd')} type="date" value={formData.contractEnd} onChange={(e) => setField('contractEnd', e.target.value)} />
+                    <FieldError errors={formErrors} field="contractEnd" />
                   </div>
                 </div>
                 <div className="space-y-2">
                   <Label>Status</Label>
-                  <Select value={formData.status} onValueChange={(value) => setFormData({ ...formData, status: value as Vendor['status'] })}>
+                  <Select value={formData.status} onValueChange={(value) => setField('status', value as Vendor['status'])}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="active">Active</SelectItem>
@@ -403,8 +471,8 @@ export default function MasterVendors() {
                     </div>
                   </TableCell>
                   <TableCell>
-                    <div className="text-sm">{vendor.contractStart}</div>
-                    <div className="text-xs text-muted-foreground">to {vendor.contractEnd}</div>
+                    <div className="text-sm">{vendor.contractStart || '-'}</div>
+                    <div className="text-xs text-muted-foreground">to {vendor.contractEnd || '-'}</div>
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-1">
@@ -425,6 +493,8 @@ export default function MasterVendors() {
           </Table>
         </CardContent>
       </Card>
+
+      <ValidationAlert open={validationOpen} onOpenChange={setValidationOpen} messages={validationSummary} />
     </div>
   );
 }

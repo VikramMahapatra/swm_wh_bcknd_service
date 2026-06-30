@@ -1,0 +1,6 @@
+STDOUT:
+FAILED: Path doesn't exist: alembic.  Please use the 'init' command to create a new scripts folder.
+
+STDERR:
+
+EXIT:4294967295

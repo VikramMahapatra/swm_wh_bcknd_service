@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 
 import { PageHeader } from "@/components/PageHeader";
+import { FieldError, RequiredMark, ValidationAlert, errorClass as validationErrorClass } from "@/components/FormValidation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -620,6 +621,9 @@ export default function MasterDumpYardWeighmentEntry() {
   const [debouncedTruckQuery, setDebouncedTruckQuery] = useState("");
   const [selectedVehicle, setSelectedVehicle] = useState<any | null>(null);
   const [form, setForm] = useState(emptyForm);
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [validationOpen, setValidationOpen] = useState(false);
+  const [validationSummary, setValidationSummary] = useState<string[]>([]);
 
   useEffect(() => {
     const handle = window.setTimeout(() => setDebouncedTruckQuery(truckQuery.trim()), 250);
@@ -705,6 +709,11 @@ export default function MasterDumpYardWeighmentEntry() {
     setSelectedVehicle(vehicle);
     setTruckQuery(vehicle.vehicle_number || vehicle.registration_number || "");
     setDebouncedTruckQuery("");
+    setFormErrors((current) => {
+      const next = { ...current };
+      delete next.vehicle_id;
+      return next;
+    });
   };
 
   const updateWeight = (key: "gross_weight_kg" | "tare_weight_kg", value: string) => {
@@ -713,24 +722,38 @@ export default function MasterDumpYardWeighmentEntry() {
     const tare = Number(next.tare_weight_kg);
     next.net_weight_kg = Number.isFinite(gross) && Number.isFinite(tare) ? Math.max(gross - tare, 0).toFixed(1) : "";
     setForm(next);
+    setFormErrors((current) => {
+      const next = { ...current };
+      delete next.gross_weight_kg;
+      delete next.tare_weight_kg;
+      return next;
+    });
   };
 
   const handleSave = () => {
+    const errors: Record<string, string> = {};
     if (!form.vehicle_id) {
-      toast({ title: "Select truck number", description: "Search and select a truck before saving.", variant: "destructive" });
-      return;
+      errors.vehicle_id = "Truck Number is required.";
     }
     if (!form.dump_yard_id || !form.material_type) {
-      toast({ title: "Missing dump details", description: "Select dump yard and material type.", variant: "destructive" });
-      return;
+      if (!form.dump_yard_id) errors.dump_yard_id = "Dump Yard is required.";
+      if (!form.material_type) errors.material_type = "Material Type is required.";
     }
     const gross = Number(form.gross_weight_kg);
     const tare = Number(form.tare_weight_kg);
     const net = Number(form.net_weight_kg || netWeight);
     if (!Number.isFinite(gross) || !Number.isFinite(tare) || gross < 0 || tare < 0 || gross < tare) {
-      toast({ title: "Invalid weights", description: "Gross and tare must be valid non-negative values, and gross must be greater than tare.", variant: "destructive" });
+      errors.gross_weight_kg = "Gross and tare must be valid non-negative values, and gross must be greater than tare.";
+      errors.tare_weight_kg = "Gross and tare must be valid non-negative values, and gross must be greater than tare.";
+    }
+    if (Object.keys(errors).length > 0) {
+      setFormErrors(errors);
+      setValidationSummary(Object.values(errors));
+      setValidationOpen(true);
       return;
     }
+    setFormErrors({});
+    setValidationSummary([]);
     createMutation.mutate({
       vehicle_id: form.vehicle_id,
       gts_pickup_point_id: form.gts_pickup_point_id || null,
@@ -821,8 +844,8 @@ export default function MasterDumpYardWeighmentEntry() {
           </CardHeader>
           <CardContent className="space-y-6 p-5">
             <div className="relative">
-              <Label className="text-sm font-semibold">Truck Number</Label>
-              <div className="mt-2 flex items-center gap-3 rounded-2xl border border-emerald-200 bg-white px-4 py-3 shadow-sm focus-within:ring-2 focus-within:ring-emerald-500/25">
+              <Label className="text-sm font-semibold">Truck Number <RequiredMark /></Label>
+              <div className={`mt-2 flex items-center gap-3 rounded-2xl border border-emerald-200 bg-white px-4 py-3 shadow-sm focus-within:ring-2 focus-within:ring-emerald-500/25 ${validationErrorClass(formErrors, "vehicle_id")}`}>
                 <Search className="h-5 w-5 text-emerald-700" />
                 <Input
                   value={truckQuery}
@@ -832,6 +855,7 @@ export default function MasterDumpYardWeighmentEntry() {
                 />
                 {searchingTrucks && <Badge variant="outline">Searching</Badge>}
               </div>
+              <FieldError errors={formErrors} field="vehicle_id" />
               {debouncedTruckQuery && truckMatches.length > 0 && (
                 <div className="absolute z-30 mt-2 max-h-72 w-full overflow-auto rounded-xl border bg-white p-2 shadow-xl">
                   {truckMatches.map((vehicle: any) => (
@@ -879,9 +903,9 @@ export default function MasterDumpYardWeighmentEntry() {
 
             <div className="grid gap-4 md:grid-cols-3">
               <div>
-                <Label>Dump Yard</Label>
-                <Select value={form.dump_yard_id} onValueChange={(value) => setForm({ ...form, dump_yard_id: value })}>
-                  <SelectTrigger className="mt-2"><SelectValue placeholder="Select dump yard" /></SelectTrigger>
+                <Label>Dump Yard <RequiredMark /></Label>
+                <Select value={form.dump_yard_id} onValueChange={(value) => { setForm({ ...form, dump_yard_id: value }); setFormErrors((current) => { const next = { ...current }; delete next.dump_yard_id; return next; }); }}>
+                  <SelectTrigger className={`mt-2 ${validationErrorClass(formErrors, "dump_yard_id")}`}><SelectValue placeholder="Select dump yard" /></SelectTrigger>
                   <SelectContent>
                     {(dumpYards as any[]).map((yard) => (
                       <SelectItem key={yard.id} value={String(yard.id)}>
@@ -890,11 +914,12 @@ export default function MasterDumpYardWeighmentEntry() {
                     ))}
                   </SelectContent>
                 </Select>
+                <FieldError errors={formErrors} field="dump_yard_id" />
               </div>
               <div>
-                <Label>Material Type</Label>
-                <Select value={form.material_type} onValueChange={(value) => setForm({ ...form, material_type: value })}>
-                  <SelectTrigger className="mt-2"><SelectValue placeholder="Select material" /></SelectTrigger>
+                <Label>Material Type <RequiredMark /></Label>
+                <Select value={form.material_type} onValueChange={(value) => { setForm({ ...form, material_type: value }); setFormErrors((current) => { const next = { ...current }; delete next.material_type; return next; }); }}>
+                  <SelectTrigger className={`mt-2 ${validationErrorClass(formErrors, "material_type")}`}><SelectValue placeholder="Select material" /></SelectTrigger>
                   <SelectContent>
                     {(materialTypes as any[]).map((item) => (
                       <SelectItem key={item.value} value={String(item.value)}>
@@ -903,6 +928,7 @@ export default function MasterDumpYardWeighmentEntry() {
                     ))}
                   </SelectContent>
                 </Select>
+                <FieldError errors={formErrors} field="material_type" />
               </div>
               <div>
                 <Label>Entry Time</Label>
@@ -912,12 +938,14 @@ export default function MasterDumpYardWeighmentEntry() {
 
             <div className="grid gap-4 md:grid-cols-4">
               <div>
-                <Label>Gross Weight KG</Label>
-                <Input className="mt-2 text-lg font-semibold" type="number" min="0" value={form.gross_weight_kg} onChange={(event) => updateWeight("gross_weight_kg", event.target.value)} />
+                <Label>Gross Weight KG <RequiredMark /></Label>
+                <Input className={`mt-2 text-lg font-semibold ${validationErrorClass(formErrors, "gross_weight_kg")}`} type="number" min="0" value={form.gross_weight_kg} onChange={(event) => updateWeight("gross_weight_kg", event.target.value)} />
+                <FieldError errors={formErrors} field="gross_weight_kg" />
               </div>
               <div>
-                <Label>Tare Weight KG</Label>
-                <Input className="mt-2 text-lg font-semibold" type="number" min="0" value={form.tare_weight_kg} onChange={(event) => updateWeight("tare_weight_kg", event.target.value)} />
+                <Label>Tare Weight KG <RequiredMark /></Label>
+                <Input className={`mt-2 text-lg font-semibold ${validationErrorClass(formErrors, "tare_weight_kg")}`} type="number" min="0" value={form.tare_weight_kg} onChange={(event) => updateWeight("tare_weight_kg", event.target.value)} />
+                <FieldError errors={formErrors} field="tare_weight_kg" />
               </div>
               <div>
                 <Label>Net Weight KG</Label>
@@ -1002,6 +1030,8 @@ export default function MasterDumpYardWeighmentEntry() {
           </CardContent>
         </Card>
       </div>
+
+      <ValidationAlert open={validationOpen} onOpenChange={setValidationOpen} messages={validationSummary} />
     </div>
   );
 }

@@ -18,6 +18,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { PageHeader } from '@/components/PageHeader';
+import { FieldError, RequiredMark, ValidationAlert, errorClass as validationErrorClass } from '@/components/FormValidation';
 import { useToast } from '@/hooks/use-toast';
 import { useDeviceAssignments, useDevices, useVehicles } from '@/hooks/useDataQueries';
 import { apiService } from '@/services/api';
@@ -43,6 +44,10 @@ export default function MasterDeviceAssignments() {
   const [editingAssignment, setEditingAssignment] = useState<any | null>(null);
   const [editForm, setEditForm] = useState({ vehicle_id: '', remarks: '' });
   const [pendingAction, setPendingAction] = useState<DeviceAssignmentAction | null>(null);
+  const [assignErrors, setAssignErrors] = useState<Record<string, string>>({});
+  const [editErrors, setEditErrors] = useState<Record<string, string>>({});
+  const [validationOpen, setValidationOpen] = useState(false);
+  const [validationSummary, setValidationSummary] = useState<string[]>([]);
 
   const deviceById = useMemo(() => new Map((devices as any[]).map((d) => [String(d.id), d.imei])), [devices]);
   const vehicleById = useMemo(() => new Map((vehicles as any[]).map((v) => [String(v.id), v.registration_number])), [vehicles]);
@@ -61,10 +66,17 @@ export default function MasterDeviceAssignments() {
   };
 
   const handleAssign = async () => {
-    if (!form.device_id || !form.vehicle_id) {
-      toast({ title: 'Device and Vehicle are required', variant: 'destructive' });
+    const errors: Record<string, string> = {};
+    if (!form.device_id) errors.device_id = 'Device is required.';
+    if (!form.vehicle_id) errors.vehicle_id = 'Vehicle is required.';
+    if (Object.keys(errors).length > 0) {
+      setAssignErrors(errors);
+      setValidationSummary(Object.values(errors));
+      setValidationOpen(true);
       return;
     }
+    setAssignErrors({});
+    setValidationSummary([]);
     try {
       await apiService.createDeviceAssignment({
         device_id: form.device_id,
@@ -74,6 +86,7 @@ export default function MasterDeviceAssignments() {
       await refreshAll();
       setIsDialogOpen(false);
       setForm({ device_id: '', vehicle_id: '', remarks: '' });
+      setAssignErrors({});
       toast({ title: 'Device assigned successfully' });
     } catch (error) {
       toast({ title: 'Assignment failed', description: error instanceof Error ? error.message : 'Please try again', variant: 'destructive' });
@@ -86,14 +99,22 @@ export default function MasterDeviceAssignments() {
       vehicle_id: String(assignment.vehicle_id || ''),
       remarks: assignment.remarks || '',
     });
+    setEditErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
     setIsEditOpen(true);
   };
 
   const requestSaveEdit = () => {
     if (!editingAssignment || !editForm.vehicle_id) {
-      toast({ title: 'Vehicle is required', variant: 'destructive' });
+      const errors = { vehicle_id: 'Vehicle is required.' };
+      setEditErrors(errors);
+      setValidationSummary(Object.values(errors));
+      setValidationOpen(true);
       return;
     }
+    setEditErrors({});
+    setValidationSummary([]);
     setPendingAction({ type: 'save-edit', assignment: editingAssignment });
   };
 
@@ -195,9 +216,9 @@ export default function MasterDeviceAssignments() {
         title='Device-Vehicle Assignment'
         description='Assign, reassign and unassign tracking devices to vehicles'
         icon={Link2}
-        actions={<Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}><DialogTrigger asChild><Button><Plus className='h-4 w-4 mr-2' /> New Assignment</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>Assign Device</DialogTitle><DialogDescription>Choose one device and one vehicle.</DialogDescription></DialogHeader><div className='space-y-3'>
-          <div><Label>Device</Label><Select value={form.device_id} onValueChange={(v) => setForm({ ...form, device_id: v })}><SelectTrigger><SelectValue placeholder='Select device' /></SelectTrigger><SelectContent>{(devices as any[]).map((d) => <SelectItem key={d.id} value={String(d.id)}>{d.imei}</SelectItem>)}</SelectContent></Select></div>
-          <div><Label>Vehicle</Label><Select value={form.vehicle_id} onValueChange={(v) => setForm({ ...form, vehicle_id: v })}><SelectTrigger><SelectValue placeholder='Select vehicle' /></SelectTrigger><SelectContent>{(vehicles as any[]).map((v) => <SelectItem key={v.id} value={String(v.id)}>{v.registration_number}</SelectItem>)}</SelectContent></Select></div>
+        actions={<Dialog open={isDialogOpen} onOpenChange={(open) => { if (!open) { setAssignErrors({}); setValidationOpen(false); setValidationSummary([]); } setIsDialogOpen(open); }}><DialogTrigger asChild><Button><Plus className='h-4 w-4 mr-2' /> New Assignment</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>Assign Device</DialogTitle><DialogDescription>Choose one device and one vehicle.</DialogDescription></DialogHeader><div className='space-y-3'>
+          <div className='space-y-1'><Label>Device <RequiredMark /></Label><Select value={form.device_id} onValueChange={(v) => { setForm({ ...form, device_id: v }); setAssignErrors((current) => { const next = { ...current }; delete next.device_id; return next; }); }}><SelectTrigger className={validationErrorClass(assignErrors, 'device_id')}><SelectValue placeholder='Select device' /></SelectTrigger><SelectContent>{(devices as any[]).map((d) => <SelectItem key={d.id} value={String(d.id)}>{d.imei}</SelectItem>)}</SelectContent></Select><FieldError errors={assignErrors} field='device_id' /></div>
+          <div className='space-y-1'><Label>Vehicle <RequiredMark /></Label><Select value={form.vehicle_id} onValueChange={(v) => { setForm({ ...form, vehicle_id: v }); setAssignErrors((current) => { const next = { ...current }; delete next.vehicle_id; return next; }); }}><SelectTrigger className={validationErrorClass(assignErrors, 'vehicle_id')}><SelectValue placeholder='Select vehicle' /></SelectTrigger><SelectContent>{(vehicles as any[]).map((v) => <SelectItem key={v.id} value={String(v.id)}>{v.registration_number}</SelectItem>)}</SelectContent></Select><FieldError errors={assignErrors} field='vehicle_id' /></div>
           <div><Label>Remarks</Label><Input value={form.remarks} onChange={(e) => setForm({ ...form, remarks: e.target.value })} /></div>
         </div><DialogFooter><Button variant='outline' onClick={() => setIsDialogOpen(false)}>Cancel</Button><Button onClick={handleAssign}>Assign</Button></DialogFooter></DialogContent></Dialog>}
       />
@@ -224,11 +245,12 @@ export default function MasterDeviceAssignments() {
               <Input value={editingAssignment ? deviceById.get(String(editingAssignment.device_id)) || String(editingAssignment.device_id) : ''} disabled />
             </div>
             <div>
-              <Label>Vehicle</Label>
-              <Select value={editForm.vehicle_id} onValueChange={(v) => setEditForm({ ...editForm, vehicle_id: v })}>
-                <SelectTrigger><SelectValue placeholder='Select vehicle' /></SelectTrigger>
+              <Label>Vehicle <RequiredMark /></Label>
+              <Select value={editForm.vehicle_id} onValueChange={(v) => { setEditForm({ ...editForm, vehicle_id: v }); setEditErrors((current) => { const next = { ...current }; delete next.vehicle_id; return next; }); }}>
+                <SelectTrigger className={validationErrorClass(editErrors, 'vehicle_id')}><SelectValue placeholder='Select vehicle' /></SelectTrigger>
                 <SelectContent>{(vehicles as any[]).map((v) => <SelectItem key={v.id} value={String(v.id)}>{v.registration_number}</SelectItem>)}</SelectContent>
               </Select>
+              <FieldError errors={editErrors} field='vehicle_id' />
             </div>
             <div>
               <Label>Remarks</Label>
@@ -241,6 +263,8 @@ export default function MasterDeviceAssignments() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ValidationAlert open={validationOpen} onOpenChange={setValidationOpen} messages={validationSummary} />
 
       <AlertDialog open={Boolean(pendingAction)} onOpenChange={(open) => !open && setPendingAction(null)}>
         <AlertDialogContent>

@@ -9,7 +9,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -121,6 +121,10 @@ class VendorIn(BaseModel):
     contact_person: str | None = None
     email: str | None = None
     phone: str | None = None
+    gst_number: str | None = None
+    address: str | None = None
+    contract_start: str | None = None
+    contract_end: str | None = None
     webhook_secret: str | None = None
     signature_key: str | None = None
     allowed_ips: list[str] = Field(default_factory=list)
@@ -149,6 +153,63 @@ class VendorIn(BaseModel):
         for ip in value:
             normalized.append(str(ipaddress.ip_address(ip)))
         return normalized
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone_required(cls, value: str | None) -> str:
+        normalized = (value or "").strip()
+        if not normalized:
+            raise ValueError("phone is required")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_contract_period(self) -> "VendorIn":
+        start = (self.contract_start or "").strip()
+        end = (self.contract_end or "").strip()
+        if start and end:
+          try:
+              start_date = date.fromisoformat(start)
+              end_date = date.fromisoformat(end)
+          except ValueError as exc:
+              raise ValueError("contract dates must use YYYY-MM-DD format") from exc
+          if end_date < start_date:
+              raise ValueError("contract_end must be greater than or equal to contract_start")
+        return self
+
+
+def _vendor_metadata(
+    metadata: dict[str, Any] | None,
+    contract_start: str | None,
+    contract_end: str | None,
+    gst_number: str | None,
+    address: str | None,
+) -> dict[str, Any]:
+    payload = dict(metadata or {})
+    if contract_start is not None:
+        payload["contract_start"] = contract_start
+    if contract_end is not None:
+        payload["contract_end"] = contract_end
+    if gst_number is not None:
+        payload["gst_number"] = gst_number
+    if address is not None:
+        payload["address"] = address
+    return payload
+
+
+def _vendor_response(vendor: dict[str, Any]) -> dict[str, Any]:
+    metadata = vendor.get("metadata") if isinstance(vendor.get("metadata"), dict) else {}
+    contract_start = metadata.get("contract_start")
+    contract_end = metadata.get("contract_end")
+    gst_number = metadata.get("gst_number")
+    address = metadata.get("address")
+    vendor["contract_start"] = contract_start
+    vendor["contract_end"] = contract_end
+    vendor["contractStart"] = contract_start
+    vendor["contractEnd"] = contract_end
+    vendor["gst_number"] = gst_number
+    vendor["gstNumber"] = gst_number
+    vendor["address"] = address
+    return vendor
 
 
 class DeviceIn(BaseModel):
@@ -281,6 +342,9 @@ class WardIn(BaseModel):
     ward_name: str
     zone_name: str
     active: bool = True
+    population: int | None = None
+    area: float | None = None
+    total_pickup_points: int | None = None
 
 
 async def _resolve_zone_id(session: AsyncSession, zone_ref: str) -> UUID:
@@ -311,6 +375,7 @@ async def _resolve_zone_id(session: AsyncSession, zone_ref: str) -> UUID:
 
 class RouteIn(BaseModel):
     route_name: str = Field(min_length=1)
+    route_type: Literal["primary", "secondary"] = "primary"
     zone_id: UUID
     ward_id: UUID
     polyline_coordinates: list[list[float]] = Field(min_length=2)
@@ -413,11 +478,18 @@ class DeviceAssignmentIn(BaseModel):
 class ZoneIn(BaseModel):
     zone_code: str = Field(min_length=2, max_length=32, pattern=r"^[A-Z0-9_-]{2,32}$")
     zone_name: str = Field(min_length=1)
+    description: str | None = None
+    supervisor_name: str | None = None
+    supervisor_phone: str | None = None
     active: bool = True
 
 class ZoneOut(BaseModel):
+    id: UUID
     zone_code: str
     zone_name: str
+    description: str | None = None
+    supervisor_name: str | None = None
+    supervisor_phone: str | None = None
     active: bool
 
 @router.post("/zones", response_model=ZoneOut)
@@ -425,6 +497,9 @@ async def create_zone(payload: ZoneIn, session: AsyncSession = Depends(get_db_se
     zone = ZoneORM(
         zone_code=payload.zone_code,
         zone_name=payload.zone_name,
+        description=payload.description,
+        supervisor_name=payload.supervisor_name,
+        supervisor_phone=payload.supervisor_phone,
         active=payload.active,
     )
     session.add(zone)
@@ -451,6 +526,9 @@ async def update_zone(zone_id: UUID, payload: ZoneIn, session: AsyncSession = De
         raise HTTPException(status_code=404, detail="Zone not found")
     zone.zone_code = payload.zone_code
     zone.zone_name = payload.zone_name
+    zone.description = payload.description
+    zone.supervisor_name = payload.supervisor_name
+    zone.supervisor_phone = payload.supervisor_phone
     zone.active = payload.active
     await session.commit()
     await session.refresh(zone)
@@ -496,19 +574,22 @@ async def list_vendors(
     items: list[dict[str, Any]] = []
     for vendor in result.items:
         item_id = vendor.get("id")
-        item_name = vendor.get("vendor_name") or vendor.get("contact_person") or ""
+        metadata = vendor.get("metadata") if isinstance(vendor.get("metadata"), dict) else {}
         items.append(
-            {
-                "id": str(item_id) if item_id is not None else "",
-                "name": item_name,
-                "company_name": vendor.get("vendor_name") or "",
-                "companyName": vendor.get("vendor_name") or "",
-                "phone": vendor.get("phone"),
-                "email": vendor.get("email"),
-                "status": "active" if vendor.get("active", True) else "inactive",
-                "supervisor_name": vendor.get("contact_person"),
-                "active": vendor.get("active", True),
-            }
+            _vendor_response(
+                {
+                    "id": str(item_id) if item_id is not None else "",
+                    "name": vendor.get("contact_person") or "",
+                    "contact_person": vendor.get("contact_person") or "",
+                    "company_name": vendor.get("vendor_name") or "",
+                    "companyName": vendor.get("vendor_name") or "",
+                    "phone": vendor.get("phone"),
+                    "email": vendor.get("email"),
+                    "status": "active" if vendor.get("active", True) else "inactive",
+                    "active": vendor.get("active", True),
+                    "metadata": metadata,
+                }
+            )
         )
     return items
 
@@ -532,9 +613,15 @@ async def create_vendor(
         auth_type=payload.auth_type,
         callback_format=payload.callback_format,
         active=payload.active,
-        metadata_json=payload.metadata,
+        metadata_json=_vendor_metadata(
+            payload.metadata,
+            payload.contract_start,
+            payload.contract_end,
+            payload.gst_number,
+            payload.address,
+        ),
     )
-    return _to_dict(row)
+    return _vendor_response(_to_dict(row))
 
 
 @router.get("/vendors/{vendor_id}")
@@ -545,7 +632,7 @@ async def get_vendor(
 ) -> dict[str, Any]:
     repo = VendorRepository(session)
     row = await _fetch_or_404(repo.get_by_id, "vendor", vendor_id)
-    return _to_dict(row)
+    return _vendor_response(_to_dict(row))
 
 
 @router.put("/vendors/{vendor_id}")
@@ -570,11 +657,17 @@ async def update_vendor(
             auth_type=payload.auth_type,
             callback_format=payload.callback_format,
             active=payload.active,
-            metadata_json=payload.metadata,
+            metadata_json=_vendor_metadata(
+                payload.metadata,
+                payload.contract_start,
+                payload.contract_end,
+                payload.gst_number,
+                payload.address,
+            ),
         )
     except NoResultFound:
         _raise_not_found("vendor", vendor_id)
-    return _to_dict(row)
+    return _vendor_response(_to_dict(row))
 
 
 @router.delete("/vendors/{vendor_id}", response_model=MessageResponse)
@@ -1896,7 +1989,8 @@ async def list_routes(
             "name": route.get("route_name") or "",
             "code": route.get("route_name") or "",
             "route_name": route.get("route_name") or "",
-            "type": "primary",
+            "type": route.get("route_type") or "primary",
+            "route_type": route.get("route_type") or "primary",
             "zone_id": route_zone_id,
             "zoneId": route_zone_id,
             "ward_id": route_ward_id,
@@ -1930,6 +2024,7 @@ async def create_route(
     repo = RouteRepository(session)
     row = await repo.create(
         route_name=payload.route_name,
+        route_type=payload.route_type,
         zone_id=payload.zone_id,
         ward_id=payload.ward_id,
         polyline_coordinates=payload.polyline_coordinates,
@@ -1960,6 +2055,7 @@ async def update_route(
         row = await repo.update(
             route_id,
             route_name=payload.route_name,
+            route_type=payload.route_type,
             zone_id=payload.zone_id,
             ward_id=payload.ward_id,
             polyline_coordinates=payload.polyline_coordinates,
@@ -2245,6 +2341,9 @@ async def create_ward(
         ward_name=payload.ward_name,
         zone_id=zone_id,
         active=payload.active,
+        population=payload.population,
+        area=payload.area,
+        total_pickup_points=payload.total_pickup_points,
     )
     return _to_dict(row)
 
@@ -2276,6 +2375,9 @@ async def update_ward(
             ward_name=payload.ward_name,
             zone_id=zone_id,
             active=payload.active,
+            population=payload.population,
+            area=payload.area,
+            total_pickup_points=payload.total_pickup_points,
         )
     except NoResultFound:
         _raise_not_found("ward", ward_id)

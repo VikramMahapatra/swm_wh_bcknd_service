@@ -20,6 +20,7 @@ Health checks:
 Open Terminal B and run:
 
 ```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 cd C:/Users/vikik/Projects/swm_wh_bcknd_service/garbage_vechile_tracking
 npm.cmd i
 npm.cmd run dev

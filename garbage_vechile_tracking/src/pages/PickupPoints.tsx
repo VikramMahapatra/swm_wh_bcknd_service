@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Building2, Clock, Edit, Home, Hospital, Map, MapPin, Plus, Route, Search, ShoppingBag, Trash2, X } from "lucide-react";
+import { Building2, Clock, Edit, Home, Hospital, Map, MapPin, Route, Search, ShoppingBag, Trash2, X } from "lucide-react";
 import { usePickupPoints, useRoutes, useWards, useZones } from "@/hooks/useDataQueries";
 import { PageHeader } from "@/components/PageHeader";
 
@@ -187,12 +187,6 @@ export default function PickupPoints() {
         title="Pickup Points"
         description="Route-wise pickup locations, GTS endpoints, schedules, and map visibility"
         icon={MapPin}
-        actions={
-          <Button className="gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700">
-            <Plus className="h-4 w-4" />
-            Add Pickup Point
-          </Button>
-        }
       />
 
       <div className="grid gap-4 md:grid-cols-4">

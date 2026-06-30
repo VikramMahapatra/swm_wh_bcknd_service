@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { PageHeader } from '@/components/PageHeader';
+import { FieldError, RequiredMark, ValidationAlert, errorClass as validationErrorClass } from '@/components/FormValidation';
 import { useToast } from '@/hooks/use-toast';
 import { useDevices, useVendors } from '@/hooks/useDataQueries';
 import { apiService } from '@/services/api';
@@ -25,6 +26,9 @@ export default function MasterDevices() {
   const [healthFilter, setHealthFilter] = useState('all');
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [validationOpen, setValidationOpen] = useState(false);
+  const [validationSummary, setValidationSummary] = useState<string[]>([]);
   const [form, setForm] = useState<any>({
     vendor_id: '', imei: '', serial_no: '', model: '', manufacturer: '', firmware_version: '', sim_number: '',
     battery_percent: null, signal_strength: null, health_status: 'healthy', active: true,
@@ -45,23 +49,52 @@ export default function MasterDevices() {
     setForm({ vendor_id: '', imei: '', serial_no: '', model: '', manufacturer: '', firmware_version: '', sim_number: '', battery_percent: null, signal_strength: null, health_status: 'healthy', active: true });
     setEditing(null);
     setIsDialogOpen(false);
+    setFormErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
   };
 
   const openEdit = (device: any) => {
     setEditing(device);
     setForm({ ...device });
+    setFormErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
     setIsDialogOpen(true);
   };
 
+  const setField = (field: string, value: any) => {
+    setForm((current: any) => ({ ...current, [field]: value }));
+    setFormErrors((current) => {
+      if (!current[field]) return current;
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+  };
+
+  const validateForm = () => {
+    const errors: Record<string, string> = {};
+    if (!form.vendor_id) errors.vendor_id = 'Vendor is required.';
+    if (!form.imei) errors.imei = 'IMEI is required.';
+    else if (!/^\d{14,17}$/.test(String(form.imei))) errors.imei = 'IMEI must be 14 to 17 digits.';
+    return errors;
+  };
+
+  const showValidation = (errors: Record<string, string>) => {
+    setFormErrors(errors);
+    setValidationSummary(Object.values(errors));
+    setValidationOpen(true);
+  };
+
   const handleSave = async () => {
-    if (!form.vendor_id || !form.imei) {
-      toast({ title: 'Vendor and IMEI are required', variant: 'destructive' });
+    const errors = validateForm();
+    if (Object.keys(errors).length > 0) {
+      showValidation(errors);
       return;
     }
-    if (!/^\d{14,17}$/.test(String(form.imei))) {
-      toast({ title: 'Invalid IMEI', description: 'IMEI must be 14 to 17 digits.', variant: 'destructive' });
-      return;
-    }
+    setFormErrors({});
+    setValidationSummary([]);
     try {
       if (editing) {
         await apiService.updateDevice(String(editing.id), form);
@@ -95,13 +128,15 @@ export default function MasterDevices() {
         description='Manage tracking devices and health status'
         icon={Cpu}
         actions={<Dialog open={isDialogOpen} onOpenChange={(open) => { if (!open) resetForm(); setIsDialogOpen(open); }}><DialogTrigger asChild><Button><Plus className='h-4 w-4 mr-2' /> Add Device</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>{editing ? 'Edit Device' : 'Add Device'}</DialogTitle><DialogDescription>Use valid vendor and IMEI to save.</DialogDescription></DialogHeader><div className='grid gap-3'>
-          <div><Label>Vendor</Label><Select value={form.vendor_id || ''} onValueChange={(v) => setForm({ ...form, vendor_id: v })}><SelectTrigger><SelectValue placeholder='Select vendor' /></SelectTrigger><SelectContent>{(vendors as any[]).map((v) => <SelectItem key={v.id} value={String(v.id)}>{v.companyName || v.company_name || v.name}</SelectItem>)}</SelectContent></Select></div>
-          <div><Label>IMEI</Label><Input value={form.imei || ''} onChange={(e) => setForm({ ...form, imei: e.target.value.replace(/\D/g, '') })} /></div>
-          <div><Label>Serial No</Label><Input value={form.serial_no || ''} onChange={(e) => setForm({ ...form, serial_no: e.target.value })} /></div>
-          <div><Label>Model</Label><Input value={form.model || ''} onChange={(e) => setForm({ ...form, model: e.target.value })} /></div>
-          <div><Label>Health Status</Label><Select value={form.health_status || 'healthy'} onValueChange={(v) => setForm({ ...form, health_status: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value='healthy'>Healthy</SelectItem><SelectItem value='warning'>Warning</SelectItem><SelectItem value='critical'>Critical</SelectItem><SelectItem value='offline'>Offline</SelectItem></SelectContent></Select></div>
+          <div className='space-y-1'><Label>Vendor <RequiredMark /></Label><Select value={form.vendor_id || ''} onValueChange={(v) => setField('vendor_id', v)}><SelectTrigger className={validationErrorClass(formErrors, 'vendor_id')}><SelectValue placeholder='Select vendor' /></SelectTrigger><SelectContent>{(vendors as any[]).map((v) => <SelectItem key={v.id} value={String(v.id)}>{v.companyName || v.company_name || v.name}</SelectItem>)}</SelectContent></Select><FieldError errors={formErrors} field='vendor_id' /></div>
+          <div className='space-y-1'><Label>IMEI <RequiredMark /></Label><Input className={validationErrorClass(formErrors, 'imei')} value={form.imei || ''} onChange={(e) => setField('imei', e.target.value.replace(/\D/g, ''))} /><FieldError errors={formErrors} field='imei' /></div>
+          <div><Label>Serial No</Label><Input value={form.serial_no || ''} onChange={(e) => setField('serial_no', e.target.value)} /></div>
+          <div><Label>Model</Label><Input value={form.model || ''} onChange={(e) => setField('model', e.target.value)} /></div>
+          <div><Label>Health Status</Label><Select value={form.health_status || 'healthy'} onValueChange={(v) => setField('health_status', v)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value='healthy'>Healthy</SelectItem><SelectItem value='warning'>Warning</SelectItem><SelectItem value='critical'>Critical</SelectItem><SelectItem value='offline'>Offline</SelectItem></SelectContent></Select></div>
         </div><DialogFooter><Button variant='outline' onClick={resetForm}>Cancel</Button><Button onClick={handleSave}>{editing ? 'Update' : 'Create'} Device</Button></DialogFooter></DialogContent></Dialog>}
       />
+
+      <ValidationAlert open={validationOpen} onOpenChange={setValidationOpen} messages={validationSummary} />
 
       <Card><CardContent className='pt-6'><div className='flex flex-col sm:flex-row gap-3'><div className='relative flex-1'><Search className='absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground' /><Input className='pl-10' value={search} onChange={(e) => setSearch(e.target.value)} placeholder='Search by IMEI or serial...' /></div><Select value={healthFilter} onValueChange={setHealthFilter}><SelectTrigger className='w-[220px]'><SelectValue /></SelectTrigger><SelectContent><SelectItem value='all'>All Health</SelectItem><SelectItem value='healthy'>Healthy</SelectItem><SelectItem value='warning'>Warning</SelectItem><SelectItem value='critical'>Critical</SelectItem><SelectItem value='offline'>Offline</SelectItem></SelectContent></Select></div></CardContent></Card>
 

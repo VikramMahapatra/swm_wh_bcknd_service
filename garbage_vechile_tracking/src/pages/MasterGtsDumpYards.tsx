@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import { FieldError, RequiredMark, ValidationAlert, errorClass as validationErrorClass } from "@/components/FormValidation";
 import { useToast } from "@/hooks/use-toast";
 import { useWards } from "@/hooks/useDataQueries";
 import { apiService } from "@/services/api";
@@ -51,6 +52,10 @@ export default function MasterGtsDumpYards() {
   const [editingDump, setEditingDump] = useState<any | null>(null);
   const [gtsForm, setGtsForm] = useState<any>(emptyGts);
   const [dumpForm, setDumpForm] = useState<any>(emptyDumpYard);
+  const [gtsFormErrors, setGtsFormErrors] = useState<Record<string, string>>({});
+  const [dumpFormErrors, setDumpFormErrors] = useState<Record<string, string>>({});
+  const [validationOpen, setValidationOpen] = useState(false);
+  const [validationSummary, setValidationSummary] = useState<string[]>([]);
 
   const wardById = useMemo(() => new Map((wards as any[]).map((ward) => [String(ward.id), ward.name || ward.ward_name])), [wards]);
 
@@ -77,12 +82,18 @@ export default function MasterGtsDumpYards() {
   const resetGts = () => {
     setEditingGts(null);
     setGtsForm(emptyGts);
+    setGtsFormErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
     setGtsDialogOpen(false);
   };
 
   const resetDump = () => {
     setEditingDump(null);
     setDumpForm(emptyDumpYard);
+    setDumpFormErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
     setDumpDialogOpen(false);
   };
 
@@ -97,6 +108,9 @@ export default function MasterGtsDumpYards() {
       zone_id: row.zone_id || "",
       is_active: row.is_active !== false,
     });
+    setGtsFormErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
     setGtsDialogOpen(true);
   };
 
@@ -110,14 +124,42 @@ export default function MasterGtsDumpYards() {
       capacity: row.capacity ?? "",
       is_active: row.is_active !== false,
     });
+    setDumpFormErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
     setDumpDialogOpen(true);
+  };
+
+  const setGtsField = (field: string, value: any) => {
+    setGtsForm((current: any) => ({ ...current, [field]: value }));
+    setGtsFormErrors((current) => {
+      if (!current[field]) return current;
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+  };
+
+  const setDumpField = (field: string, value: any) => {
+    setDumpForm((current: any) => ({ ...current, [field]: value }));
+    setDumpFormErrors((current) => {
+      if (!current[field]) return current;
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
   };
 
   const saveGts = async () => {
     if (!gtsForm.name.trim()) {
-      toast({ title: "GTS name required", variant: "destructive" });
+      const errors = { name: "GTS Name is required." };
+      setGtsFormErrors(errors);
+      setValidationSummary(Object.values(errors));
+      setValidationOpen(true);
       return;
     }
+    setGtsFormErrors({});
+    setValidationSummary([]);
     const selectedWard = (wards as any[]).find((ward) => String(ward.id) === String(gtsForm.ward_id));
     const payload = {
       name: gtsForm.name.trim(),
@@ -141,9 +183,14 @@ export default function MasterGtsDumpYards() {
 
   const saveDump = async () => {
     if (!dumpForm.name.trim()) {
-      toast({ title: "Dump Yard name required", variant: "destructive" });
+      const errors = { name: "Dump Yard Name is required." };
+      setDumpFormErrors(errors);
+      setValidationSummary(Object.values(errors));
+      setValidationOpen(true);
       return;
     }
+    setDumpFormErrors({});
+    setValidationSummary([]);
     const payload = {
       name: dumpForm.name.trim(),
       latitude: dumpForm.latitude === "" ? null : Number(dumpForm.latitude),
@@ -201,14 +248,14 @@ export default function MasterGtsDumpYards() {
                 <DialogContent>
                   <DialogHeader><DialogTitle>{editingGts ? "Edit GTS" : "Add GTS"}</DialogTitle><DialogDescription>GTS = Garbage Transport Station.</DialogDescription></DialogHeader>
                   <div className="grid gap-4">
-                    <div><Label>Name</Label><Input value={gtsForm.name} onChange={(e) => setGtsForm({ ...gtsForm, name: e.target.value })} /></div>
-                    <div><Label>Ward</Label><Select value={gtsForm.ward_id || "none"} onValueChange={(v) => setGtsForm({ ...gtsForm, ward_id: v === "none" ? "" : v })}><SelectTrigger><SelectValue placeholder="Select ward" /></SelectTrigger><SelectContent><SelectItem value="none">No Ward</SelectItem>{(wards as any[]).map((ward) => <SelectItem key={ward.id} value={String(ward.id)}>{ward.name || ward.ward_name}</SelectItem>)}</SelectContent></Select></div>
+                    <div className="space-y-1"><Label>Name <RequiredMark /></Label><Input className={validationErrorClass(gtsFormErrors, "name")} value={gtsForm.name} onChange={(e) => setGtsField("name", e.target.value)} /><FieldError errors={gtsFormErrors} field="name" /></div>
+                    <div><Label>Ward</Label><Select value={gtsForm.ward_id || "none"} onValueChange={(v) => setGtsField("ward_id", v === "none" ? "" : v)}><SelectTrigger><SelectValue placeholder="Select ward" /></SelectTrigger><SelectContent><SelectItem value="none">No Ward</SelectItem>{(wards as any[]).map((ward) => <SelectItem key={ward.id} value={String(ward.id)}>{ward.name || ward.ward_name}</SelectItem>)}</SelectContent></Select></div>
                     <div className="grid grid-cols-2 gap-3">
-                      <div><Label>Latitude</Label><Input type="number" value={gtsForm.latitude} onChange={(e) => setGtsForm({ ...gtsForm, latitude: e.target.value })} /></div>
-                      <div><Label>Longitude</Label><Input type="number" value={gtsForm.longitude} onChange={(e) => setGtsForm({ ...gtsForm, longitude: e.target.value })} /></div>
+                      <div><Label>Latitude</Label><Input type="number" value={gtsForm.latitude} onChange={(e) => setGtsField("latitude", e.target.value)} /></div>
+                      <div><Label>Longitude</Label><Input type="number" value={gtsForm.longitude} onChange={(e) => setGtsField("longitude", e.target.value)} /></div>
                     </div>
-                    <div><Label>Address</Label><Input value={gtsForm.address} onChange={(e) => setGtsForm({ ...gtsForm, address: e.target.value })} /></div>
-                    <div><Label>Status</Label><Select value={gtsForm.is_active ? "active" : "inactive"} onValueChange={(v) => setGtsForm({ ...gtsForm, is_active: v === "active" })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="inactive">Inactive</SelectItem></SelectContent></Select></div>
+                    <div><Label>Address</Label><Input value={gtsForm.address} onChange={(e) => setGtsField("address", e.target.value)} /></div>
+                    <div><Label>Status</Label><Select value={gtsForm.is_active ? "active" : "inactive"} onValueChange={(v) => setGtsField("is_active", v === "active")}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="inactive">Inactive</SelectItem></SelectContent></Select></div>
                   </div>
                   <DialogFooter><Button variant="outline" onClick={resetGts}>Cancel</Button><Button onClick={saveGts}>Save</Button></DialogFooter>
                 </DialogContent>
@@ -245,11 +292,11 @@ export default function MasterGtsDumpYards() {
                 <DialogContent>
                   <DialogHeader><DialogTitle>{editingDump ? "Edit Dump Yard" : "Add Dump Yard"}</DialogTitle><DialogDescription>Dump yard location and capacity master.</DialogDescription></DialogHeader>
                   <div className="grid gap-4">
-                    <div><Label>Name</Label><Input value={dumpForm.name} onChange={(e) => setDumpForm({ ...dumpForm, name: e.target.value })} /></div>
-                    <div className="grid grid-cols-2 gap-3"><div><Label>Latitude</Label><Input type="number" value={dumpForm.latitude} onChange={(e) => setDumpForm({ ...dumpForm, latitude: e.target.value })} /></div><div><Label>Longitude</Label><Input type="number" value={dumpForm.longitude} onChange={(e) => setDumpForm({ ...dumpForm, longitude: e.target.value })} /></div></div>
-                    <div><Label>Address</Label><Input value={dumpForm.address} onChange={(e) => setDumpForm({ ...dumpForm, address: e.target.value })} /></div>
-                    <div><Label>Capacity</Label><Input type="number" value={dumpForm.capacity} onChange={(e) => setDumpForm({ ...dumpForm, capacity: e.target.value })} /></div>
-                    <div><Label>Status</Label><Select value={dumpForm.is_active ? "active" : "inactive"} onValueChange={(v) => setDumpForm({ ...dumpForm, is_active: v === "active" })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="inactive">Inactive</SelectItem></SelectContent></Select></div>
+                    <div className="space-y-1"><Label>Name <RequiredMark /></Label><Input className={validationErrorClass(dumpFormErrors, "name")} value={dumpForm.name} onChange={(e) => setDumpField("name", e.target.value)} /><FieldError errors={dumpFormErrors} field="name" /></div>
+                    <div className="grid grid-cols-2 gap-3"><div><Label>Latitude</Label><Input type="number" value={dumpForm.latitude} onChange={(e) => setDumpField("latitude", e.target.value)} /></div><div><Label>Longitude</Label><Input type="number" value={dumpForm.longitude} onChange={(e) => setDumpField("longitude", e.target.value)} /></div></div>
+                    <div><Label>Address</Label><Input value={dumpForm.address} onChange={(e) => setDumpField("address", e.target.value)} /></div>
+                    <div><Label>Capacity</Label><Input type="number" value={dumpForm.capacity} onChange={(e) => setDumpField("capacity", e.target.value)} /></div>
+                    <div><Label>Status</Label><Select value={dumpForm.is_active ? "active" : "inactive"} onValueChange={(v) => setDumpField("is_active", v === "active")}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="inactive">Inactive</SelectItem></SelectContent></Select></div>
                   </div>
                   <DialogFooter><Button variant="outline" onClick={resetDump}>Cancel</Button><Button onClick={saveDump}>Save</Button></DialogFooter>
                 </DialogContent>
@@ -277,6 +324,8 @@ export default function MasterGtsDumpYards() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      <ValidationAlert open={validationOpen} onOpenChange={setValidationOpen} messages={validationSummary} />
     </div>
   );
 }

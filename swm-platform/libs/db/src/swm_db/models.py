@@ -52,6 +52,9 @@ class ZoneORM(Base):
     )
     zone_code: Mapped[str] = mapped_column(String(24), nullable=False, unique=True)
     zone_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    supervisor_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    supervisor_phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -329,6 +332,9 @@ class WardORM(Base):
 
     zone: Mapped["ZoneORM"] = relationship("ZoneORM", back_populates="wards")
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    population: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    area: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    total_pickup_points: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=text("CURRENT_TIMESTAMP"),
@@ -366,6 +372,7 @@ class RouteORM(Base):
         server_default=text("gen_random_uuid()"),
     )
     route_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    route_type: Mapped[str] = mapped_column(String(24), nullable=False, default="primary", server_default=text("'primary'"))
     zone_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("zones.id", ondelete="RESTRICT"),

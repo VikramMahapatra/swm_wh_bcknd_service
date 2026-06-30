@@ -42,7 +42,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useSwmLiveFleet } from "@/hooks/useSwmLiveFleet";
-import { useActiveAlerts, useReportsData, useSpareTrucks, useVehicles } from "@/hooks/useDataQueries";
+import { useActiveAlerts, useReportsData, useSpareTrucks, useTicketStatistics, useTickets, useVehicles, useVendors, useVendorPerformance } from "@/hooks/useDataQueries";
 
 const chartColors = ["#0f766e", "#14b8a6", "#f59e0b", "#2563eb", "#ef4444", "#8b5cf6", "#06b6d4"];
 
@@ -112,22 +112,30 @@ const MetricCard = ({ title, value, subtitle, icon: Icon, tone, onClick, active 
   </Card>
 );
 
-const citizenSignals = [
-  { label: "Missed collection", count: 24, sla: 82, tone: "#ef4444" },
-  { label: "Waste spot reported", count: 18, sla: 88, tone: "#f59e0b" },
-  { label: "Street sweeping", count: 11, sla: 91, tone: "#14b8a6" },
-  { label: "Odour complaint", count: 7, sla: 79, tone: "#8b5cf6" },
-];
+const TICKET_CATEGORY_COLORS: Record<string, string> = {
+  complaint: "#ef4444",
+  maintenance: "#f59e0b",
+  vehicle_issue: "#8b5cf6",
+  route_issue: "#2563eb",
+  pickup_issue: "#14b8a6",
+  driver_issue: "#06b6d4",
+  other: "#6b7280",
+};
 
-const citizenHotspots = [
-  { ward: "W1", zone: "Zone1", complaints: 19, resolution: "3.2 hrs", sentiment: 72 },
-  { ward: "W4", zone: "Zone1", complaints: 14, resolution: "4.1 hrs", sentiment: 64 },
-  { ward: "W7", zone: "Zone2", complaints: 12, resolution: "2.8 hrs", sentiment: 81 },
-];
+const TICKET_CATEGORY_LABELS: Record<string, string> = {
+  complaint: "Complaint",
+  maintenance: "Maintenance",
+  vehicle_issue: "Vehicle Issue",
+  route_issue: "Route Issue",
+  pickup_issue: "Pickup Issue",
+  driver_issue: "Driver Issue",
+  other: "Other",
+};
 
 const Index = () => {
   const [activeDrilldown, setActiveDrilldown] = useState<"collection" | "average" | "coverage" | "fleet" | null>(null);
   const [fleetAvailabilityDrilldown, setFleetAvailabilityDrilldown] = useState<"active" | "inactive" | "idle" | "spare" | null>(null);
+  const [selectedVendorId, setSelectedVendorId] = useState<string | null>(null);
   const dateTo = format(new Date(), "yyyy-MM-dd");
   const dateFrom = format(subDays(new Date(), 6), "yyyy-MM-dd");
 
@@ -140,6 +148,10 @@ const Index = () => {
   const { data: activeAlerts = [] } = useActiveAlerts();
   const { data: vehicles = [] } = useVehicles();
   const { data: spareTrucks = [] } = useSpareTrucks();
+  const { data: vendors = [] } = useVendors();
+  const { data: vendorPerformance = [] } = useVendorPerformance();
+  const { data: tickets = [] } = useTickets();
+  const { data: ticketStats = {} } = useTicketStatistics();
 
   const materialRows: any[] = (reportsData as any).material_wise_collection || (reportsData as any).dump_yard || [];
   const dailyCoverageRows: any[] = (reportsData as any).daily_pickup_coverage || [];
@@ -396,7 +408,257 @@ const Index = () => {
   }, [activeAlerts, fleet.total]);
 
   const routeAnomalies = routePerformanceRows.reduce((sum, row) => sum + toNumber(row.anomalyCount, row.anomaly_count, row.anomyCount, row.deviations, row.overspeeding), 0);
-  const citizenSlaAverage = Math.round(citizenSignals.reduce((sum, item) => sum + item.sla, 0) / citizenSignals.length);
+
+  const citizenData = useMemo(() => {
+    const ticketList = tickets as any[];
+
+    // ── Group by category ───────────────────────────────────────────────────
+    const catGroups = new Map<string, { count: number; breached: number }>();
+    for (const t of ticketList) {
+      const cat = String(t.category || "other").toLowerCase();
+      const g = catGroups.get(cat) || { count: 0, breached: 0 };
+      g.count += 1;
+      if (t.sla_breached || t.slaBreached) g.breached += 1;
+      catGroups.set(cat, g);
+    }
+
+    const signals = Array.from(catGroups.entries())
+      .map(([cat, { count, breached }]) => ({
+        label: TICKET_CATEGORY_LABELS[cat] || cat.replace(/_/g, " "),
+        count,
+        sla: count > 0 ? Math.round(((count - breached) / count) * 100) : 100,
+        tone: TICKET_CATEGORY_COLORS[cat] || "#6b7280",
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 6);
+
+    // ── Build vehicle lookup for zone/ward cross-reference ──────────────────
+    const vehicleMap = new Map<string, { zone: string; ward: string }>();
+    for (const v of [...liveTrucks, ...vehicles] as any[]) {
+      const zone = asText(v.zone_id, v.zone, v.zoneName, v.zoneId);
+      const ward = asText(v.ward_id, v.ward, v.wardName, v.wardId);
+      const ids = [
+        String(v.id || ""),
+        String(v.vehicle_id || ""),
+        String(v.vehicle_number || v.vehicleNumber || v.registration_number || ""),
+      ].filter(Boolean);
+      for (const id of ids) vehicleMap.set(id, { zone, ward });
+    }
+
+    // ── Group tickets by zone/ward via related_truck_id ─────────────────────
+    const zoneGroups = new Map<
+      string,
+      { zone: string; ward: string; count: number; highPriority: number; resolvedMs: number; resolvedCount: number }
+    >();
+    for (const t of ticketList) {
+      const truckId = String(t.related_truck_id || t.relatedTruckId || "");
+      const loc = vehicleMap.get(truckId);
+      if (!loc) continue;
+
+      const key = `${loc.zone}||${loc.ward}`;
+      const g = zoneGroups.get(key) || { zone: loc.zone, ward: loc.ward, count: 0, highPriority: 0, resolvedMs: 0, resolvedCount: 0 };
+      g.count += 1;
+      if (t.priority === "high" || t.priority === "critical") g.highPriority += 1;
+
+      const status = String(t.status || "").toLowerCase();
+      if (status === "resolved" || status === "closed") {
+        const created = new Date(t.created_at || t.createdAt || 0).getTime();
+        const updated = new Date(t.updated_at || t.updatedAt || 0).getTime();
+        if (updated > created) {
+          g.resolvedMs += updated - created;
+          g.resolvedCount += 1;
+        }
+      }
+      zoneGroups.set(key, g);
+    }
+
+    const hotspots = Array.from(zoneGroups.values())
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5)
+      .map((item) => {
+        const avgHrs =
+          item.resolvedCount > 0 ? (item.resolvedMs / item.resolvedCount / 3_600_000).toFixed(1) : null;
+        const sentiment = Math.max(20, Math.min(100, Math.round(100 - (item.highPriority / item.count) * 60)));
+        return {
+          zone: item.zone || "Unknown Zone",
+          ward: item.ward || "Unknown Ward",
+          complaints: item.count,
+          resolution: avgHrs ? `${avgHrs} hrs` : "Ongoing",
+          sentiment,
+        };
+      });
+
+    // ── Totals from stats API ─────────────────────────────────────────────
+    const stats = ticketStats as any;
+    const total = toNumber(stats?.total) || ticketList.length;
+    const breachedTotal = toNumber(stats?.sla_breached);
+    const slaMet = total > 0 ? Math.round(((total - breachedTotal) / total) * 100) : 100;
+    const repeatZones = hotspots.filter((h) => h.complaints > 1).length;
+
+    return { signals, hotspots, total, slaMet, repeatZones, hasData: ticketList.length > 0 };
+  }, [tickets, ticketStats, liveTrucks, vehicles]);
+
+  const vendorAnalysis = useMemo(() => {
+    // Build performance lookup keyed by vendor_id
+    const perfMap = new Map<string, { vendor: string; efficiency: number; total_trucks: number; total_trips: number }>();
+    for (const row of vendorPerformance as any[]) {
+      const key = String(row.vendor_id || row.id || "");
+      if (key) {
+        perfMap.set(key, {
+          vendor: asText(row.vendor, row.vendor_name, row.companyName),
+          efficiency: toNumber(row.efficiency, row.collection_efficiency, row.avg_utilization_pct),
+          total_trucks: toNumber(row.total_trucks, row.totalTrucks),
+          total_trips: toNumber(row.total_trips, row.totalTrips),
+        });
+      }
+    }
+
+    // All vehicle sources merged, deduplicated by vehicle number.
+    // vehicles (master data) are seeded first; liveTrucks overwrite when the
+    // same vehicle number exists so live status/zone/ward always wins.
+    const allVehicles = Array.from(
+      new Map(
+        ([...vehicles, ...liveTrucks] as any[]).map((t) => [
+          String(
+            t.vehicle_number || t.vehicleNumber ||
+            t.registration_number || t.truckNumber ||
+            t.id || Math.random()
+          ),
+          t,
+        ]),
+      ).values(),
+    );
+
+    const vendorList = (vendors as any[]).map((v) => {
+      const id = String(v.id || v.vendor_id || "");
+      const perf = perfMap.get(id);
+      const vendorName = asText(v.vendor_name, v.companyName, v.name, v.vendor);
+
+      // Vehicles belonging to this vendor
+      const vendorVehicles = allVehicles.filter((truck: any) => {
+        const vid = String(truck.vendor_id || truck.vendorId || "");
+        return vid !== "" && vid === id;
+      });
+
+      const vehicleStats = vendorVehicles.reduce(
+        (acc, truck: any) => {
+          const s = String(truck.status || truck.current_status || truck.operational_status || "active").toLowerCase();
+          const norm = s.includes("offline") ? "offline" : s.includes("idle") ? "idle" : s.includes("break") ? "breakdown" : "moving";
+          acc.total++;
+          if (norm === "moving") acc.moving++;
+          else if (norm === "idle") acc.idle++;
+          else acc.inactive++;
+          return acc;
+        },
+        { total: 0, moving: 0, idle: 0, inactive: 0 },
+      );
+
+      // Alerts linked to this vendor's vehicles
+      const vendorVehicleIds = new Set(
+        vendorVehicles.flatMap((t: any) => [
+          String(t.id || ""),
+          String(t.vehicle_number || t.vehicleNumber || ""),
+        ].filter(Boolean)),
+      );
+      const vendorAlerts = (activeAlerts as any[]).filter((alert: any) => {
+        const alertVid = String(alert.vehicle_id || alert.truck_id || "");
+        return vendorVehicleIds.has(alertVid);
+      });
+
+      // Contract status
+      const contractEnd = asText(v.contractEnd, v.contract_end);
+      const today = new Date();
+      const endDate = contractEnd ? new Date(contractEnd) : null;
+      const daysToExpiry = endDate && !Number.isNaN(endDate.getTime()) ? Math.ceil((endDate.getTime() - today.getTime()) / 86_400_000) : null;
+      const contractStatus =
+        !endDate || Number.isNaN(endDate.getTime())
+          ? "unknown"
+          : daysToExpiry! < 0
+          ? "expired"
+          : daysToExpiry! < 30
+          ? "expiring"
+          : "active";
+
+      const efficiency = toNumber(perf?.efficiency, vehicleStats.total > 0 ? ((vehicleStats.moving + vehicleStats.idle) / vehicleStats.total) * 100 : 0);
+      const totalTrucks = Math.max(toNumber(perf?.total_trucks), vehicleStats.total, (v.trucksOwned || []).length);
+      const totalTrips = toNumber(perf?.total_trips);
+
+      return {
+        id,
+        name: vendorName,
+        contact: asText(v.contact_person, v.supervisorName, v.name),
+        phone: asText(v.phone, v.supervisorPhone),
+        email: asText(v.email),
+        contractStart: asText(v.contractStart, v.contract_start),
+        contractEnd,
+        contractStatus,
+        daysToExpiry,
+        efficiency,
+        totalTrucks,
+        totalTrips,
+        vehicleStats,
+        alertCount: vendorAlerts.length,
+        vehicleList: vendorVehicles.slice(0, 20).map((truck: any) => {
+          const s = String(truck.status || truck.current_status || "active").toLowerCase();
+          const norm = s.includes("offline") ? "offline" : s.includes("idle") ? "idle" : s.includes("break") ? "breakdown" : "moving";
+          return {
+            id: asText(truck.id, truck.vehicle_id),
+            number: asText(truck.vehicle_number, truck.vehicleNumber, truck.registration_number, truck.truckNumber, truck.id),
+            // liveTrucks expose zone/ward names via zoneId/wardId; master-data trucks only have UUIDs
+            zone: asText(truck.zone_name, truck.zoneName, truck.zone, truck.zoneId, truck.zone_id),
+            ward: asText(truck.ward_name, truck.wardName, truck.ward, truck.wardId, truck.ward_id),
+            route: asText(truck.route_name, truck.routeName, truck.route_id),
+            status: norm,
+            speed: toNumber(truck.speed, truck.speed_kph),
+          };
+        }),
+      };
+    });
+
+    // Include performance-only vendors not in the master vendor list
+    for (const [id, perf] of perfMap.entries()) {
+      if (!vendorList.find((v) => v.id === id)) {
+        vendorList.push({
+          id,
+          name: perf.vendor || id,
+          contact: "",
+          phone: "",
+          email: "",
+          contractStart: "",
+          contractEnd: "",
+          contractStatus: "unknown",
+          daysToExpiry: null,
+          efficiency: perf.efficiency,
+          totalTrucks: perf.total_trucks,
+          totalTrips: perf.total_trips,
+          vehicleStats: { total: perf.total_trucks, moving: 0, idle: 0, inactive: 0 },
+          alertCount: 0,
+          vehicleList: [],
+        });
+      }
+    }
+
+    const sorted = [...vendorList].sort((a, b) => b.efficiency - a.efficiency);
+    const bestVendor = sorted[0] ?? null;
+    const avgEfficiency = vendorList.length > 0 ? Math.round(vendorList.reduce((sum, v) => sum + v.efficiency, 0) / vendorList.length) : 0;
+    const selectedVendor = vendorList.find((v) => v.id === selectedVendorId) ?? null;
+
+    const chartData = sorted.map((v) => ({
+      name: v.name.length > 14 ? `${v.name.slice(0, 13)}…` : v.name,
+      efficiency: Math.round(v.efficiency),
+      fleet: v.totalTrucks,
+      trips: v.totalTrips,
+    }));
+
+    return {
+      vendors: sorted,
+      bestVendor,
+      avgEfficiency,
+      totalVendors: vendorList.length,
+      selectedVendor,
+      chartData,
+    };
+  }, [vendors, vendorPerformance, vehicles, liveTrucks, activeAlerts, selectedVendorId]);
 
   return (
     <div className="space-y-6">
@@ -892,62 +1154,80 @@ const Index = () => {
             <div className="flex items-start justify-between gap-3">
               <div>
                 <CardTitle className="flex items-center gap-2"><Users className="h-5 w-5 text-cyan-700" /> Citizen Service Signal</CardTitle>
-                <p className="text-sm text-muted-foreground">Pilot citizen panel using mock complaint signals until citizen complaint API is wired</p>
+                <p className="text-sm text-muted-foreground">Live ticket signals grouped by category, SLA compliance and zone hotspots from the tickets system</p>
               </div>
-              <Badge className="bg-cyan-100 text-cyan-800 hover:bg-cyan-100">Pilot data</Badge>
+              <Badge className="bg-cyan-100 text-cyan-800 hover:bg-cyan-100">{citizenData.total} tickets</Badge>
             </div>
           </CardHeader>
           <CardContent className="space-y-5 p-5">
             <div className="grid grid-cols-3 gap-3">
               <div className="rounded-2xl bg-slate-950 p-4 text-white">
-                <p className="text-xs uppercase tracking-[0.18em] text-cyan-200">Complaints</p>
-                <p className="mt-1 text-3xl font-bold">60</p>
+                <p className="text-xs uppercase tracking-[0.18em] text-cyan-200">Total Tickets</p>
+                <p className="mt-1 text-3xl font-bold">{citizenData.total}</p>
               </div>
               <div className="rounded-2xl bg-emerald-50 p-4 text-emerald-950">
                 <p className="text-xs uppercase tracking-[0.18em]">SLA Met</p>
-                <p className="mt-1 text-3xl font-bold">{citizenSlaAverage}%</p>
+                <p className="mt-1 text-3xl font-bold">{citizenData.slaMet}%</p>
               </div>
               <div className="rounded-2xl bg-amber-50 p-4 text-amber-950">
                 <p className="text-xs uppercase tracking-[0.18em]">Repeat Zones</p>
-                <p className="mt-1 text-3xl font-bold">3</p>
+                <p className="mt-1 text-3xl font-bold">{citizenData.repeatZones}</p>
               </div>
             </div>
-            <div className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
-              <div className="h-52 rounded-3xl border bg-muted/20 p-3">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie data={citizenSignals} dataKey="count" nameKey="label" outerRadius={78} innerRadius={45} paddingAngle={4}>
-                      {citizenSignals.map((item) => <Cell key={item.label} fill={item.tone} />)}
-                    </Pie>
-                    <Tooltip />
-                  </PieChart>
-                </ResponsiveContainer>
+
+            {citizenData.hasData ? (
+              <div className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
+                <div className="h-52 rounded-3xl border bg-muted/20 p-3">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={citizenData.signals} dataKey="count" nameKey="label" outerRadius={78} innerRadius={45} paddingAngle={4}>
+                        {citizenData.signals.map((item) => <Cell key={item.label} fill={item.tone} />)}
+                      </Pie>
+                      <Tooltip />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="space-y-2">
+                  {citizenData.signals.map((item) => (
+                    <div key={item.label} className="rounded-2xl border p-3">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="flex items-center gap-2">
+                          <span className="h-2 w-2 rounded-full shrink-0" style={{ background: item.tone }} />
+                          <span className="font-medium">{item.label}</span>
+                        </span>
+                        <span className="font-bold">{item.count}</span>
+                      </div>
+                      <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+                        <span className="block h-full rounded-full" style={{ width: `${item.sla}%`, background: item.tone }} />
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">SLA compliance {item.sla}%</p>
+                    </div>
+                  ))}
+                </div>
               </div>
-              <div className="space-y-2">
-                {citizenSignals.map((item) => (
-                  <div key={item.label} className="rounded-2xl border p-3">
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="font-medium">{item.label}</span>
-                      <span className="font-bold">{item.count}</span>
-                    </div>
-                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
-                      <span className="block h-full rounded-full" style={{ width: `${item.sla}%`, background: item.tone }} />
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">Resolution SLA {item.sla}%</p>
+            ) : (
+              <div className="rounded-3xl border border-dashed bg-muted/20 p-8 text-center">
+                <p className="font-semibold text-foreground">No tickets yet</p>
+                <p className="mt-1 text-sm text-muted-foreground">Complaint categories and SLA breakdown will appear here once tickets are created.</p>
+              </div>
+            )}
+
+            {citizenData.hotspots.length > 0 ? (
+              <div className="grid gap-2">
+                {citizenData.hotspots.map((item) => (
+                  <div key={`${item.zone}-${item.ward}`} className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-muted/30 px-4 py-3 text-sm">
+                    <span><strong>{item.zone}</strong> / {item.ward}</span>
+                    <span>{item.complaints} {item.complaints === 1 ? "ticket" : "tickets"}</span>
+                    <span className="text-muted-foreground">Avg resolve {item.resolution}</span>
+                    <Badge variant={item.sentiment > 75 ? "default" : "secondary"}>Satisfaction {item.sentiment}</Badge>
                   </div>
                 ))}
               </div>
-            </div>
-            <div className="grid gap-2">
-              {citizenHotspots.map((item) => (
-                <div key={`${item.zone}-${item.ward}`} className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-muted/30 px-4 py-3 text-sm">
-                  <span><strong>{item.zone}</strong> / {item.ward}</span>
-                  <span>{item.complaints} complaints</span>
-                  <span className="text-muted-foreground">Avg resolve {item.resolution}</span>
-                  <Badge variant={item.sentiment > 75 ? "default" : "secondary"}>Sentiment {item.sentiment}</Badge>
-                </div>
-              ))}
-            </div>
+            ) : citizenData.hasData ? (
+              <div className="rounded-2xl border border-dashed bg-muted/10 px-4 py-3 text-center text-sm text-muted-foreground">
+                Zone-level hotspots appear once tickets are linked to vehicles with zone assignments.
+              </div>
+            ) : null}
           </CardContent>
         </Card>
       </section>
@@ -1060,6 +1340,361 @@ const Index = () => {
           </CardContent>
         </Card>
       </section>
+
+      {/* ── Vendor Analysis ─────────────────────────────────────────────────── */}
+      <section className="grid gap-6 xl:grid-cols-[1.45fr_1fr]">
+        {/* Left: efficiency comparison chart + vendor ranking */}
+        <Card className="overflow-hidden border-violet-200/80 bg-gradient-to-br from-white via-violet-50/30 to-purple-50/40 shadow-sm">
+          <CardHeader>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <Building2 className="h-5 w-5 text-violet-700" /> Vendor Analysis
+                </CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  Performance, fleet utilisation and contract health across all vendors — click a vendor to drill down
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Badge className="bg-violet-100 text-violet-800 hover:bg-violet-100">{vendorAnalysis.totalVendors} vendors</Badge>
+                <Badge variant="outline">Avg {vendorAnalysis.avgEfficiency}% efficiency</Badge>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="grid gap-5 lg:grid-cols-[1fr_1.05fr]">
+            {/* Efficiency bar chart */}
+            <div className="rounded-3xl border bg-white p-4">
+              <p className="mb-3 text-sm font-semibold">Efficiency comparison</p>
+              {vendorAnalysis.chartData.length ? (
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={vendorAnalysis.chartData} margin={{ left: 0, right: 10, bottom: 24 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="name" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} angle={-15} textAnchor="end" height={52} />
+                      <YAxis tickLine={false} axisLine={false} domain={[0, 100]} unit="%" />
+                      <Tooltip formatter={(value: number) => [`${value}%`, "Efficiency"]} />
+                      <Bar dataKey="efficiency" name="Efficiency" radius={[10, 10, 0, 0]}>
+                        {vendorAnalysis.chartData.map((entry, idx) => (
+                          <Cell key={idx} fill={entry.efficiency >= 75 ? "#0f766e" : entry.efficiency >= 50 ? "#f59e0b" : "#e11d48"} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <div className="flex h-64 items-center justify-center rounded-2xl border border-dashed text-sm text-muted-foreground">
+                  No vendor performance data yet
+                </div>
+              )}
+            </div>
+
+            {/* Vendor ranking cards */}
+            <div className="space-y-2">
+              {vendorAnalysis.vendors.map((v, idx) => (
+                <button
+                  key={v.id || idx}
+                  type="button"
+                  onClick={() => setSelectedVendorId((prev) => (prev === v.id ? null : v.id))}
+                  className={`w-full rounded-2xl border p-3 text-left transition hover:-translate-y-0.5 hover:shadow-md ${
+                    selectedVendorId === v.id
+                      ? "border-violet-300 bg-violet-50 ring-2 ring-violet-400/50"
+                      : "bg-white hover:border-violet-200"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-violet-100 text-xs font-bold text-violet-800">
+                        #{idx + 1}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold">{v.name || "Unknown vendor"}</p>
+                        <p className="text-xs text-muted-foreground">{v.totalTrucks} trucks · {v.totalTrips} trips</p>
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      {v.alertCount > 0 && (
+                        <Badge variant="destructive" className="text-[10px] px-1.5">{v.alertCount}</Badge>
+                      )}
+                      <Badge
+                        variant={v.contractStatus === "expired" ? "destructive" : v.contractStatus === "expiring" ? "secondary" : "default"}
+                        className="text-[10px] px-1.5"
+                      >
+                        {v.contractStatus === "expiring" ? `${v.daysToExpiry}d left` : v.contractStatus}
+                      </Badge>
+                      <span
+                        className={`text-base font-bold ${
+                          v.efficiency >= 75 ? "text-teal-700" : v.efficiency >= 50 ? "text-amber-700" : "text-rose-700"
+                        }`}
+                      >
+                        {Math.round(v.efficiency)}%
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
+                    <span
+                      className={`block h-full rounded-full transition-all ${
+                        v.efficiency >= 75 ? "bg-teal-500" : v.efficiency >= 50 ? "bg-amber-400" : "bg-rose-500"
+                      }`}
+                      style={{ width: `${Math.min(100, v.efficiency)}%` }}
+                    />
+                  </div>
+                </button>
+              ))}
+              {vendorAnalysis.vendors.length === 0 && (
+                <div className="rounded-3xl border border-dashed bg-white/70 p-8 text-center">
+                  <p className="font-semibold text-foreground">No vendor data available.</p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Vendors appear here once they have assigned vehicles with analytics records.
+                  </p>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Right: top-performer spotlight + stacked fleet-mix chart */}
+        <div className="flex flex-col gap-6">
+          {vendorAnalysis.bestVendor ? (
+            <Card className="overflow-hidden border-violet-900/20 bg-gradient-to-br from-violet-950 via-purple-900 to-violet-900 text-white shadow-xl">
+              <CardContent className="p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.3em] text-violet-200">Top Performer</p>
+                    <p className="mt-1 text-2xl font-bold leading-tight">{vendorAnalysis.bestVendor.name}</p>
+                    <p className="mt-1 text-sm text-violet-200/80">
+                      {vendorAnalysis.bestVendor.totalTrucks} trucks · {vendorAnalysis.bestVendor.totalTrips} trips logged
+                    </p>
+                  </div>
+                  <div className="rounded-2xl bg-white/10 p-3 backdrop-blur">
+                    <Building2 className="h-6 w-6 text-violet-200" />
+                  </div>
+                </div>
+                <div className="mt-4 grid grid-cols-3 gap-3">
+                  <div className="rounded-2xl bg-white/10 p-3 backdrop-blur">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-violet-200">Efficiency</p>
+                    <p className="mt-1 text-2xl font-bold">{Math.round(vendorAnalysis.bestVendor.efficiency)}%</p>
+                  </div>
+                  <div className="rounded-2xl bg-white/10 p-3 backdrop-blur">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-violet-200">Moving</p>
+                    <p className="mt-1 text-2xl font-bold">{vendorAnalysis.bestVendor.vehicleStats.moving}</p>
+                  </div>
+                  <div className="rounded-2xl bg-white/10 p-3 backdrop-blur">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-violet-200">Alerts</p>
+                    <p className="mt-1 text-2xl font-bold">{vendorAnalysis.bestVendor.alertCount}</p>
+                  </div>
+                </div>
+                {vendorAnalysis.bestVendor.contractEnd && (
+                  <p className="mt-3 text-xs text-violet-300/70">
+                    Contract until {vendorAnalysis.bestVendor.contractEnd}
+                    {vendorAnalysis.bestVendor.daysToExpiry !== null && vendorAnalysis.bestVendor.daysToExpiry > 0 &&
+                      ` (${vendorAnalysis.bestVendor.daysToExpiry} days remaining)`}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          ) : (
+            <Card className="border-violet-200/60 shadow-sm">
+              <CardContent className="p-6 text-center text-sm text-muted-foreground">
+                Vendor performance data will appear here once analytics records are available.
+              </CardContent>
+            </Card>
+          )}
+
+          <Card className="border-border/70 shadow-sm flex-1">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+                <Truck className="h-4 w-4 text-teal-700" /> Fleet Mix by Vendor
+              </CardTitle>
+              <p className="text-xs text-muted-foreground">Live vehicle status stacked per vendor</p>
+            </CardHeader>
+            <CardContent>
+              {vendorAnalysis.vendors.length ? (
+                <>
+                  <div className="h-44">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart
+                        data={vendorAnalysis.vendors.map((v) => ({
+                          name: v.name.length > 12 ? `${v.name.slice(0, 11)}…` : v.name,
+                          Moving: v.vehicleStats.moving,
+                          Idle: v.vehicleStats.idle,
+                          Inactive: v.vehicleStats.inactive,
+                        }))}
+                        margin={{ left: 0, right: 10 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                        <XAxis dataKey="name" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} />
+                        <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+                        <Tooltip />
+                        <Bar dataKey="Moving" stackId="a" fill="#14b8a6" />
+                        <Bar dataKey="Idle" stackId="a" fill="#f59e0b" />
+                        <Bar dataKey="Inactive" stackId="a" fill="#ef4444" radius={[6, 6, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-3 text-xs text-muted-foreground">
+                    <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-teal-500" />Moving</span>
+                    <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-amber-400" />Idle</span>
+                    <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-rose-500" />Inactive</span>
+                  </div>
+                </>
+              ) : (
+                <div className="flex h-44 items-center justify-center text-sm text-muted-foreground">
+                  Awaiting fleet data from vendors
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      </section>
+
+      {/* ── Vendor Drill-Down ────────────────────────────────────────────────── */}
+      {vendorAnalysis.selectedVendor && (
+        <Card className="overflow-hidden border-violet-200 bg-gradient-to-br from-white via-violet-50/50 to-purple-50/40 shadow-sm">
+          <CardHeader className="pb-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <Building2 className="h-5 w-5 text-violet-700" />
+                  {vendorAnalysis.selectedVendor.name} — Deep Dive
+                </CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  {vendorAnalysis.selectedVendor.contractStart && vendorAnalysis.selectedVendor.contractEnd
+                    ? `Contract: ${vendorAnalysis.selectedVendor.contractStart} → ${vendorAnalysis.selectedVendor.contractEnd}`
+                    : "Contract dates not on record"}
+                  {vendorAnalysis.selectedVendor.phone ? ` · ${vendorAnalysis.selectedVendor.phone}` : ""}
+                  {vendorAnalysis.selectedVendor.email ? ` · ${vendorAnalysis.selectedVendor.email}` : ""}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Badge className="bg-violet-100 text-violet-800 hover:bg-violet-100">
+                  {vendorAnalysis.selectedVendor.totalTrucks} trucks
+                </Badge>
+                <Badge
+                  variant={
+                    vendorAnalysis.selectedVendor.contractStatus === "expired"
+                      ? "destructive"
+                      : vendorAnalysis.selectedVendor.contractStatus === "expiring"
+                      ? "secondary"
+                      : "default"
+                  }
+                >
+                  Contract {vendorAnalysis.selectedVendor.contractStatus}
+                  {vendorAnalysis.selectedVendor.daysToExpiry !== null &&
+                    vendorAnalysis.selectedVendor.daysToExpiry > 0 &&
+                    ` (${vendorAnalysis.selectedVendor.daysToExpiry}d left)`}
+                </Badge>
+                <Badge
+                  className={
+                    vendorAnalysis.selectedVendor.efficiency >= 75
+                      ? "bg-teal-100 text-teal-800 hover:bg-teal-100"
+                      : vendorAnalysis.selectedVendor.efficiency >= 50
+                      ? "bg-amber-100 text-amber-800 hover:bg-amber-100"
+                      : "bg-rose-100 text-rose-800 hover:bg-rose-100"
+                  }
+                >
+                  {Math.round(vendorAnalysis.selectedVendor.efficiency)}% efficiency
+                </Badge>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
+            {/* KPI tiles + fleet spread */}
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-2xl border bg-white p-4">
+                  <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Total Fleet</p>
+                  <p className="mt-1 text-3xl font-bold text-violet-800">{vendorAnalysis.selectedVendor.totalTrucks}</p>
+                </div>
+                <div className="rounded-2xl border bg-white p-4">
+                  <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Trips Done</p>
+                  <p className="mt-1 text-3xl font-bold text-teal-800">{vendorAnalysis.selectedVendor.totalTrips}</p>
+                </div>
+                <div className="rounded-2xl bg-teal-50 p-4 text-teal-950">
+                  <p className="text-xs uppercase tracking-[0.18em]">Moving</p>
+                  <p className="mt-1 text-3xl font-bold">{vendorAnalysis.selectedVendor.vehicleStats.moving}</p>
+                </div>
+                <div className="rounded-2xl bg-amber-50 p-4 text-amber-950">
+                  <p className="text-xs uppercase tracking-[0.18em]">Idle</p>
+                  <p className="mt-1 text-3xl font-bold">{vendorAnalysis.selectedVendor.vehicleStats.idle}</p>
+                </div>
+              </div>
+
+              {vendorAnalysis.selectedVendor.alertCount > 0 && (
+                <div className="flex items-center justify-between rounded-2xl bg-rose-50 p-4 text-rose-950">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.18em] text-rose-700">Active Alerts</p>
+                    <p className="mt-1 text-3xl font-bold text-rose-700">{vendorAnalysis.selectedVendor.alertCount}</p>
+                  </div>
+                  <AlertTriangle className="h-8 w-8 text-rose-300" />
+                </div>
+              )}
+
+              <div className="rounded-2xl border bg-white p-4">
+                <p className="mb-3 text-sm font-semibold">Fleet Status Spread</p>
+                <div className="flex h-4 overflow-hidden rounded-full bg-muted">
+                  {vendorAnalysis.selectedVendor.totalTrucks > 0 ? (
+                    <>
+                      <span className="bg-teal-500 transition-all" style={{ width: `${(vendorAnalysis.selectedVendor.vehicleStats.moving / vendorAnalysis.selectedVendor.totalTrucks) * 100}%` }} />
+                      <span className="bg-amber-400 transition-all" style={{ width: `${(vendorAnalysis.selectedVendor.vehicleStats.idle / vendorAnalysis.selectedVendor.totalTrucks) * 100}%` }} />
+                      <span className="bg-rose-500 transition-all" style={{ width: `${(vendorAnalysis.selectedVendor.vehicleStats.inactive / vendorAnalysis.selectedVendor.totalTrucks) * 100}%` }} />
+                    </>
+                  ) : (
+                    <span className="bg-muted-foreground/20 w-full" />
+                  )}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
+                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-teal-500" />Moving {vendorAnalysis.selectedVendor.vehicleStats.moving}</span>
+                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-amber-400" />Idle {vendorAnalysis.selectedVendor.vehicleStats.idle}</span>
+                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-rose-500" />Inactive {vendorAnalysis.selectedVendor.vehicleStats.inactive}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Vehicle roster */}
+            <div className="overflow-hidden rounded-3xl border bg-white">
+              <div className="flex items-center justify-between bg-slate-50 px-4 py-3">
+                <div>
+                  <p className="text-sm font-semibold">Vehicle Roster</p>
+                  <p className="text-xs text-muted-foreground">Live status snapshot for {vendorAnalysis.selectedVendor.name}</p>
+                </div>
+                <Badge variant="outline">{vendorAnalysis.selectedVendor.vehicleList.length} shown</Badge>
+              </div>
+              {vendorAnalysis.selectedVendor.vehicleList.length ? (
+                <>
+                  <div className="grid grid-cols-[1fr_0.8fr_0.7fr_0.9fr_0.8fr_0.6fr] border-t bg-slate-50 px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                    <span>Vehicle</span><span>Zone</span><span>Ward</span><span>Route</span><span>Status</span><span>Speed</span>
+                  </div>
+                  <div className="max-h-72 divide-y overflow-auto">
+                    {vendorAnalysis.selectedVendor.vehicleList.map((v, idx) => (
+                      <div
+                        key={`${v.id}-${idx}`}
+                        className="grid grid-cols-[1fr_0.8fr_0.7fr_0.9fr_0.8fr_0.6fr] items-center gap-2 px-4 py-3 text-sm"
+                      >
+                        <span className="font-mono text-xs">{v.number}</span>
+                        <span>{v.zone}</span>
+                        <span>{v.ward}</span>
+                        <span className="text-xs">{v.route}</span>
+                        <Badge
+                          variant={
+                            v.status === "offline" || v.status === "breakdown" ? "destructive" : v.status === "idle" ? "secondary" : "default"
+                          }
+                        >
+                          {v.status}
+                        </Badge>
+                        <span>{v.speed > 0 ? `${v.speed} km/h` : "—"}</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="p-8 text-center text-sm text-muted-foreground">
+                  No live vehicle data linked to this vendor. Vehicles appear once GPS tracking is active and vendor IDs are assigned.
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 };

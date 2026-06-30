@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { PageHeader } from '@/components/PageHeader';
+import { FieldError, RequiredMark, ValidationAlert, errorClass as validationErrorClass } from '@/components/FormValidation';
 import { useToast } from '@/hooks/use-toast';
 import { useRoutes, useVehicles, useVendors, useWards } from '@/hooks/useDataQueries';
 import { apiService } from '@/services/api';
@@ -32,6 +33,9 @@ export default function MasterVehicles() {
   const [editing, setEditing] = useState<any | null>(null);
   const [routeAssignVehicle, setRouteAssignVehicle] = useState<any | null>(null);
   const [routeToAssign, setRouteToAssign] = useState('');
+  const [vehicleFormErrors, setVehicleFormErrors] = useState<Record<string, string>>({});
+  const [vehicleValidationOpen, setVehicleValidationOpen] = useState(false);
+  const [vehicleValidationSummary, setVehicleValidationSummary] = useState<string[]>([]);
   const [secondaryAssignVehicle, setSecondaryAssignVehicle] = useState<any | null>(null);
   const [secondaryAssignment, setSecondaryAssignment] = useState({
     GTS_pickup_point_id: '',
@@ -94,10 +98,16 @@ export default function MasterVehicles() {
     });
     setEditing(null);
     setIsDialogOpen(false);
+    setVehicleFormErrors({});
+    setVehicleValidationOpen(false);
+    setVehicleValidationSummary([]);
   };
 
   const openEdit = (vehicle: any) => {
     setEditing(vehicle);
+    setVehicleFormErrors({});
+    setVehicleValidationOpen(false);
+    setVehicleValidationSummary([]);
     setForm({
       ...vehicle,
       vehicle_category: vehicle.vehicle_category || 'primary',
@@ -107,15 +117,60 @@ export default function MasterVehicles() {
     setIsDialogOpen(true);
   };
 
-  const handleSave = async () => {
-    if (!form.vehicle_number || !form.registration_number || !form.vendor_id || !form.ward_id) {
-      toast({ title: 'Missing required fields', description: 'Vehicle Number, Registration, Vendor, and Ward are required.', variant: 'destructive' });
-      return;
+  const setVehicleField = (field: string, value: any) => {
+    setForm((current: any) => ({ ...current, [field]: value }));
+    setVehicleFormErrors((current) => {
+      if (!current[field]) return current;
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+  };
+
+  const vehicleNumberPattern = /^[A-Z0-9-]{4,24}$/;
+
+  const validateVehicleForm = () => {
+    const errors: Record<string, string> = {};
+    const vehicleNumber = String(form.vehicle_number || '').trim().toUpperCase();
+    const registrationNumber = String(form.registration_number || '').trim().toUpperCase();
+
+    if (!vehicleNumber) {
+      errors.vehicle_number = 'Vehicle Number is required.';
+    } else if (!vehicleNumberPattern.test(vehicleNumber)) {
+      errors.vehicle_number = 'Vehicle Number must be 4-24 characters using only A-Z, 0-9, or hyphen.';
     }
+
+    if (!registrationNumber) {
+      errors.registration_number = 'Registration Number is required.';
+    } else if (!vehicleNumberPattern.test(registrationNumber)) {
+      errors.registration_number = 'Registration Number must be 4-24 characters using only A-Z, 0-9, or hyphen.';
+    }
+
+    if (!form.vendor_id) errors.vendor_id = 'Vendor is required.';
+    if (!form.ward_id) errors.ward_id = 'Ward is required.';
     if (form.vehicle_category === 'secondary' && !form.secondary_waste_type) {
-      toast({ title: 'Select waste type', description: 'Secondary vehicles must be mapped to a material type.', variant: 'destructive' });
+      errors.secondary_waste_type = 'Secondary Waste Type is required for secondary vehicles.';
+    }
+    if (Number(form.capacity_kg) < 0) errors.capacity_kg = 'Capacity KG cannot be negative.';
+
+    return errors;
+  };
+
+  const errorClass = (field: string) =>
+    validationErrorClass(vehicleFormErrors, field);
+  const renderFieldError = (field: string) =>
+    <FieldError errors={vehicleFormErrors} field={field} />;
+
+  const handleSave = async () => {
+    const validationErrors = validateVehicleForm();
+    if (Object.keys(validationErrors).length > 0) {
+      setVehicleFormErrors(validationErrors);
+      setVehicleValidationSummary(Object.values(validationErrors));
+      setVehicleValidationOpen(true);
       return;
     }
+    setVehicleFormErrors({});
+    setVehicleValidationSummary([]);
     try {
       const payload = {
         ...form,
@@ -216,25 +271,102 @@ export default function MasterVehicles() {
               <DialogHeader><DialogTitle>{editing ? 'Edit Vehicle' : 'Add Vehicle'}</DialogTitle><DialogDescription>Required fields are validated before save.</DialogDescription></DialogHeader>
               <div className='grid gap-4 max-h-[65vh] overflow-y-auto py-2'>
                 <div className='grid grid-cols-2 gap-4'>
-                  <div><Label>Vehicle Number</Label><Input value={form.vehicle_number || ''} onChange={(e) => setForm({ ...form, vehicle_number: e.target.value.toUpperCase() })} /></div>
-                  <div><Label>Registration Number</Label><Input value={form.registration_number || ''} onChange={(e) => setForm({ ...form, registration_number: e.target.value.toUpperCase() })} /></div>
+                  <div className='space-y-1'>
+                    <Label>Vehicle Number <RequiredMark /></Label>
+                    <Input
+                      className={errorClass('vehicle_number')}
+                      placeholder='E.g. MH12-TRK-01'
+                      value={form.vehicle_number || ''}
+                      onChange={(e) => setVehicleField('vehicle_number', e.target.value.toUpperCase())}
+                    />
+                    {renderFieldError('vehicle_number')}
+                  </div>
+                  <div className='space-y-1'>
+                    <Label>Registration Number <RequiredMark /></Label>
+                    <Input
+                      className={errorClass('registration_number')}
+                      placeholder='E.g. MH12AB1234'
+                      value={form.registration_number || ''}
+                      onChange={(e) => setVehicleField('registration_number', e.target.value.toUpperCase())}
+                    />
+                    {renderFieldError('registration_number')}
+                  </div>
                 </div>
                 <div className='grid grid-cols-2 gap-4'>
-                  <div><Label>Vendor</Label><Select value={form.vendor_id || ''} onValueChange={(v) => setForm({ ...form, vendor_id: v })}><SelectTrigger><SelectValue placeholder='Select vendor' /></SelectTrigger><SelectContent>{(vendors as any[]).map((v) => <SelectItem key={v.id} value={String(v.id)}>{v.companyName || v.company_name || v.name}</SelectItem>)}</SelectContent></Select></div>
-                  <div><Label>Ward</Label><Select value={form.ward_id || ''} onValueChange={(v) => setForm({ ...form, ward_id: v })}><SelectTrigger><SelectValue placeholder='Select ward' /></SelectTrigger><SelectContent>{(wards as any[]).map((w) => <SelectItem key={w.id} value={String(w.id)}>{w.ward_name || w.name}</SelectItem>)}</SelectContent></Select></div>
+                  <div className='space-y-1'>
+                    <Label>Vendor <RequiredMark /></Label>
+                    <Select value={form.vendor_id || ''} onValueChange={(v) => setVehicleField('vendor_id', v)}>
+                      <SelectTrigger className={errorClass('vendor_id')}><SelectValue placeholder='Select vendor' /></SelectTrigger>
+                      <SelectContent>{(vendors as any[]).map((v) => <SelectItem key={v.id} value={String(v.id)}>{v.companyName || v.company_name || v.name}</SelectItem>)}</SelectContent>
+                    </Select>
+                    {renderFieldError('vendor_id')}
+                  </div>
+                  <div className='space-y-1'>
+                    <Label>Ward <RequiredMark /></Label>
+                    <Select value={form.ward_id || ''} onValueChange={(v) => setVehicleField('ward_id', v)}>
+                      <SelectTrigger className={errorClass('ward_id')}><SelectValue placeholder='Select ward' /></SelectTrigger>
+                      <SelectContent>{(wards as any[]).map((w) => <SelectItem key={w.id} value={String(w.id)}>{w.ward_name || w.name}</SelectItem>)}</SelectContent>
+                    </Select>
+                    {renderFieldError('ward_id')}
+                  </div>
                 </div>
                 <div className='grid grid-cols-2 gap-4'>
-                  <div><Label>Vehicle Category</Label><Select value={form.vehicle_category || 'primary'} onValueChange={(v) => setForm({ ...form, vehicle_category: v, route_id: v === 'secondary' ? '' : form.route_id })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value='primary'>Primary</SelectItem><SelectItem value='secondary'>Secondary</SelectItem></SelectContent></Select></div>
-                  <div><Label>Truck Type</Label><Input value={form.truck_type || ''} onChange={(e) => setForm({ ...form, truck_type: e.target.value })} /></div>
+                  <div className='space-y-1'>
+                    <Label>Vehicle Category</Label>
+                    <Select
+                      value={form.vehicle_category || 'primary'}
+                      onValueChange={(v) => {
+                        setVehicleField('vehicle_category', v);
+                        if (v === 'secondary') setVehicleField('route_id', '');
+                        if (v !== 'secondary') setVehicleField('secondary_waste_type', '');
+                      }}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent><SelectItem value='primary'>Primary</SelectItem><SelectItem value='secondary'>Secondary</SelectItem></SelectContent>
+                    </Select>
+                  </div>
+                  <div className='space-y-1'>
+                    <Label>Truck Type</Label>
+                    <Input value={form.truck_type || ''} onChange={(e) => setVehicleField('truck_type', e.target.value)} />
+                  </div>
                 </div>
                 <div className='grid grid-cols-2 gap-4'>
-                  <div><Label>Route {form.vehicle_category === 'secondary' && <span className='text-xs text-muted-foreground'>(not needed)</span>}</Label><Select disabled={form.vehicle_category === 'secondary'} value={form.route_id || 'none'} onValueChange={(v) => setForm({ ...form, route_id: v === 'none' ? '' : v })}><SelectTrigger><SelectValue placeholder='Optional route' /></SelectTrigger><SelectContent><SelectItem value='none'>Not Assigned</SelectItem>{(routes as any[]).map((r) => <SelectItem key={r.id} value={String(r.id)}>{r.name || r.route_name}</SelectItem>)}</SelectContent></Select></div>
-                  <div><Label>Secondary Waste Type</Label><Select disabled={form.vehicle_category !== 'secondary'} value={form.secondary_waste_type || ''} onValueChange={(v) => setForm({ ...form, secondary_waste_type: v })}><SelectTrigger><SelectValue placeholder='Select material' /></SelectTrigger><SelectContent>{(wasteTypes as any[]).map((item) => <SelectItem key={item.value} value={String(item.value)}>{item.label}</SelectItem>)}</SelectContent></Select></div>
+                  <div className='space-y-1'>
+                    <Label>Route {form.vehicle_category === 'secondary' && <span className='text-xs text-muted-foreground'>(not needed)</span>}</Label>
+                    <Select disabled={form.vehicle_category === 'secondary'} value={form.route_id || 'none'} onValueChange={(v) => setVehicleField('route_id', v === 'none' ? '' : v)}>
+                      <SelectTrigger><SelectValue placeholder='Optional route' /></SelectTrigger>
+                      <SelectContent><SelectItem value='none'>Not Assigned</SelectItem>{(routes as any[]).map((r) => <SelectItem key={r.id} value={String(r.id)}>{r.name || r.route_name}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                  <div className='space-y-1'>
+                    <Label>Secondary Waste Type {form.vehicle_category === 'secondary' && <RequiredMark />}</Label>
+                    <Select disabled={form.vehicle_category !== 'secondary'} value={form.secondary_waste_type || ''} onValueChange={(v) => setVehicleField('secondary_waste_type', v)}>
+                      <SelectTrigger className={errorClass('secondary_waste_type')}><SelectValue placeholder='Select material' /></SelectTrigger>
+                      <SelectContent>{(wasteTypes as any[]).map((item) => <SelectItem key={item.value} value={String(item.value)}>{item.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                    {renderFieldError('secondary_waste_type')}
+                  </div>
                 </div>
                 <div className='grid grid-cols-3 gap-4'>
-                  <div><Label>Capacity KG</Label><Input type='number' value={form.capacity_kg ?? 0} onChange={(e) => setForm({ ...form, capacity_kg: Number(e.target.value) })} /></div>
-                  <div><Label>Fuel</Label><Select value={form.fuel_type || 'diesel'} onValueChange={(v) => setForm({ ...form, fuel_type: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value='diesel'>Diesel</SelectItem><SelectItem value='petrol'>Petrol</SelectItem><SelectItem value='cng'>CNG</SelectItem><SelectItem value='electric'>Electric</SelectItem><SelectItem value='lng'>LNG</SelectItem></SelectContent></Select></div>
-                  <div><Label>Status</Label><Select value={form.operational_status || 'operational'} onValueChange={(v) => setForm({ ...form, operational_status: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value='operational'>Operational</SelectItem><SelectItem value='maintenance'>Maintenance</SelectItem><SelectItem value='breakdown'>Breakdown</SelectItem><SelectItem value='retired'>Retired</SelectItem></SelectContent></Select></div>
+                  <div className='space-y-1'>
+                    <Label>Capacity KG</Label>
+                    <Input className={errorClass('capacity_kg')} type='number' min={0} value={form.capacity_kg ?? 0} onChange={(e) => setVehicleField('capacity_kg', Number(e.target.value))} />
+                    {renderFieldError('capacity_kg')}
+                  </div>
+                  <div className='space-y-1'>
+                    <Label>Fuel</Label>
+                    <Select value={form.fuel_type || 'diesel'} onValueChange={(v) => setVehicleField('fuel_type', v)}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent><SelectItem value='diesel'>Diesel</SelectItem><SelectItem value='petrol'>Petrol</SelectItem><SelectItem value='cng'>CNG</SelectItem><SelectItem value='electric'>Electric</SelectItem><SelectItem value='lng'>LNG</SelectItem></SelectContent>
+                    </Select>
+                  </div>
+                  <div className='space-y-1'>
+                    <Label>Status</Label>
+                    <Select value={form.operational_status || 'operational'} onValueChange={(v) => setVehicleField('operational_status', v)}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent><SelectItem value='operational'>Operational</SelectItem><SelectItem value='maintenance'>Maintenance</SelectItem><SelectItem value='breakdown'>Breakdown</SelectItem><SelectItem value='retired'>Retired</SelectItem></SelectContent>
+                    </Select>
+                  </div>
                 </div>
               </div>
               <DialogFooter><Button variant='outline' onClick={resetForm}>Cancel</Button><Button onClick={handleSave}>{editing ? 'Update' : 'Create'} Vehicle</Button></DialogFooter>
@@ -298,6 +430,12 @@ export default function MasterVehicles() {
           <DialogFooter><Button variant='outline' onClick={() => setRouteAssignVehicle(null)}>Cancel</Button><Button onClick={handleRouteAssign}>Save Assignment</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ValidationAlert
+        open={vehicleValidationOpen}
+        onOpenChange={setVehicleValidationOpen}
+        messages={vehicleValidationSummary}
+      />
 
       <Dialog open={!!secondaryAssignVehicle} onOpenChange={(open) => { if (!open) setSecondaryAssignVehicle(null); }}>
         <DialogContent>

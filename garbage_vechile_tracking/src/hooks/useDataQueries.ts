@@ -40,7 +40,7 @@ export function useZones(): UseQueryResult<any[], Error> {
   return useQuery({
     queryKey: ['zones'],
     queryFn: () => apiService.getZones(),
-    staleTime: 60 * 60 * 1000, // 1 hour
+    staleTime: 5 * 60 * 1000, // 5 minutes (reduced from 1 hour for master data)
     gcTime: 24 * 60 * 60 * 1000, // 24 hours
   });
 }
@@ -268,6 +268,16 @@ export function useTickets(filters?: {
     queryKey: ['tickets', filters],
     queryFn: () => apiService.getTickets(filters),
     staleTime: 30 * 1000, // 30 seconds
+    gcTime: 5 * 60 * 1000, // 5 minutes
+  });
+}
+
+// Hook for fetching ticket statistics summary
+export function useTicketStatistics(): UseQueryResult<any, Error> {
+  return useQuery({
+    queryKey: ['tickets', 'statistics'],
+    queryFn: () => apiService.getTicketStatistics(),
+    staleTime: 60 * 1000, // 1 minute
     gcTime: 5 * 60 * 1000, // 5 minutes
   });
 }

@@ -99,11 +99,56 @@ type RealtimeSnapshotResponse = {
   total: number;
 };
 
+export class ApiError extends Error {
+  status: number;
+  details: unknown;
+
+  constructor(message: string, status: number, details: unknown = null) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.details = details;
+  }
+}
+
 class ApiService {
   private baseUrl: string;
 
   constructor() {
     this.baseUrl = API_BASE_URL;
+  }
+
+  private async readErrorMessage(response: Response): Promise<{ message: string; details: unknown }> {
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      try {
+        const payload = await response.json();
+        const message = typeof payload?.detail === 'string'
+          ? payload.detail
+          : typeof payload?.message === 'string'
+            ? payload.message
+            : typeof payload?.error === 'string'
+              ? payload.error
+              : `Request failed with status ${response.status}`;
+        return { message, details: payload };
+      } catch {
+        return { message: `Request failed with status ${response.status}`, details: null };
+      }
+    }
+
+    try {
+      const text = (await response.text()).trim();
+      if (text) {
+        return { message: text, details: text };
+      }
+    } catch {
+      // ignore body parsing failure and fall back to status text below
+    }
+
+    return {
+      message: response.statusText ? `${response.status}: ${response.statusText}` : `Request failed with status ${response.status}`,
+      details: null,
+    };
   }
 
   private async fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
@@ -129,7 +174,8 @@ class ApiService {
       }
 
       if (!response.ok) {
-        throw new Error(`API error: ${response.statusText}`);
+        const { message, details } = await this.readErrorMessage(response);
+        throw new ApiError(message, response.status, details);
       }
 
       return await response.json();
@@ -178,7 +224,8 @@ class ApiService {
       }
 
       if (!response.ok) {
-        throw new Error(`API error: ${response.statusText}`);
+        const { message, details } = await this.readErrorMessage(response);
+        throw new ApiError(message, response.status, details);
       }
 
       return await response.blob();
@@ -321,12 +368,46 @@ class ApiService {
     }));
   }
 
-  async createZone(payload: { code: string; name: string; status?: 'active' | 'inactive' }): Promise<any> {
+  async createZone(payload: {
+    code: string;
+    name: string;
+    description?: string;
+    supervisor_name?: string;
+    supervisor_phone?: string;
+    status?: 'active' | 'inactive';
+  }): Promise<any> {
     return this.fetchApi('/zones', {
       method: 'POST',
       body: JSON.stringify({
         zone_code: payload.code,
         zone_name: payload.name,
+        description: payload.description ?? null,
+        supervisor_name: payload.supervisor_name ?? null,
+        supervisor_phone: payload.supervisor_phone ?? null,
+        active: payload.status !== 'inactive',
+      }),
+    });
+  }
+
+  async updateZone(
+    zoneId: string,
+    payload: {
+      code: string;
+      name: string;
+      description?: string;
+      supervisor_name?: string;
+      supervisor_phone?: string;
+      status?: 'active' | 'inactive';
+    }
+  ): Promise<any> {
+    return this.fetchApi(`/zones/${zoneId}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        zone_code: payload.code,
+        zone_name: payload.name,
+        description: payload.description ?? null,
+        supervisor_name: payload.supervisor_name ?? null,
+        supervisor_phone: payload.supervisor_phone ?? null,
         active: payload.status !== 'inactive',
       }),
     });
@@ -337,6 +418,9 @@ class ApiService {
     name: string;
     zoneName: string;
     status?: 'active' | 'inactive';
+    population?: number;
+    area?: number;
+    totalPickupPoints?: number;
   }): Promise<any> {
     return this.fetchApi('/wards', {
       method: 'POST',
@@ -345,6 +429,35 @@ class ApiService {
         ward_name: payload.name,
         zone_name: payload.zoneName,
         active: payload.status !== 'inactive',
+        population: payload.population ?? null,
+        area: payload.area ?? null,
+        total_pickup_points: payload.totalPickupPoints ?? null,
+      }),
+    });
+  }
+
+  async updateWard(
+    wardId: string,
+    payload: {
+      code: string;
+      name: string;
+      zoneName: string;
+      status?: 'active' | 'inactive';
+      population?: number;
+      area?: number;
+      totalPickupPoints?: number;
+    }
+  ): Promise<any> {
+    return this.fetchApi(`/wards/${wardId}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        ward_code: payload.code,
+        ward_name: payload.name,
+        zone_name: payload.zoneName,
+        active: payload.status !== 'inactive',
+        population: payload.population ?? null,
+        area: payload.area ?? null,
+        total_pickup_points: payload.totalPickupPoints ?? null,
       }),
     });
   }
@@ -562,7 +675,7 @@ class ApiService {
 
   // Vendors
   async getVendors(): Promise<any[]> {
-    return this.fetchApi('/vendors?ui_compat=true');
+    return this.fetchApi('/vendors?ui_compat=true&page_size=200');
   }
 
   async getVendor(vendorId: string): Promise<any> {
@@ -575,6 +688,10 @@ class ApiService {
     contact_person?: string | null;
     email?: string | null;
     phone?: string | null;
+    gst_number?: string | null;
+    address?: string | null;
+    contract_start?: string | null;
+    contract_end?: string | null;
     active?: boolean;
     auth_type?: 'header' | 'signature' | 'ip';
     allowed_ips?: string[];
@@ -591,6 +708,10 @@ class ApiService {
         contact_person: payload.contact_person ?? null,
         email: payload.email ?? null,
         phone: payload.phone ?? null,
+        gst_number: payload.gst_number ?? null,
+        address: payload.address ?? null,
+        contract_start: payload.contract_start ?? null,
+        contract_end: payload.contract_end ?? null,
         active: payload.active ?? true,
         auth_type: payload.auth_type ?? 'header',
         allowed_ips: payload.allowed_ips ?? [],
@@ -610,6 +731,10 @@ class ApiService {
       contact_person?: string | null;
       email?: string | null;
       phone?: string | null;
+      gst_number?: string | null;
+      address?: string | null;
+      contract_start?: string | null;
+      contract_end?: string | null;
       active?: boolean;
       auth_type?: 'header' | 'signature' | 'ip';
       allowed_ips?: string[];
@@ -627,6 +752,10 @@ class ApiService {
         contact_person: payload.contact_person ?? null,
         email: payload.email ?? null,
         phone: payload.phone ?? null,
+        gst_number: payload.gst_number ?? null,
+        address: payload.address ?? null,
+        contract_start: payload.contract_start ?? null,
+        contract_end: payload.contract_end ?? null,
         active: payload.active ?? true,
         auth_type: payload.auth_type ?? 'header',
         allowed_ips: payload.allowed_ips ?? [],
@@ -648,6 +777,7 @@ class ApiService {
   async getRoutes(filters?: { zone_id?: string; ward_id?: string }): Promise<any[]> {
     const routeFilters = {
       ui_compat: 'true',
+      page_size: 200,
       zone_id: filters?.zone_id,
       ward_id: filters?.ward_id,
     };
@@ -661,6 +791,7 @@ class ApiService {
 
   async createRoute(payload: {
     route_name: string;
+    route_type?: 'primary' | 'secondary';
     zone_id: string;
     ward_id: string;
     polyline_coordinates: number[][];
@@ -673,6 +804,7 @@ class ApiService {
 
   async updateRoute(routeId: string, payload: {
     route_name: string;
+    route_type?: 'primary' | 'secondary';
     zone_id: string;
     ward_id: string;
     polyline_coordinates: number[][];

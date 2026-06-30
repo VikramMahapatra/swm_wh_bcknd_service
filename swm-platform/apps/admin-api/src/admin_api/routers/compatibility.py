@@ -1337,10 +1337,10 @@ async def zones_list(
 ) -> list[dict]:
     rows = (
         await session.execute(
-            select(ZoneORM.id, ZoneORM.zone_name, ZoneORM.zone_code, ZoneORM.active, func.count(WardORM.id))
+            select(ZoneORM.id, ZoneORM.zone_name, ZoneORM.zone_code, ZoneORM.description, ZoneORM.supervisor_name, ZoneORM.supervisor_phone, ZoneORM.active, func.count(WardORM.id))
             .select_from(ZoneORM)
             .outerjoin(WardORM, WardORM.zone_id == ZoneORM.id)
-            .group_by(ZoneORM.id, ZoneORM.zone_name, ZoneORM.zone_code, ZoneORM.active)
+            .group_by(ZoneORM.id, ZoneORM.zone_name, ZoneORM.zone_code, ZoneORM.description, ZoneORM.supervisor_name, ZoneORM.supervisor_phone, ZoneORM.active)
             .order_by(ZoneORM.zone_name.asc())
         )
     ).all()
@@ -1350,13 +1350,13 @@ async def zones_list(
             "id": str(zone_id),
             "name": zone_name,
             "code": zone_code,
-            "description": "",
-            "supervisor_name": "",
-            "supervisor_phone": "",
+            "description": description or "",
+            "supervisor_name": supervisor_name or "",
+            "supervisor_phone": supervisor_phone or "",
             "total_wards": int(ward_count or 0),
             "status": "active" if active else "inactive",
         }
-        for zone_id, zone_name, zone_code, active, ward_count in rows
+        for zone_id, zone_name, zone_code, description, supervisor_name, supervisor_phone, active, ward_count in rows
     ]
 
 
@@ -1446,7 +1446,9 @@ async def trucks_list(
             "route_name": route.route_name if route is not None else None,
             "vendor_id": str(vehicle.vendor_id) if vehicle.vendor_id is not None else "",
             "zone_id": str(zone.id),
+            "zone_name": zone.zone_name or "",
             "ward_id": str(ward.id),
+            "ward_name": ward.ward_name or "",
             "is_spare": _is_spare_vehicle(vehicle),
             "last_update": (rt.get("event_ts").isoformat() if rt and isinstance(rt.get("event_ts"), datetime) else None),
         }

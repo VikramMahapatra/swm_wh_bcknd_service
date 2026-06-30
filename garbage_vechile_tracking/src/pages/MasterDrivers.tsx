@@ -14,6 +14,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Driver } from '@/data/masterData';
 import { Plus, Search, Edit, Trash2, Phone, Mail, User, Download, Loader2, UserCheck } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
+import { FieldError, RequiredMark, ValidationAlert, errorClass as validationErrorClass } from '@/components/FormValidation';
 
 const UNASSIGNED_TRUCK_VALUE = 'unassigned';
 const CREW_TYPE_OPTIONS = [
@@ -75,6 +76,9 @@ export default function MasterDrivers() {
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editingDriver, setEditingDriver] = useState<Driver | null>(null);
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [validationOpen, setValidationOpen] = useState(false);
+  const [validationSummary, setValidationSummary] = useState<string[]>([]);
   
   // Initialize drivers from API
   useEffect(() => {
@@ -129,7 +133,36 @@ export default function MasterDrivers() {
     }
   };
 
+  const setField = (field: keyof Driver, value: any) => {
+    setFormData((current) => ({ ...current, [field]: value }));
+    setFormErrors((current) => {
+      if (!current[field as string]) return current;
+      const next = { ...current };
+      delete next[field as string];
+      return next;
+    });
+  };
+
+  const validateForm = () => {
+    const errors: Record<string, string> = {};
+    const email = String(formData.email || '').trim();
+    const phone = String(formData.phone || '').trim();
+    if (!String(formData.name || '').trim()) errors.name = 'Full Name is required.';
+    if (!phone) errors.phone = 'Phone Number is required.';
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.email = 'Email must be a valid email address.';
+    return errors;
+  };
+
   const handleSubmit = async () => {
+    const errors = validateForm();
+    if (Object.keys(errors).length > 0) {
+      setFormErrors(errors);
+      setValidationSummary(Object.values(errors));
+      setValidationOpen(true);
+      return;
+    }
+    setFormErrors({});
+    setValidationSummary([]);
     try {
       const payload = {
         name: formData.name,
@@ -200,11 +233,17 @@ export default function MasterDrivers() {
     });
     setEditingDriver(null);
     setIsAddDialogOpen(false);
+    setFormErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
   };
 
   const openEditDialog = (driver: Driver) => {
     setEditingDriver(driver);
     setFormData(driver);
+    setFormErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
     setIsAddDialogOpen(true);
   };
 
@@ -244,18 +283,20 @@ export default function MasterDrivers() {
               <div className="grid gap-4 py-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label>Full Name</Label>
-                    <Input value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} />
+                    <Label>Full Name <RequiredMark /></Label>
+                    <Input className={validationErrorClass(formErrors, 'name')} value={formData.name} onChange={(e) => setField('name', e.target.value)} />
+                    <FieldError errors={formErrors} field="name" />
                   </div>
                   <div className="space-y-2">
-                    <Label>Phone Number</Label>
-                    <Input value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })} />
+                    <Label>Phone Number <RequiredMark /></Label>
+                    <Input className={validationErrorClass(formErrors, 'phone')} value={formData.phone} onChange={(e) => setField('phone', e.target.value)} />
+                    <FieldError errors={formErrors} field="phone" />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>Type</Label>
-                    <Select value={formData.personType || 'driver'} onValueChange={(value) => setFormData({ ...formData, personType: value as Driver['personType'] })}>
+                    <Select value={formData.personType || 'driver'} onValueChange={(value) => setField('personType', value as Driver['personType'])}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
                         {CREW_TYPE_OPTIONS.map((item) => (
@@ -266,7 +307,7 @@ export default function MasterDrivers() {
                   </div>
                   <div className="space-y-2">
                     <Label>Status</Label>
-                    <Select value={formData.status} onValueChange={(value) => setFormData({ ...formData, status: value as Driver['status'] })}>
+                    <Select value={formData.status} onValueChange={(value) => setField('status', value as Driver['status'])}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="active">Active</SelectItem>
@@ -279,36 +320,34 @@ export default function MasterDrivers() {
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>Email</Label>
-                    <Input type="email" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} />
+                    <Input className={validationErrorClass(formErrors, 'email')} type="email" value={formData.email} onChange={(e) => setField('email', e.target.value)} />
+                    <FieldError errors={formErrors} field="email" />
                   </div>
                   <div className="space-y-2">
                     <Label>Emergency Contact</Label>
-                    <Input value={formData.emergencyContact} onChange={(e) => setFormData({ ...formData, emergencyContact: e.target.value })} />
+                    <Input value={formData.emergencyContact} onChange={(e) => setField('emergencyContact', e.target.value)} />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>License Number</Label>
-                    <Input value={formData.licenseNumber} onChange={(e) => setFormData({ ...formData, licenseNumber: e.target.value })} />
+                    <Input value={formData.licenseNumber} onChange={(e) => setField('licenseNumber', e.target.value)} />
                   </div>
                   <div className="space-y-2">
                     <Label>License Expiry</Label>
-                    <Input type="date" value={formData.licenseExpiry} onChange={(e) => setFormData({ ...formData, licenseExpiry: e.target.value })} />
+                    <Input type="date" value={formData.licenseExpiry} onChange={(e) => setField('licenseExpiry', e.target.value)} />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>Join Date</Label>
-                    <Input type="date" value={formData.joinDate} onChange={(e) => setFormData({ ...formData, joinDate: e.target.value })} />
+                    <Input type="date" value={formData.joinDate} onChange={(e) => setField('joinDate', e.target.value)} />
                   </div>
                   <div className="space-y-2">
                     <Label>Assigned Truck</Label>
                     <Select
                       value={formData.assignedTruckId || UNASSIGNED_TRUCK_VALUE}
-                      onValueChange={(value) => setFormData({
-                        ...formData,
-                        assignedTruckId: value === UNASSIGNED_TRUCK_VALUE ? undefined : value,
-                      })}
+                      onValueChange={(value) => setField('assignedTruckId', value === UNASSIGNED_TRUCK_VALUE ? undefined : value)}
                     >
                       <SelectTrigger>
                         <SelectValue placeholder={isLoadingTrucks ? 'Loading trucks...' : 'Select truck'} />
@@ -327,13 +366,13 @@ export default function MasterDrivers() {
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>Address</Label>
-                    <Input value={formData.address} onChange={(e) => setFormData({ ...formData, address: e.target.value })} />
+                    <Input value={formData.address} onChange={(e) => setField('address', e.target.value)} />
                   </div>
                 </div>
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={resetForm}>Cancel</Button>
-                <Button onClick={handleSubmit} disabled={!formData.name?.trim()}>
+                <Button onClick={handleSubmit}>
                   {editingDriver ? 'Update' : 'Add'} Crew Member
                 </Button>
               </DialogFooter>
@@ -494,6 +533,8 @@ export default function MasterDrivers() {
           </Table>
         </CardContent>
       </Card>
+
+      <ValidationAlert open={validationOpen} onOpenChange={setValidationOpen} messages={validationSummary} />
     </div>
   );
 }

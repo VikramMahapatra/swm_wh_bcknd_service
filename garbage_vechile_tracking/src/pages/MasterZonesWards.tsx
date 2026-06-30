@@ -15,6 +15,7 @@ import { Zone, Ward } from '@/data/masterData';
 import { Plus, Search, Edit, Trash2, MapPin, Users, Download, Loader2, Globe } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
 import { apiService } from '@/services/api';
+import { FieldError, RequiredMark, ValidationAlert, errorClass as validationErrorClass } from '@/components/FormValidation';
 
 export default function MasterZonesWards() {
   const { toast } = useToast();
@@ -52,10 +53,27 @@ export default function MasterZonesWards() {
     geofenceType: 'zone' as 'zone' | 'depot' | 'landfill' | 'parking' | 'maintenance',
     coordinates: '',
   });
+  const [zoneFormErrors, setZoneFormErrors] = useState<Record<string, string>>({});
+  const [wardFormErrors, setWardFormErrors] = useState<Record<string, string>>({});
+  const [geofenceFormErrors, setGeofenceFormErrors] = useState<Record<string, string>>({});
+  const [validationOpen, setValidationOpen] = useState(false);
+  const [validationSummary, setValidationSummary] = useState<string[]>([]);
+
+  const normalizeZone = (zone: any): Zone => ({
+    ...(zone || {}),
+    id: String(zone?.id || ''),
+    name: String(zone?.name || zone?.zone_name || ''),
+    code: String(zone?.code || zone?.zone_code || ''),
+    description: String(zone?.description || ''),
+    supervisorName: String(zone?.supervisorName || zone?.supervisor_name || ''),
+    supervisorPhone: String(zone?.supervisorPhone || zone?.supervisor_phone || ''),
+    totalWards: Number(zone?.totalWards || zone?.total_wards || 0) || 0,
+    status: (String(zone?.status || (zone?.active === false ? 'inactive' : 'active')) as 'active' | 'inactive'),
+  });
 
   useEffect(() => {
     if (zonesData) {
-      setZones(zonesData);
+      setZones((zonesData as any[]).map(normalizeZone));
     }
   }, [zonesData]);
 
@@ -130,29 +148,44 @@ export default function MasterZonesWards() {
 
   const getZoneName = (zoneId: string) => zones.find(z => z.id === zoneId)?.name || 'Unknown';
 
+  const showValidation = (errors: Record<string, string>) => {
+    setValidationSummary(Object.values(errors));
+    setValidationOpen(true);
+  };
+
   // Zone handlers
   const handleZoneSubmit = async () => {
+    const normalizedCode = String(zoneForm.code || '').trim().toUpperCase();
+    const normalizedName = String(zoneForm.name || '').trim();
+    const errors: Record<string, string> = {};
+    if (!normalizedName) errors.name = 'Zone Name is required.';
+    if (!normalizedCode) errors.code = 'Zone Code is required.';
+    else if (!/^[A-Z0-9_-]{2,32}$/.test(normalizedCode)) errors.code = 'Zone Code must be 2-32 chars and use A-Z, 0-9, _ or -.';
+    if (Object.keys(errors).length > 0) {
+      setZoneFormErrors(errors);
+      showValidation(errors);
+      return;
+    }
+    setZoneFormErrors({});
+    setValidationSummary([]);
     if (editingZone) {
-      setZones(prev => prev.map(z => z.id === editingZone.id ? { ...z, ...zoneForm } as Zone : z));
+      await apiService.updateZone(String(editingZone.id), {
+        code: normalizedCode,
+        name: normalizedName,
+        description: String(zoneForm.description || '').trim() || undefined,
+        supervisor_name: String(zoneForm.supervisorName || '').trim() || undefined,
+        supervisor_phone: String(zoneForm.supervisorPhone || '').trim() || undefined,
+        status: (zoneForm.status as 'active' | 'inactive') || 'active',
+      });
+      await refetchZones();
       toast({ title: "Zone Updated", description: "Zone information has been updated." });
     } else {
-      const normalizedCode = String(zoneForm.code || '').trim().toUpperCase();
-      const normalizedName = String(zoneForm.name || '').trim();
-      if (!normalizedName) {
-        toast({ title: "Validation Error", description: "Zone name is required.", variant: "destructive" });
-        return;
-      }
-      if (!normalizedCode || !/^[A-Z0-9_-]{2,32}$/.test(normalizedCode)) {
-        toast({
-          title: "Validation Error",
-          description: "Zone code must be 2-32 chars and use A-Z, 0-9, _ or -.",
-          variant: "destructive",
-        });
-        return;
-      }
       await apiService.createZone({
         code: normalizedCode,
         name: normalizedName,
+        description: String(zoneForm.description || '').trim() || undefined,
+        supervisor_name: String(zoneForm.supervisorName || '').trim() || undefined,
+        supervisor_phone: String(zoneForm.supervisorPhone || '').trim() || undefined,
         status: (zoneForm.status as 'active' | 'inactive') || 'active',
       });
       await refetchZones();
@@ -164,32 +197,62 @@ export default function MasterZonesWards() {
   const resetZoneForm = () => {
     setZoneForm({ name: '', code: '', description: '', supervisorName: '', supervisorPhone: '', totalWards: 0, status: 'active' });
     setEditingZone(null);
+    setZoneFormErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
     setIsZoneDialogOpen(false);
   };
 
   const openEditZoneDialog = (zone: Zone) => {
-    setEditingZone(zone);
-    setZoneForm(zone);
+    const normalizedZone = normalizeZone(zone);
+    setEditingZone(normalizedZone);
+    setZoneForm(normalizedZone);
+    setZoneFormErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
     setIsZoneDialogOpen(true);
   };
 
   // Ward handlers
   const handleWardSubmit = async () => {
+    const targetZoneId = String(wardForm.zoneId || '').trim();
+    const zoneName = zones.find((z) => z.id === targetZoneId)?.name || '';
+    const normalizedCode = String(wardForm.code || '').trim().toUpperCase();
+    const normalizedName = String(wardForm.name || '').trim();
+    const errors: Record<string, string> = {};
+    if (!normalizedName) errors.name = 'Ward Name is required.';
+    if (!targetZoneId || !zoneName) errors.zoneId = 'Please select a valid zone.';
+    if (Object.keys(errors).length > 0) {
+      setWardFormErrors(errors);
+      showValidation(errors);
+      return;
+    }
+    setWardFormErrors({});
+    setValidationSummary([]);
     if (editingWard) {
-      setWards(prev => prev.map(w => w.id === editingWard.id ? { ...w, ...wardForm } as Ward : w));
-      toast({ title: "Ward Updated", description: "Ward information has been updated." });
-    } else {
-      const targetZoneId = String(wardForm.zoneId || '').trim();
-      const zoneName = zones.find((z) => z.id === targetZoneId)?.name || '';
-      if (!targetZoneId || !zoneName) {
-        toast({ title: "Validation Error", description: "Please select a valid zone.", variant: "destructive" });
-        return;
-      }
-      await apiService.createWard({
-        code: String(wardForm.code || '').trim(),
-        name: String(wardForm.name || '').trim(),
+      await apiService.updateWard(String(editingWard.id), {
+        code: normalizedCode,
+        name: normalizedName,
         zoneName,
         status: (wardForm.status as 'active' | 'inactive') || 'active',
+        population: wardForm.population ?? 0,
+        area: wardForm.area ?? 0,
+        totalPickupPoints: wardForm.totalPickupPoints ?? 0,
+      });
+      if (selectedZoneId !== targetZoneId) {
+        setSelectedZoneId(targetZoneId);
+      }
+      await refetchWards();
+      toast({ title: "Ward Updated", description: "Ward information has been updated." });
+    } else {
+      await apiService.createWard({
+        code: normalizedCode,
+        name: normalizedName,
+        zoneName,
+        status: (wardForm.status as 'active' | 'inactive') || 'active',
+        population: wardForm.population ?? 0,
+        area: wardForm.area ?? 0,
+        totalPickupPoints: wardForm.totalPickupPoints ?? 0,
       });
       if (selectedZoneId !== targetZoneId) {
         setSelectedZoneId(targetZoneId);
@@ -204,12 +267,18 @@ export default function MasterZonesWards() {
   const resetWardForm = () => {
     setWardForm({ name: '', code: '', zoneId: '', population: 0, area: 0, totalPickupPoints: 0, status: 'active' });
     setEditingWard(null);
+    setWardFormErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
     setIsWardDialogOpen(false);
   };
 
   const openEditWardDialog = (ward: Ward) => {
     setEditingWard(ward);
     setWardForm(ward);
+    setWardFormErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
     setIsWardDialogOpen(true);
   };
 
@@ -287,18 +356,27 @@ export default function MasterZonesWards() {
   const resetGeofenceForm = () => {
     setGeofenceForm({ geofenceCode: '', geofenceName: '', geofenceType: 'zone', coordinates: '' });
     setEditingGeofence(null);
+    setGeofenceFormErrors({});
+    setValidationOpen(false);
+    setValidationSummary([]);
     setIsGeofenceDialogOpen(false);
   };
 
   const handleCreateGeofence = async () => {
-    if (!geofenceForm.geofenceCode.trim() || !geofenceForm.geofenceName.trim() || !geofenceForm.coordinates.trim()) {
-      toast({ title: "Validation Error", description: "Code, name and coordinates are required.", variant: "destructive" });
+    const errors: Record<string, string> = {};
+    if (!geofenceZoneId) errors.zoneId = 'Zone is required.';
+    if (geofenceFor !== 'zone' && !geofenceWardId) errors.wardId = 'Ward is required.';
+    if (geofenceFor === 'route' && !geofenceRouteId) errors.routeId = 'Route is required.';
+    if (!geofenceForm.geofenceCode.trim()) errors.geofenceCode = 'Geofence Code is required.';
+    if (!geofenceForm.geofenceName.trim()) errors.geofenceName = 'Geofence Name is required.';
+    if (!geofenceForm.coordinates.trim()) errors.coordinates = 'Coordinates are required.';
+    if (Object.keys(errors).length > 0) {
+      setGeofenceFormErrors(errors);
+      showValidation(errors);
       return;
     }
-    if (!geofenceZoneId || (geofenceFor !== 'zone' && !geofenceWardId) || (geofenceFor === 'route' && !geofenceRouteId)) {
-      toast({ title: "Validation Error", description: "Please select required Zone/Ward/Route context.", variant: "destructive" });
-      return;
-    }
+    setGeofenceFormErrors({});
+    setValidationSummary([]);
     setIsSubmittingGeofence(true);
     try {
       const payload = {
@@ -474,8 +552,8 @@ export default function MasterZonesWards() {
                 </DialogHeader>
                 <div className="grid gap-4 py-4">
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2"><Label>Zone Name</Label><Input value={zoneForm.name} onChange={(e) => setZoneForm({ ...zoneForm, name: e.target.value })} /></div>
-                    <div className="space-y-2"><Label>Zone Code</Label><Input value={zoneForm.code} onChange={(e) => setZoneForm({ ...zoneForm, code: e.target.value })} /></div>
+                    <div className="space-y-2"><Label>Zone Name <RequiredMark /></Label><Input className={validationErrorClass(zoneFormErrors, 'name')} value={zoneForm.name} onChange={(e) => { setZoneForm({ ...zoneForm, name: e.target.value }); setZoneFormErrors((current) => { const next = { ...current }; delete next.name; return next; }); }} /><FieldError errors={zoneFormErrors} field="name" /></div>
+                    <div className="space-y-2"><Label>Zone Code <RequiredMark /></Label><Input className={validationErrorClass(zoneFormErrors, 'code')} value={zoneForm.code} onChange={(e) => { setZoneForm({ ...zoneForm, code: e.target.value }); setZoneFormErrors((current) => { const next = { ...current }; delete next.code; return next; }); }} /><FieldError errors={zoneFormErrors} field="code" /></div>
                   </div>
                   <div className="space-y-2"><Label>Description</Label><Input value={zoneForm.description} onChange={(e) => setZoneForm({ ...zoneForm, description: e.target.value })} /></div>
                   <div className="grid grid-cols-2 gap-4">
@@ -523,8 +601,8 @@ export default function MasterZonesWards() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <div className="text-sm">{zone.supervisorName}</div>
-                        <div className="text-xs text-muted-foreground">{zone.supervisorPhone}</div>
+                        <div className="text-sm">{zone.supervisorName || (zone as any).supervisor_name || ''}</div>
+                        <div className="text-xs text-muted-foreground">{zone.supervisorPhone || (zone as any).supervisor_phone || ''}</div>
                       </TableCell>
                       <TableCell><Badge variant="outline">{wards.filter(w => w.zoneId === zone.id).length} wards</Badge></TableCell>
                       <TableCell>{getStatusBadge(zone.status)}</TableCell>
@@ -553,15 +631,16 @@ export default function MasterZonesWards() {
                 </DialogHeader>
                 <div className="grid gap-4 py-4">
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2"><Label>Ward Name</Label><Input value={wardForm.name} onChange={(e) => setWardForm({ ...wardForm, name: e.target.value })} /></div>
+                    <div className="space-y-2"><Label>Ward Name <RequiredMark /></Label><Input className={validationErrorClass(wardFormErrors, 'name')} value={wardForm.name} onChange={(e) => { setWardForm({ ...wardForm, name: e.target.value }); setWardFormErrors((current) => { const next = { ...current }; delete next.name; return next; }); }} /><FieldError errors={wardFormErrors} field="name" /></div>
                     <div className="space-y-2"><Label>Ward Code</Label><Input value={wardForm.code} onChange={(e) => setWardForm({ ...wardForm, code: e.target.value })} /></div>
                   </div>
                   <div className="space-y-2">
-                    <Label>Zone</Label>
-                    <Select value={wardForm.zoneId} onValueChange={(v) => setWardForm({ ...wardForm, zoneId: v })}>
-                      <SelectTrigger><SelectValue placeholder="Select zone" /></SelectTrigger>
+                    <Label>Zone <RequiredMark /></Label>
+                    <Select value={wardForm.zoneId} onValueChange={(v) => { setWardForm({ ...wardForm, zoneId: v }); setWardFormErrors((current) => { const next = { ...current }; delete next.zoneId; return next; }); }}>
+                      <SelectTrigger className={validationErrorClass(wardFormErrors, 'zoneId')}><SelectValue placeholder="Select zone" /></SelectTrigger>
                       <SelectContent>{zones.map(z => <SelectItem key={z.id} value={z.id}>{z.name}</SelectItem>)}</SelectContent>
                     </Select>
+                    <FieldError errors={wardFormErrors} field="zoneId" />
                   </div>
                   <div className="grid grid-cols-3 gap-4">
                     <div className="space-y-2"><Label>Population</Label><Input type="number" value={wardForm.population} onChange={(e) => setWardForm({ ...wardForm, population: Number(e.target.value) })} /></div>
@@ -647,30 +726,32 @@ export default function MasterZonesWards() {
                     </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label>Select Zone</Label>
-                    <Select value={geofenceZoneId} onValueChange={setGeofenceZoneId}>
-                      <SelectTrigger><SelectValue placeholder="Select zone" /></SelectTrigger>
+                    <Label>Select Zone <RequiredMark /></Label>
+                    <Select value={geofenceZoneId} onValueChange={(value) => { setGeofenceZoneId(value); setGeofenceFormErrors((current) => { const next = { ...current }; delete next.zoneId; return next; }); }}>
+                      <SelectTrigger className={validationErrorClass(geofenceFormErrors, 'zoneId')}><SelectValue placeholder="Select zone" /></SelectTrigger>
                       <SelectContent>
                         {zones.map((zone) => <SelectItem key={zone.id} value={zone.id}>{zone.name}</SelectItem>)}
                       </SelectContent>
                     </Select>
+                    <FieldError errors={geofenceFormErrors} field="zoneId" />
                   </div>
                   {geofenceFor !== 'zone' ? (
                     <div className="space-y-2">
-                      <Label>Select Ward</Label>
-                      <Select value={geofenceWardId} onValueChange={setGeofenceWardId}>
-                        <SelectTrigger><SelectValue placeholder="Select ward" /></SelectTrigger>
+                      <Label>Select Ward <RequiredMark /></Label>
+                      <Select value={geofenceWardId} onValueChange={(value) => { setGeofenceWardId(value); setGeofenceFormErrors((current) => { const next = { ...current }; delete next.wardId; return next; }); }}>
+                        <SelectTrigger className={validationErrorClass(geofenceFormErrors, 'wardId')}><SelectValue placeholder="Select ward" /></SelectTrigger>
                         <SelectContent>
                           {wardOptionsForGeofence.map((ward) => <SelectItem key={ward.id} value={ward.id}>{ward.name}</SelectItem>)}
                         </SelectContent>
                       </Select>
+                      <FieldError errors={geofenceFormErrors} field="wardId" />
                     </div>
                   ) : null}
                   {geofenceFor === 'route' ? (
                     <div className="space-y-2">
-                      <Label>Select Route</Label>
-                      <Select value={geofenceRouteId} onValueChange={setGeofenceRouteId}>
-                        <SelectTrigger><SelectValue placeholder="Select route" /></SelectTrigger>
+                      <Label>Select Route <RequiredMark /></Label>
+                      <Select value={geofenceRouteId} onValueChange={(value) => { setGeofenceRouteId(value); setGeofenceFormErrors((current) => { const next = { ...current }; delete next.routeId; return next; }); }}>
+                        <SelectTrigger className={validationErrorClass(geofenceFormErrors, 'routeId')}><SelectValue placeholder="Select route" /></SelectTrigger>
                         <SelectContent>
                           {routeOptionsForGeofence.map((route: any) => (
                             <SelectItem key={String(route.id ?? route.route_id)} value={String(route.id ?? route.route_id)}>
@@ -679,11 +760,12 @@ export default function MasterZonesWards() {
                           ))}
                         </SelectContent>
                       </Select>
+                      <FieldError errors={geofenceFormErrors} field="routeId" />
                     </div>
                   ) : null}
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2"><Label>Geofence Code</Label><Input value={geofenceForm.geofenceCode} onChange={(e) => setGeofenceForm((prev) => ({ ...prev, geofenceCode: e.target.value }))} /></div>
-                    <div className="space-y-2"><Label>Geofence Name</Label><Input value={geofenceForm.geofenceName} onChange={(e) => setGeofenceForm((prev) => ({ ...prev, geofenceName: e.target.value }))} /></div>
+                    <div className="space-y-2"><Label>Geofence Code <RequiredMark /></Label><Input className={validationErrorClass(geofenceFormErrors, 'geofenceCode')} value={geofenceForm.geofenceCode} onChange={(e) => { setGeofenceForm((prev) => ({ ...prev, geofenceCode: e.target.value })); setGeofenceFormErrors((current) => { const next = { ...current }; delete next.geofenceCode; return next; }); }} /><FieldError errors={geofenceFormErrors} field="geofenceCode" /></div>
+                    <div className="space-y-2"><Label>Geofence Name <RequiredMark /></Label><Input className={validationErrorClass(geofenceFormErrors, 'geofenceName')} value={geofenceForm.geofenceName} onChange={(e) => { setGeofenceForm((prev) => ({ ...prev, geofenceName: e.target.value })); setGeofenceFormErrors((current) => { const next = { ...current }; delete next.geofenceName; return next; }); }} /><FieldError errors={geofenceFormErrors} field="geofenceName" /></div>
                   </div>
                   <div className="space-y-2">
                     <Label>Geofence Type</Label>
@@ -699,12 +781,14 @@ export default function MasterZonesWards() {
                     </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label>Coordinates</Label>
+                    <Label>Coordinates <RequiredMark /></Label>
                     <Input
+                      className={validationErrorClass(geofenceFormErrors, 'coordinates')}
                       value={geofenceForm.coordinates}
-                      onChange={(e) => setGeofenceForm((prev) => ({ ...prev, coordinates: e.target.value }))}
+                      onChange={(e) => { setGeofenceForm((prev) => ({ ...prev, coordinates: e.target.value })); setGeofenceFormErrors((current) => { const next = { ...current }; delete next.coordinates; return next; }); }}
                       placeholder="lat,lng;lat,lng;lat,lng;lat,lng"
                     />
+                    <FieldError errors={geofenceFormErrors} field="coordinates" />
                   </div>
                   <div className="space-y-2 pt-2 border-t border-border/60">
                     <Label>Bulk Coordinates CSV</Label>
@@ -869,6 +953,8 @@ export default function MasterZonesWards() {
 
         </TabsContent>
       </Tabs>
+
+      <ValidationAlert open={validationOpen} onOpenChange={setValidationOpen} messages={validationSummary} />
     </div>
   );
 }
