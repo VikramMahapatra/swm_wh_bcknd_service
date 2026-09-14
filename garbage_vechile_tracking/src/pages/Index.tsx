@@ -41,6 +41,7 @@ import {
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useSwmLiveFleet } from "@/hooks/useSwmLiveFleet";
 import { useActiveAlerts, useReportsData, useSpareTrucks, useTicketStatistics, useTickets, useVehicles, useVendors, useVendorPerformance } from "@/hooks/useDataQueries";
 
@@ -112,6 +113,48 @@ const MetricCard = ({ title, value, subtitle, icon: Icon, tone, onClick, active 
   </Card>
 );
 
+type DrilldownZoneWardFilterProps = {
+  zone: string;
+  ward: string;
+  zones: string[];
+  wards: string[];
+  onZoneChange: (value: string) => void;
+  onWardChange: (value: string) => void;
+};
+
+const DrilldownZoneWardFilter = ({ zone, ward, zones, wards, onZoneChange, onWardChange }: DrilldownZoneWardFilterProps) => (
+  <div className="flex flex-wrap items-center gap-2">
+    <Select
+      value={zone}
+      onValueChange={(value) => {
+        onZoneChange(value);
+        onWardChange("all");
+      }}
+    >
+      <SelectTrigger className="h-8 w-[130px] text-xs">
+        <SelectValue placeholder="Zone" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="all">All Zones</SelectItem>
+        {zones.map((z) => (
+          <SelectItem key={z} value={z}>{z}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+    <Select value={ward} onValueChange={onWardChange}>
+      <SelectTrigger className="h-8 w-[130px] text-xs">
+        <SelectValue placeholder="Ward" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="all">All Wards</SelectItem>
+        {wards.map((w) => (
+          <SelectItem key={w} value={w}>{w}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  </div>
+);
+
 const TICKET_CATEGORY_COLORS: Record<string, string> = {
   complaint: "#ef4444",
   maintenance: "#f59e0b",
@@ -136,6 +179,9 @@ const Index = () => {
   const [activeDrilldown, setActiveDrilldown] = useState<"collection" | "average" | "coverage" | "fleet" | null>(null);
   const [fleetAvailabilityDrilldown, setFleetAvailabilityDrilldown] = useState<"active" | "inactive" | "idle" | "spare" | null>(null);
   const [selectedVendorId, setSelectedVendorId] = useState<string | null>(null);
+  // Shared zone/ward filter applied across all four drill-down panels
+  const [drilldownZone, setDrilldownZone] = useState<string>("all");
+  const [drilldownWard, setDrilldownWard] = useState<string>("all");
   const dateTo = format(new Date(), "yyyy-MM-dd");
   const dateFrom = format(subDays(new Date(), 6), "yyyy-MM-dd");
 
@@ -157,6 +203,47 @@ const Index = () => {
   const dailyCoverageRows: any[] = (reportsData as any).daily_pickup_coverage || [];
   const routePerformanceRows: any[] = (reportsData as any).route_performance || [];
   const spareUsageRows: any[] = (reportsData as any).spare_usage || [];
+
+  // ── Zone/Ward options + row-matching helper shared by all drill-down filters ──
+  const drilldownFilterOptions = useMemo(() => {
+    const zones = new Set<string>();
+    const wardsByZone = new Map<string, Set<string>>();
+    const addPair = (zone: string, ward: string) => {
+      if (!zone || zone === "Unmapped") return;
+      zones.add(zone);
+      if (!wardsByZone.has(zone)) wardsByZone.set(zone, new Set());
+      if (ward && ward !== "Unmapped") wardsByZone.get(zone)!.add(ward);
+    };
+    for (const row of materialRows as any[]) {
+      addPair(asText(row.zone, row.zoneName, row.zone_name, row.zone_id), asText(row.ward, row.wardName, row.ward_name, row.ward_id));
+    }
+    for (const row of dailyCoverageRows as any[]) {
+      addPair(asText(row.zone, row.zoneName, row.zone_name), asText(row.ward, row.wardName, row.ward_name));
+    }
+    for (const truck of (liveTrucks.length ? liveTrucks : vehicles) as any[]) {
+      addPair(
+        asText(truck.zoneName, truck.zone_name, truck.zone, truck.zoneId, truck.zone_id),
+        asText(truck.wardName, truck.ward_name, truck.ward, truck.wardId, truck.ward_id),
+      );
+    }
+    return { zones: Array.from(zones).sort(), wardsByZone };
+  }, [materialRows, dailyCoverageRows, liveTrucks, vehicles]);
+
+  const availableDrilldownWards = useMemo(() => {
+    if (drilldownZone === "all") {
+      const all = new Set<string>();
+      drilldownFilterOptions.wardsByZone.forEach((set) => set.forEach((w) => all.add(w)));
+      return Array.from(all).sort();
+    }
+    return Array.from(drilldownFilterOptions.wardsByZone.get(drilldownZone) || []).sort();
+  }, [drilldownZone, drilldownFilterOptions]);
+
+  const matchesDrilldownFilter = (zone: string, ward: string) => {
+    if (drilldownZone !== "all" && zone !== drilldownZone) return false;
+    if (drilldownWard !== "all" && ward !== drilldownWard) return false;
+    return true;
+  };
+
   const collection = useMemo(() => {
     const days = Array.from({ length: 7 }, (_, index) => {
       const date = format(subDays(new Date(dateTo), 6 - index), "yyyy-MM-dd");
@@ -175,6 +262,7 @@ const Index = () => {
       const material = asText(row.materialType, row.material_type, row.material, row.wasteType, row.waste_type);
       const zone = asText(row.zone, row.zoneName, row.zone_name, row.zone_id);
       const ward = asText(row.ward, row.wardName, row.ward_name, row.ward_id);
+      if (!matchesDrilldownFilter(zone, ward)) continue;
 
       totalKg += kg;
       entries += 1;
@@ -199,11 +287,16 @@ const Index = () => {
       wardTotals.set(wardKey, wardItem);
     }
 
-    const coverageTotal = dailyCoverageRows.reduce((sum, row) => sum + toNumber(row.totalPoints, row.total_points, row.totalPickupPoints), 0);
-    const coverageDone = dailyCoverageRows.reduce((sum, row) => sum + toNumber(row.covered, row.coveredPoints, row.covered_points, row.visitedPoints, row.visited_points), 0);
+    const coverageTotal = dailyCoverageRows
+      .filter((row) => matchesDrilldownFilter(asText(row.zone, row.zoneName, row.zone_name), asText(row.ward, row.wardName, row.ward_name)))
+      .reduce((sum, row) => sum + toNumber(row.totalPoints, row.total_points, row.totalPickupPoints), 0);
+    const coverageDone = dailyCoverageRows
+      .filter((row) => matchesDrilldownFilter(asText(row.zone, row.zoneName, row.zone_name), asText(row.ward, row.wardName, row.ward_name)))
+      .reduce((sum, row) => sum + toNumber(row.covered, row.coveredPoints, row.covered_points, row.visitedPoints, row.visited_points), 0);
     const pickupCoverage = coverageTotal > 0 ? Math.round((coverageDone / coverageTotal) * 100) : 0;
     const coverageMissed = Math.max(coverageTotal - coverageDone, 0);
     const coverageDetails = dailyCoverageRows
+      .filter((row) => matchesDrilldownFilter(asText(row.zone, row.zoneName, row.zone_name), asText(row.ward, row.wardName, row.ward_name)))
       .map((row) => {
         const totalPoints = toNumber(row.totalPoints, row.total_points, row.totalPickupPoints);
         const covered = toNumber(row.covered, row.coveredPoints, row.covered_points, row.visitedPoints, row.visited_points);
@@ -238,6 +331,7 @@ const Index = () => {
       .sort((a, b) => b.kg - a.kg)
       .slice(0, 5);
     const weighmentDetails = materialRows
+      .filter((row) => matchesDrilldownFilter(asText(row.zone, row.zoneName, row.zone_name, row.zone_id), asText(row.ward, row.wardName, row.ward_name, row.ward_id)))
       .map((row) => {
         const kg = toNumber(row.netWeightKg, row.net_weight_kg, row.weightKg, row.weight_kg, row.net_weight, row.weight, row.totalWeightKg);
         return {
@@ -279,16 +373,22 @@ const Index = () => {
       zones,
       wards,
     };
-  }, [dailyCoverageRows, dateTo, materialRows]);
+  }, [dailyCoverageRows, dateTo, materialRows, drilldownZone, drilldownWard]);
 
   const fleet = useMemo(() => {
     const statusCounts: Record<string, number> = { moving: 0, idle: 0, dumping: 0, offline: 0, breakdown: 0, active: 0, spare: 0 };
     const zoneCounts = new Map<string, { zone: string; active: number; idle: number; offline: number; spare: number; total: number }>();
-    const source = liveTrucks.length ? liveTrucks : vehicles;
+    const allSource = liveTrucks.length ? liveTrucks : vehicles;
+    const source = (allSource as any[]).filter((truck) =>
+      matchesDrilldownFilter(
+        asText(truck.zoneName, truck.zone_name, truck.zone, truck.zoneId, truck.zone_id),
+        asText(truck.wardName, truck.ward_name, truck.ward, truck.wardId, truck.ward_id),
+      ),
+    );
 
     for (const truck of source as any[]) {
       const status = String(truck.status || truck.current_status || truck.operational_status || "active").toLowerCase();
-      const zone = asText(truck.zoneId, truck.zone_id, truck.zone, truck.zoneName);
+      const zone = asText(truck.zoneName, truck.zone_name, truck.zone, truck.zoneId, truck.zone_id);
       const isSpare = Boolean(truck.isSpare || truck.is_spare || truck.route_type === "spare");
       const normalized = status.includes("offline") ? "offline" : status.includes("idle") ? "idle" : status.includes("dump") ? "dumping" : status.includes("break") ? "breakdown" : "moving";
       statusCounts[normalized] = (statusCounts[normalized] || 0) + 1;
@@ -313,9 +413,9 @@ const Index = () => {
         const normalized = status.includes("offline") ? "offline" : status.includes("idle") ? "idle" : status.includes("dump") ? "dumping" : status.includes("break") ? "breakdown" : "moving";
         return {
           truck: asText(truck.truckNumber, truck.registration_number, truck.vehicleNumber, truck.vehicle_id, truck.id),
-          zone: asText(truck.zoneId, truck.zone_id, truck.zone, truck.zoneName),
-          ward: asText(truck.wardId, truck.ward_id, truck.ward, truck.wardName),
-          route: asText(truck.routeName, truck.route_name, truck.routeId, truck.route_id),
+          zone: asText(truck.zoneName, truck.zone_name, truck.zone, truck.zoneId, truck.zone_id),
+          ward: asText(truck.wardName, truck.ward_name, truck.ward, truck.wardId, truck.ward_id),
+          route: asText(truck.route, truck.routeName, truck.route_name, truck.routeId, truck.route_id),
           status: normalized,
           speed: toNumber(truck.speed, truck.speed_kph),
           spare: Boolean(truck.isSpare || truck.is_spare || truck.route_type === "spare"),
@@ -370,7 +470,7 @@ const Index = () => {
         spare: buildAvailabilityBreakdown("spare"),
       },
     };
-  }, [liveTrucks, spareTrucks.length, spareUsageRows, vehicles]);
+  }, [liveTrucks, spareTrucks.length, spareUsageRows, vehicles, drilldownZone, drilldownWard]);
   const alerts = useMemo(() => {
     const bySeverity: Record<string, number> = {};
     const byType: Record<string, number> = {};
@@ -435,8 +535,8 @@ const Index = () => {
     // ── Build vehicle lookup for zone/ward cross-reference ──────────────────
     const vehicleMap = new Map<string, { zone: string; ward: string }>();
     for (const v of [...liveTrucks, ...vehicles] as any[]) {
-      const zone = asText(v.zone_id, v.zone, v.zoneName, v.zoneId);
-      const ward = asText(v.ward_id, v.ward, v.wardName, v.wardId);
+      const zone = asText(v.zoneName, v.zone_name, v.zone, v.zoneId, v.zone_id);
+      const ward = asText(v.wardName, v.ward_name, v.ward, v.wardId, v.ward_id);
       const ids = [
         String(v.id || ""),
         String(v.vehicle_id || ""),
@@ -604,10 +704,10 @@ const Index = () => {
           return {
             id: asText(truck.id, truck.vehicle_id),
             number: asText(truck.vehicle_number, truck.vehicleNumber, truck.registration_number, truck.truckNumber, truck.id),
-            // liveTrucks expose zone/ward names via zoneId/wardId; master-data trucks only have UUIDs
+            // zoneId/wardId hold UUIDs (used for API filters); zoneName/wardName hold display labels
             zone: asText(truck.zone_name, truck.zoneName, truck.zone, truck.zoneId, truck.zone_id),
             ward: asText(truck.ward_name, truck.wardName, truck.ward, truck.wardId, truck.ward_id),
-            route: asText(truck.route_name, truck.routeName, truck.route_id),
+            route: asText(truck.route, truck.route_name, truck.routeName, truck.route_id),
             status: norm,
             speed: toNumber(truck.speed, truck.speed_kph),
           };
@@ -716,6 +816,14 @@ const Index = () => {
                 <CardTitle className="flex items-center gap-2"><Recycle className="h-5 w-5 text-teal-700" /> 7-Day Collection Drill Down</CardTitle>
                 <p className="text-sm text-muted-foreground">Daily tons, material contribution, and largest weighment records in the selected 7-day report window.</p>
               </div>
+              <DrilldownZoneWardFilter
+                zone={drilldownZone}
+                ward={drilldownWard}
+                zones={drilldownFilterOptions.zones}
+                wards={availableDrilldownWards}
+                onZoneChange={setDrilldownZone}
+                onWardChange={setDrilldownWard}
+              />
               <div className="flex flex-wrap gap-2">
                 <Badge className="bg-teal-100 text-teal-800 hover:bg-teal-100">{formatTons(collection.totalKg)} collected</Badge>
                 <Badge variant="outline">{collection.entries} weighments</Badge>
@@ -767,6 +875,14 @@ const Index = () => {
                 <CardTitle className="flex items-center gap-2"><Activity className="h-5 w-5 text-cyan-700" /> Average Per Day Drill Down</CardTitle>
                 <p className="text-sm text-muted-foreground">Shows each day against the 7-day average so low/high collection days are visible immediately.</p>
               </div>
+              <DrilldownZoneWardFilter
+                zone={drilldownZone}
+                ward={drilldownWard}
+                zones={drilldownFilterOptions.zones}
+                wards={availableDrilldownWards}
+                onZoneChange={setDrilldownZone}
+                onWardChange={setDrilldownWard}
+              />
               <Badge className="bg-cyan-100 text-cyan-800 hover:bg-cyan-100">Average {formatTons(collection.avgPerDayKg)}</Badge>
             </div>
           </CardHeader>
@@ -803,6 +919,14 @@ const Index = () => {
                   Last 7 days from {dateFrom} to {dateTo}. Sorted by lowest coverage first so supervisors can act quickly.
                 </p>
               </div>
+              <DrilldownZoneWardFilter
+                zone={drilldownZone}
+                ward={drilldownWard}
+                zones={drilldownFilterOptions.zones}
+                wards={availableDrilldownWards}
+                onZoneChange={setDrilldownZone}
+                onWardChange={setDrilldownWard}
+              />
               <div className="flex flex-wrap gap-2">
                 <Badge className="bg-teal-100 text-teal-800 hover:bg-teal-100">{collection.coverageDone} covered</Badge>
                 <Badge className="bg-rose-100 text-rose-800 hover:bg-rose-100">{collection.coverageMissed} missed</Badge>
@@ -865,6 +989,14 @@ const Index = () => {
                 <CardTitle className="flex items-center gap-2"><Truck className="h-5 w-5 text-blue-700" /> Fleet Utilization Drill Down</CardTitle>
                 <p className="text-sm text-muted-foreground">Live fleet availability by status and zone. Utilization counts active, idle, moving and dumping vehicles as available.</p>
               </div>
+              <DrilldownZoneWardFilter
+                zone={drilldownZone}
+                ward={drilldownWard}
+                zones={drilldownFilterOptions.zones}
+                wards={availableDrilldownWards}
+                onZoneChange={setDrilldownZone}
+                onWardChange={setDrilldownWard}
+              />
               <div className="flex flex-wrap gap-2">
                 <Badge className="bg-blue-100 text-blue-800 hover:bg-blue-100">{fleet.utilization}% utilized</Badge>
                 <Badge className="bg-teal-100 text-teal-800 hover:bg-teal-100">{fleet.active} active</Badge>

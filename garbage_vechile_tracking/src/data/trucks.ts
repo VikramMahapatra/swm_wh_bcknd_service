@@ -58,6 +58,9 @@ export interface TruckLive {
   vendorId: string;
   zoneId: string;
   wardId: string;
+  // Human-readable labels, kept separate from zoneId/wardId which must stay UUIDs for API filters.
+  zoneName?: string;
+  wardName?: string;
   bearing?: number;
   isSpare?: boolean;
   replacingTruckId?: string;

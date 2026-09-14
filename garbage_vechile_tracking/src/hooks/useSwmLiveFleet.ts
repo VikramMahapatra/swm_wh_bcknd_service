@@ -105,6 +105,8 @@ function buildTruckFromSnapshot(item: SnapshotTruck): TruckData | null {
     // zoneId/wardId are used as filter query params (must be real UUIDs, not display names)
     zoneId: item.zone_id || item.zone_code || item.zone_name || "",
     wardId: item.ward_id || item.ward_code || item.ward_name || "",
+    zoneName: item.zone_name || item.zone_code || "",
+    wardName: item.ward_name || item.ward_code || "",
     isSpare: false,
     bearing: Number(item.heading ?? 0),
   };
