@@ -1149,7 +1149,7 @@ const Index = () => {
                 onClick={() => setFleetAvailabilityDrilldown((value) => value === "active" ? null : "active")}
                 className={`rounded-2xl bg-teal-50 p-4 text-left text-teal-950 transition hover:-translate-y-0.5 hover:shadow-md ${fleetAvailabilityDrilldown === "active" ? "ring-2 ring-teal-500/50" : ""}`}
               >
-                <p className="text-xs uppercase tracking-[0.2em]">Active</p>
+                <p className="text-xs uppercase tracking-[0.2em]">Active Device</p>
                 <p className="mt-1 text-3xl font-bold">{fleet.active}</p>
                 <p className="mt-1 text-xs opacity-70">Zone and ward drill-down</p>
               </button>
@@ -1158,7 +1158,7 @@ const Index = () => {
                 onClick={() => setFleetAvailabilityDrilldown((value) => value === "inactive" ? null : "inactive")}
                 className={`rounded-2xl bg-rose-50 p-4 text-left text-rose-950 transition hover:-translate-y-0.5 hover:shadow-md ${fleetAvailabilityDrilldown === "inactive" ? "ring-2 ring-rose-500/50" : ""}`}
               >
-                <p className="text-xs uppercase tracking-[0.2em]">Inactive</p>
+                <p className="text-xs uppercase tracking-[0.2em]">Inactive Device</p>
                 <p className="mt-1 text-3xl font-bold">{fleet.inactive}</p>
                 <p className="mt-1 text-xs opacity-70">Offline and breakdown</p>
               </button>
@@ -1167,7 +1167,7 @@ const Index = () => {
                 onClick={() => setFleetAvailabilityDrilldown((value) => value === "idle" ? null : "idle")}
                 className={`rounded-2xl bg-amber-50 p-4 text-left text-amber-950 transition hover:-translate-y-0.5 hover:shadow-md ${fleetAvailabilityDrilldown === "idle" ? "ring-2 ring-amber-500/50" : ""}`}
               >
-                <p className="text-xs uppercase tracking-[0.2em]">Idle</p>
+                <p className="text-xs uppercase tracking-[0.2em]">Idle Truck</p>
                 <p className="mt-1 text-3xl font-bold">{fleet.idle}</p>
                 <p className="mt-1 text-xs opacity-70">Stationary vehicles</p>
               </button>
@@ -1176,7 +1176,7 @@ const Index = () => {
                 onClick={() => setFleetAvailabilityDrilldown((value) => value === "spare" ? null : "spare")}
                 className={`rounded-2xl bg-blue-50 p-4 text-left text-blue-950 transition hover:-translate-y-0.5 hover:shadow-md ${fleetAvailabilityDrilldown === "spare" ? "ring-2 ring-blue-500/50" : ""}`}
               >
-                <p className="text-xs uppercase tracking-[0.2em]">Spare</p>
+                <p className="text-xs uppercase tracking-[0.2em]">Spare Usage</p>
                 <p className="mt-1 text-3xl font-bold">{fleet.spare}</p>
                 <p className="mt-1 text-xs opacity-70">Backup fleet spread</p>
               </button>

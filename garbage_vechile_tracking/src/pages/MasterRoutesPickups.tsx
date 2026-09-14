@@ -154,7 +154,13 @@ export default function MasterRoutesPickups() {
   const getZoneName = (zoneId: string) => zones.find(z => z.id === zoneId)?.name || 'Unknown';
   const getWardName = (wardId: string) => wards.find(w => w.id === wardId)?.name || 'Unknown';
   const getRouteName = (routeId: string) => routes.find(r => r.id === routeId)?.name || 'Unknown';
-  const getTruckReg = (truckId?: string) => truckId ? trucks.find(t => t.id === truckId)?.registrationNumber || 'Unknown' : 'Not Assigned';
+  const getTruckReg = (truckId?: string) => {
+    if (!truckId) return 'Not Assigned';
+    const truck = trucks.find(t => t.id === truckId);
+    return truck?.registration_number || truck?.registrationNumber || 'Unknown';
+  };
+  // Route -> truck assignment lives on the vehicle (route_id), not on the route itself.
+  const getAssignedTruckId = (routeId: string) => trucks.find(t => String(t.route_id ?? t.routeId ?? '') === routeId)?.id as string | undefined;
 
   // Route handlers
   const setRouteField = (field: string, value: any) => {
@@ -593,7 +599,7 @@ export default function MasterRoutesPickups() {
                       <Label>Assigned Truck</Label>
                       <Select value={routeForm.assignedTruckId || 'none'} onValueChange={(v) => setRouteField('assignedTruckId', v === 'none' ? '' : v)}>
                         <SelectTrigger><SelectValue placeholder="Select truck" /></SelectTrigger>
-                        <SelectContent><SelectItem value="none">Not Assigned</SelectItem>{trucks.filter(t => t.status === 'active').map(t => <SelectItem key={t.id} value={t.id}>{t.registrationNumber}</SelectItem>)}</SelectContent>
+                        <SelectContent><SelectItem value="none">Not Assigned</SelectItem>{trucks.map(t => <SelectItem key={t.id} value={t.id}>{t.registration_number || t.registrationNumber}</SelectItem>)}</SelectContent>
                       </Select>
                     </div>
                   </div>
@@ -651,7 +657,7 @@ export default function MasterRoutesPickups() {
                         <div className="text-sm">{getZoneName(route.zoneId)}</div>
                         <div className="text-xs text-muted-foreground">{getWardName(route.wardId)}</div>
                       </TableCell>
-                      <TableCell><Badge variant="outline">{getTruckReg(route.assignedTruckId)}</Badge></TableCell>
+                      <TableCell><Badge variant="outline">{getTruckReg(getAssignedTruckId(route.id))}</Badge></TableCell>
                       <TableCell>{route.totalPickupPoints}</TableCell>
                       <TableCell>
                         <div className="text-sm">{route.estimatedDistance} km</div>
@@ -679,7 +685,7 @@ export default function MasterRoutesPickups() {
                               setRouteFormErrors({});
                               setValidationOpen(false);
                               setValidationSummary([]);
-                              setRouteForm({ ...route, coordinates });
+                              setRouteForm({ ...route, assignedTruckId: getAssignedTruckId(route.id) || '', coordinates });
                               setIsRouteDialogOpen(true);
                             }}
                           ><Edit className="h-4 w-4" /></Button>
