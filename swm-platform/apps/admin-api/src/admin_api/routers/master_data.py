@@ -54,8 +54,33 @@ from admin_api.api_support import (
     _to_dict,
     require_roles,
 )
+from swm_common import get_settings
+from swm_redis import RealtimeCacheService, RedisClient, TruckDeviceMap
 
 router = APIRouter()
+_settings = get_settings()
+_realtime_cache = RealtimeCacheService(RedisClient.from_url(_settings.redis_url))
+
+
+async def _sync_device_map(session: AsyncSession, device_id: UUID, vehicle_id: UUID) -> None:
+    """Write-through the device->vehicle mapping to the realtime cache by IMEI.
+
+    Keeps ingestion-api's hot-path lookup authoritative without adding a
+    per-GPS-event DB round trip.
+    """
+    device = await session.get(DeviceORM, device_id)
+    if device is None:
+        return
+    await _realtime_cache.set_device_map(
+        TruckDeviceMap(imei=device.imei, device_id=str(device_id), vehicle_id=str(vehicle_id))
+    )
+
+
+async def _clear_device_map(session: AsyncSession, device_id: UUID) -> None:
+    device = await session.get(DeviceORM, device_id)
+    if device is None:
+        return
+    await _realtime_cache.clear_device_map(device.imei)
 
 SECONDARY_WASTE_TYPES = [
     {"value": "chicken_waste", "label": "CHICKEN WASTE"},
@@ -817,10 +842,13 @@ async def delete_device(
     session: AsyncSession = Depends(get_db_session),
 ) -> MessageResponse:
     repo = DeviceRepository(session)
+    device = await session.get(DeviceORM, device_id)
     try:
         await repo.delete(device_id)
     except NoResultFound:
         _raise_not_found("device", device_id)
+    if device is not None:
+        await _realtime_cache.clear_device_map(device.imei)
     return MessageResponse(message="deleted")
 
 
@@ -2437,6 +2465,7 @@ async def assign_device(
             remarks=payload.remarks,
         )
     )
+    await _sync_device_map(session, payload.device_id, payload.vehicle_id)
     return _to_dict(row)
 
 
@@ -2469,6 +2498,7 @@ async def reassign_device(
             remarks=remarks,
         )
     )
+    await _sync_device_map(session, device_id, vehicle_id)
     return _to_dict(row)
 
 
@@ -2483,6 +2513,7 @@ async def unassign_device(
     row = await svc.unassign_device(device_id, remarks=remarks)
     if row is None:
         _raise_not_found("device assignment", device_id)
+    await _clear_device_map(session, device_id)
     return MessageResponse(message="deleted")
 
 
@@ -2510,6 +2541,35 @@ async def list_device_assignments(
     )
 
 
+@router.post("/device-assignments/resync-cache")
+async def resync_device_assignment_cache(
+    _: RoleContext = Depends(require_roles("admin")),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Backfill the realtime device-map cache from active DB assignments.
+
+    One-time/maintenance operation (e.g. after a Redis flush, or to backfill
+    assignments created before write-through caching existed). Not on any
+    hot request path.
+    """
+    rows = (
+        await session.execute(
+            select(DeviceVehicleAssignmentORM, DeviceORM.imei)
+            .join(DeviceORM, DeviceVehicleAssignmentORM.device_id == DeviceORM.id)
+            .where(DeviceVehicleAssignmentORM.active.is_(True))
+        )
+    ).all()
+    for assignment, imei in rows:
+        await _realtime_cache.set_device_map(
+            TruckDeviceMap(
+                imei=imei,
+                device_id=str(assignment.device_id),
+                vehicle_id=str(assignment.vehicle_id),
+            )
+        )
+    return {"synced": len(rows)}
+
+
 @router.post("/device-assignments/import")
 async def bulk_import_device_assignments(
     file: UploadFile = File(...),
@@ -2521,13 +2581,16 @@ async def bulk_import_device_assignments(
     svc = DeviceVehicleAssignmentService(DeviceVehicleAssignmentRepository(session))
     created = 0
     for index, row in enumerate(rows, start=2):
+        device_id = _parse_import_uuid(row.get("device_id"), field="device_id", row_number=index)
+        vehicle_id = _parse_import_uuid(row.get("vehicle_id"), field="vehicle_id", row_number=index)
         await svc.assign(
             AssignmentCreateInput(
-                device_id=_parse_import_uuid(row.get("device_id"), field="device_id", row_number=index),
-                vehicle_id=_parse_import_uuid(row.get("vehicle_id"), field="vehicle_id", row_number=index),
+                device_id=device_id,
+                vehicle_id=vehicle_id,
                 assigned_from=_parse_import_datetime(row.get("assigned_from"), field="assigned_from", row_number=index),
                 remarks=row.get("remarks") or None,
             )
         )
+        await _sync_device_map(session, device_id, vehicle_id)
         created += 1
     return {"created": created}

@@ -668,7 +668,17 @@ export default function Fleet() {
         }
       />
 
-      <Tabs defaultValue="map" className="space-y-4">
+      <Tabs
+        defaultValue="map"
+        className="space-y-4"
+        onValueChange={(value) => {
+          // TabsContent unmounts the map when leaving this tab; clear the stale
+          // InfoWindow selection so it doesn't try to re-anchor on remount.
+          if (value !== "map") {
+            setSelectedMarker(null);
+          }
+        }}
+      >
         <TabsList>
           <TabsTrigger value="map" className="gap-2">
             <span className="relative flex h-2 w-2">

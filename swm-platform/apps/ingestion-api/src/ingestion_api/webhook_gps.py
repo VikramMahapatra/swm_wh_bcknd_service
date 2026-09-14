@@ -265,8 +265,17 @@ async def _fetch_device_context(
     cache: RealtimeCacheService,
     imei: str,
 ) -> tuple[str | None, str | None]:
-    """Return (device_id, vehicle_id) from realtime cache or (None, None)."""
-    last: TruckLast | None = await cache.get_last(imei)
+    """Return (device_id, vehicle_id) for an IMEI.
+
+    Prefers the authoritative ``truck:devicemap:{imei}`` cache (write-through
+    from admin-api on assignment changes). Falls back to the legacy
+    ``truck:last:{imei}`` attributes for devices not yet backfilled into the
+    device map. Both lookups run concurrently so this stays a single Redis
+    round trip in the common (device map hit) case.
+    """
+    device_map, last = await asyncio.gather(cache.get_device_map(imei), cache.get_last(imei))
+    if device_map is not None:
+        return device_map.device_id, device_map.vehicle_id
     if last is None:
         return None, None
     device_id = last.device_id

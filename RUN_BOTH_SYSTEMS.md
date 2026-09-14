@@ -117,3 +117,9 @@ Troubleshooting:
 
 - If you see HTTP 422 with `Request body must be a JSON array`, pull latest code and rerun this script. The current script sends the payload in API-compatible array format for Windows PowerShell.
 - Quick ingestion check: open `http://127.0.0.1:8001/healthz` and verify `{"status":"ok","service":"ingestion-api"}`.
+
+To run it for real, use
+
+$env:WEBHOOK_TARGET="both"        # local | prod | both (default)
+$env:INGESTION_WEBHOOK_SECRET="xastfu2wq"   # used for local target
+python fetch_and_forward.py

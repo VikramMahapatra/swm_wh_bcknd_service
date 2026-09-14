@@ -102,8 +102,9 @@ function buildTruckFromSnapshot(item: SnapshotTruck): TruckData | null {
     vehicleCapacity: "-",
     lastUpdate: eventTs,
     vendorId: item.vendor_id || "",
-    zoneId: item.zone_name || item.zone_code || item.zone_id || "",
-    wardId: item.ward_name || item.ward_code || item.ward_id || "",
+    // zoneId/wardId are used as filter query params (must be real UUIDs, not display names)
+    zoneId: item.zone_id || item.zone_code || item.zone_name || "",
+    wardId: item.ward_id || item.ward_code || item.ward_name || "",
     isSpare: false,
     bearing: Number(item.heading ?? 0),
   };
@@ -118,7 +119,8 @@ function mergeWsUpdate(existing: TruckData, msg: LiveWsMessage): TruckData {
 
   return {
     ...existing,
-    truckNumber: msg.vehicle_id || existing.truckNumber,
+    // vehicle_id on WS messages is an internal id (falls back to imei server-side),
+    // never the display number - keep the human-readable label from the snapshot.
     position: {
       lat: Number.isFinite(lat) ? lat : existing.position.lat,
       lng: Number.isFinite(lng) ? lng : existing.position.lng,

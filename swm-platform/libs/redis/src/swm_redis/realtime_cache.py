@@ -52,6 +52,7 @@ class RealtimeCacheConfig:
     last_seen_ttl_seconds: int = 60 * 60 * 24
     trip_ttl_seconds: int = 60 * 60 * 6
     geofence_ttl_seconds: int = 60 * 60 * 6
+    device_map_ttl_seconds: int = 60 * 60 * 24 * 30
 
 
 @dataclass(slots=True)
@@ -79,6 +80,19 @@ class TruckState:
 class TruckLastSeen:
     imei: str
     ts: datetime
+
+
+@dataclass(slots=True)
+class TruckDeviceMap:
+    """Authoritative IMEI -> device/vehicle identity, written on assignment change.
+
+    Kept separate from TruckLast so it is never overwritten by fallback values
+    computed from stream events (which default vehicle_id to the imei when unknown).
+    """
+
+    imei: str
+    device_id: str
+    vehicle_id: str
 
 
 @dataclass(slots=True)
@@ -123,6 +137,9 @@ class RealtimeCacheKeys:
 
     def truck_geofence(self, imei: str) -> str:
         return self._k(f"truck:geofence:{imei}")
+
+    def truck_device_map(self, imei: str) -> str:
+        return self._k(f"truck:devicemap:{imei}")
 
     def fleet_set(self, bucket: FleetBucket) -> str:
         return self._k(f"fleet:{bucket.value}")
@@ -202,6 +219,28 @@ class RealtimeCacheService:
         if payload is None:
             return None
         return TruckLastSeen(imei=payload["imei"], ts=self._dt(payload["ts"]))
+
+    async def set_device_map(self, model: TruckDeviceMap) -> None:
+        """Write-through cache update; call this whenever a device-vehicle assignment changes."""
+        await self.redis.set_json(
+            self.keys.truck_device_map(model.imei),
+            self._serialize_model(model),
+            ttl=self.config.device_map_ttl_seconds,
+        )
+
+    async def get_device_map(self, imei: str) -> TruckDeviceMap | None:
+        payload = await self.redis.get_json(self.keys.truck_device_map(imei))
+        self._record_lookup("truck_device_map", payload)
+        if payload is None:
+            return None
+        return TruckDeviceMap(
+            imei=payload["imei"],
+            device_id=payload["device_id"],
+            vehicle_id=payload["vehicle_id"],
+        )
+
+    async def clear_device_map(self, imei: str) -> None:
+        await self.redis.delete(self.keys.truck_device_map(imei))
 
     async def set_trip(self, model: TruckTrip) -> None:
         await self.redis.set_json(
