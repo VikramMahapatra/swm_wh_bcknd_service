@@ -475,8 +475,9 @@ const Index = () => {
     const bySeverity: Record<string, number> = {};
     const byType: Record<string, number> = {};
     const byCategory: Record<string, number> = {};
+    const todayAlerts = (activeAlerts as any[]).filter((alert) => normalizeDate(alert.triggered_at || alert.created_at) === dateTo);
 
-    for (const alert of activeAlerts as any[]) {
+    for (const alert of todayAlerts) {
       const severity = String(alert.severity || "medium").toLowerCase();
       const type = asText(alert.alert_type, alert.type, alert.title).replace(/_/g, " ");
       const category = asText(alert.category, alert.alert_category, alert.source, "Operations");
@@ -496,16 +497,16 @@ const Index = () => {
     const severityRows = ["critical", "high", "medium", "low"].map((name) => ({ name, value: bySeverity[name] || 0 }));
 
     return {
-      total: activeAlerts.length,
+      total: todayAlerts.length,
       critical: bySeverity.critical || 0,
       high: bySeverity.high || 0,
       topType: typeRows[0]?.name || "No active alerts",
       typeRows,
       categoryRows,
       severityRows,
-      operationsRisk: Math.min(100, Math.round((((bySeverity.critical || 0) * 9 + (bySeverity.high || 0) * 5 + (bySeverity.medium || 0) * 2 + activeAlerts.length) / Math.max(1, fleet.total)) * 10)),
+      operationsRisk: Math.min(100, Math.round((((bySeverity.critical || 0) * 9 + (bySeverity.high || 0) * 5 + (bySeverity.medium || 0) * 2 + todayAlerts.length) / Math.max(1, fleet.total)) * 10)),
     };
-  }, [activeAlerts, fleet.total]);
+  }, [activeAlerts, dateTo, fleet.total]);
 
   const routeAnomalies = routePerformanceRows.reduce((sum, row) => sum + toNumber(row.anomalyCount, row.anomaly_count, row.anomyCount, row.deviations, row.overspeeding), 0);
 
@@ -1370,7 +1371,7 @@ const Index = () => {
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <CardTitle className="flex items-center gap-2"><ShieldAlert className="h-5 w-5 text-rose-700" /> Alert Intelligence</CardTitle>
-                <p className="text-sm text-muted-foreground">Consolidated active alerts by severity, type and operational category</p>
+                <p className="text-sm text-muted-foreground">Today's active alerts by severity, type and operational category</p>
               </div>
               <Badge className="bg-rose-100 text-rose-800 hover:bg-rose-100">Risk score {alerts.operationsRisk}</Badge>
             </div>
@@ -1379,7 +1380,7 @@ const Index = () => {
             <div className="space-y-3">
               <div className="rounded-3xl bg-slate-950 p-5 text-white">
                 <div className="flex items-center justify-between">
-                  <p className="text-xs uppercase tracking-[0.28em] text-rose-200">Active Alerts</p>
+                  <p className="text-xs uppercase tracking-[0.28em] text-rose-200">Active Alerts Today</p>
                   <Bell className="h-5 w-5 text-rose-200" />
                 </div>
                 <p className="mt-3 text-5xl font-bold">{alerts.total}</p>

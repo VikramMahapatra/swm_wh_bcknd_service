@@ -3895,20 +3895,91 @@ async def reports_data(
                 truck,
                 {
                     "truck": truck,
+                    "vehicle_id": trip.get("vehicle_id"),
                     "type": trip.get("routeType") or "Vehicle",
                     "trips": 0,
                     "operatingHours": 0.0,
-                    "idleTime": 0.0,
+                    "idleTime": None,
                     "distance": 0.0,
-                    "utilization": 100,
+                    "utilization": None,
                 },
             )
             row["trips"] += 1
             row["operatingHours"] = round(float(row["operatingHours"]) + (float(trip.get("durationMinutes") or 0) / 60), 2)
+
+        trip_vehicle_ids = {str(trip.get("vehicle_id")) for trip in trip_completed if trip.get("vehicle_id")}
+        kpi_stmt = select(
+            AnalyticsDailyKPIORM.vehicle_id,
+            func.sum(AnalyticsDailyKPIORM.runtime_seconds).label("runtime_seconds"),
+            func.sum(AnalyticsDailyKPIORM.idle_seconds).label("idle_seconds"),
+            func.avg(AnalyticsDailyKPIORM.utilization_pct).label("utilization_pct"),
+        ).where(cast(AnalyticsDailyKPIORM.vehicle_id, String).in_(trip_vehicle_ids))
+        if date_from:
+            kpi_stmt = kpi_stmt.where(AnalyticsDailyKPIORM.metric_date >= date_from)
+        if date_to:
+            kpi_stmt = kpi_stmt.where(AnalyticsDailyKPIORM.metric_date <= date_to)
+        kpi_stmt = kpi_stmt.group_by(AnalyticsDailyKPIORM.vehicle_id)
+        kpi_rows = (await session.execute(kpi_stmt)).all()
+        kpi_by_vehicle = {
+            str(row.vehicle_id): row
+            for row in kpi_rows
+        }
+        for utilization_row in utilization_by_truck.values():
+            kpi = kpi_by_vehicle.get(str(utilization_row["vehicle_id"]))
+            if kpi is None:
+                continue
+            utilization_row["idleTime"] = round(float(kpi.idle_seconds or 0) / 3600, 2)
+            utilization_row["utilization"] = round(float(kpi.utilization_pct or 0), 1)
         payload["truck_utilization"] = list(utilization_by_truck.values())
 
     if wants("fuel_consumption"):
-        payload["fuel_consumption"] = []
+        fuel_stmt = select(
+            AnalyticsDailyKPIORM.vehicle_id,
+            func.sum(AnalyticsDailyKPIORM.fuel_used_l).label("fuel_used_l"),
+            func.sum(AnalyticsDailyKPIORM.distance_km).label("distance_km"),
+        ).where(AnalyticsDailyKPIORM.fuel_used_l > 0)
+        if date_from:
+            fuel_stmt = fuel_stmt.where(AnalyticsDailyKPIORM.metric_date >= date_from)
+        if date_to:
+            fuel_stmt = fuel_stmt.where(AnalyticsDailyKPIORM.metric_date <= date_to)
+        if vehicle_id:
+            fuel_stmt = fuel_stmt.where(AnalyticsDailyKPIORM.vehicle_id == vehicle_id)
+        fuel_stmt = fuel_stmt.group_by(AnalyticsDailyKPIORM.vehicle_id)
+        fuel_rows = (await session.execute(fuel_stmt)).all()
+        fuel_vehicle_ids = {str(row.vehicle_id) for row in fuel_rows}
+        vehicle_labels: dict[str, str] = {}
+        if fuel_vehicle_ids:
+            vehicle_label_rows = (
+                await session.execute(
+                    select(VehicleORM.id, VehicleORM.vehicle_number, VehicleORM.registration_number)
+                    .where(
+                        or_(
+                            cast(VehicleORM.id, String).in_(fuel_vehicle_ids),
+                            VehicleORM.vehicle_number.in_(fuel_vehicle_ids),
+                            VehicleORM.registration_number.in_(fuel_vehicle_ids),
+                        )
+                    )
+                )
+            ).all()
+            for vehicle_row in vehicle_label_rows:
+                label = vehicle_row.vehicle_number or vehicle_row.registration_number or str(vehicle_row.id)
+                vehicle_labels[str(vehicle_row.id)] = label
+                if vehicle_row.vehicle_number:
+                    vehicle_labels[str(vehicle_row.vehicle_number)] = label
+                if vehicle_row.registration_number:
+                    vehicle_labels[str(vehicle_row.registration_number)] = label
+        payload["fuel_consumption"] = [
+            {
+                "truck": vehicle_labels.get(str(row.vehicle_id), str(row.vehicle_id)),
+                "fuelUsed": round(float(row.fuel_used_l or 0), 2),
+                "distance": round(float(row.distance_km or 0), 2),
+                "efficiency": round(float(row.distance_km or 0) / float(row.fuel_used_l), 2) if row.fuel_used_l else None,
+                "cost": None,
+                "anomaly": False,
+                "score": None,
+            }
+            for row in fuel_rows
+        ]
     if wants("complaints"):
         payload["complaints"] = []
     if wants("spare_usage"):

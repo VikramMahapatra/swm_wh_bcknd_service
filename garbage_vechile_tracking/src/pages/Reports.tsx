@@ -349,6 +349,43 @@ export default function Reports() {
   const [lateWardFilter, setLateWardFilter] = useState("all");
   const [lateVendorFilter, setLateVendorFilter] = useState("all");
   const [lateRouteTypeFilter, setLateRouteTypeFilter] = useState("all");
+
+  const fuelSummary = useMemo(() => {
+    const rows = fuelConsumptionData.filter((row) => {
+      if (fuelAnomalyFilter === "all") return true;
+      if (fuelAnomalyFilter === "anomaly") return row.anomaly;
+      return !row.anomaly;
+    });
+    const totalFuel = rows.reduce((sum, row) => sum + (Number(row.fuelUsed) || 0), 0);
+    const totalDistance = rows.reduce((sum, row) => sum + (Number(row.distance) || 0), 0);
+    const costRows = rows.filter((row) => row.cost !== null && row.cost !== undefined);
+    return {
+      totalFuel,
+      totalDistance,
+      efficiency: totalFuel > 0 ? totalDistance / totalFuel : null,
+      totalCost: costRows.length ? costRows.reduce((sum, row) => sum + (Number(row.cost) || 0), 0) : null,
+      anomalies: rows.filter((row) => row.anomaly).length,
+    };
+  }, [fuelAnomalyFilter, fuelConsumptionData]);
+
+  const truckUtilizationSummary = useMemo(() => {
+    const rows = truckTypeFilter === "all"
+      ? truckUtilizationData
+      : truckUtilizationData.filter((row) => row.type === truckTypeFilter);
+    const totalTrips = rows.reduce((sum, row) => sum + (Number(row.trips) || 0), 0);
+    const operatingHours = rows.reduce((sum, row) => sum + (Number(row.operatingHours) || 0), 0);
+    const idleRows = rows.filter((row) => row.idleTime !== null && row.idleTime !== undefined);
+    const utilizationRows = rows.filter((row) => row.utilization !== null && row.utilization !== undefined);
+    return {
+      totalTrips,
+      operatingHours,
+      idleHours: idleRows.reduce((sum, row) => sum + (Number(row.idleTime) || 0), 0),
+      avgUtilization: utilizationRows.length
+        ? utilizationRows.reduce((sum, row) => sum + (Number(row.utilization) || 0), 0) / utilizationRows.length
+        : null,
+      hasIdleData: idleRows.length > 0,
+    };
+  }, [truckTypeFilter, truckUtilizationData]);
   
   // Sync with URL param
   useEffect(() => {
@@ -2094,7 +2131,7 @@ export default function Reports() {
                   <Truck className="h-5 w-5 text-primary" />
                   Truck Utilization Report
                 </CardTitle>
-                <CardDescription>Trips, operating hours, idle time, and vehicle utilization</CardDescription>
+                <CardDescription>Trips, operating hours, idle time, and vehicle utilization for {appliedFilters.dateFrom === appliedFilters.dateTo ? appliedFilters.dateFrom : `${appliedFilters.dateFrom} to ${appliedFilters.dateTo}`}</CardDescription>
               </div>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" onClick={() => handleDownload("truck_utilization", "excel")}>
@@ -2125,26 +2162,26 @@ export default function Reports() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <Card className="bg-primary/10 border-primary/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-primary">15</p>
+                    <p className="text-2xl font-bold text-primary">{truckUtilizationSummary.totalTrips}</p>
                     <p className="text-xs text-muted-foreground">Total Trips</p>
                   </CardContent>
                 </Card>
                 <Card className="bg-blue-500/10 border-blue-500/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-blue-600">41.5 hrs</p>
+                    <p className="text-2xl font-bold text-blue-600">{truckUtilizationSummary.operatingHours.toFixed(1)} hrs</p>
                     <p className="text-xs text-muted-foreground">Operating Hours</p>
                   </CardContent>
                 </Card>
                 <Card className="bg-orange-500/10 border-orange-500/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-orange-600">6.1 hrs</p>
-                    <p className="text-xs text-muted-foreground">Total Idle Time</p>
+                    <p className="text-2xl font-bold text-orange-600">{truckUtilizationSummary.hasIdleData ? `${truckUtilizationSummary.idleHours.toFixed(1)} hrs` : "-"}</p>
+                    <p className="text-xs text-muted-foreground">Total Idle Time (recorded)</p>
                   </CardContent>
                 </Card>
                 <Card className="bg-green-500/10 border-green-500/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-green-600">89.2%</p>
-                    <p className="text-xs text-muted-foreground">Avg Utilization</p>
+                    <p className="text-2xl font-bold text-green-600">{truckUtilizationSummary.avgUtilization === null ? "-" : `${truckUtilizationSummary.avgUtilization.toFixed(1)}%`}</p>
+                    <p className="text-xs text-muted-foreground">Avg Utilization (recorded)</p>
                   </CardContent>
                 </Card>
               </div>
@@ -2183,9 +2220,9 @@ export default function Reports() {
                           <TableCell className="text-center">{row.distance}</TableCell>
                           <TableCell>
                             <div className="flex items-center gap-2">
-                              <Progress value={row.utilization} className="h-2 w-20" />
-                              <span className={`text-sm font-medium ${row.utilization >= 90 ? "text-green-600" : row.utilization >= 80 ? "text-yellow-600" : "text-red-600"}`}>
-                                {row.utilization}%
+                              <Progress value={row.utilization ?? 0} className="h-2 w-20" />
+                              <span className={`text-sm font-medium ${row.utilization === null || row.utilization === undefined ? "text-muted-foreground" : row.utilization >= 90 ? "text-green-600" : row.utilization >= 80 ? "text-yellow-600" : "text-red-600"}`}>
+                                {row.utilization === null || row.utilization === undefined ? "-" : `${row.utilization}%`}
                               </span>
                             </div>
                           </TableCell>
@@ -2409,7 +2446,7 @@ export default function Reports() {
                   <Fuel className="h-5 w-5 text-primary" />
                   Fuel Consumption Report
                 </CardTitle>
-                <CardDescription>Fuel usage, efficiency metrics, anomaly detection, and costs</CardDescription>
+                <CardDescription>Fuel usage, efficiency metrics, anomaly detection, and costs for {appliedFilters.dateFrom === appliedFilters.dateTo ? appliedFilters.dateFrom : `${appliedFilters.dateFrom} to ${appliedFilters.dateTo}`}</CardDescription>
               </div>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" onClick={() => handleDownload("fuel_consumption", "excel")}>
@@ -2444,31 +2481,31 @@ export default function Reports() {
               <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                 <Card className="bg-primary/10 border-primary/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-primary">105L</p>
+                    <p className="text-2xl font-bold text-primary">{fuelSummary.totalFuel.toFixed(1)}L</p>
                     <p className="text-xs text-muted-foreground">Total Fuel</p>
                   </CardContent>
                 </Card>
                 <Card className="bg-blue-500/10 border-blue-500/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-blue-600">224 km</p>
+                    <p className="text-2xl font-bold text-blue-600">{fuelSummary.totalDistance.toFixed(1)} km</p>
                     <p className="text-xs text-muted-foreground">Total Distance</p>
                   </CardContent>
                 </Card>
                 <Card className="bg-green-500/10 border-green-500/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-green-600">2.21</p>
+                    <p className="text-2xl font-bold text-green-600">{fuelSummary.efficiency === null ? "-" : fuelSummary.efficiency.toFixed(2)}</p>
                     <p className="text-xs text-muted-foreground">Avg km/L</p>
                   </CardContent>
                 </Card>
                 <Card className="bg-orange-500/10 border-orange-500/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-orange-600">₹10,500</p>
-                    <p className="text-xs text-muted-foreground">Total Cost</p>
+                    <p className="text-2xl font-bold text-orange-600">{fuelSummary.totalCost === null ? "-" : `₹${fuelSummary.totalCost.toLocaleString()}`}</p>
+                    <p className="text-xs text-muted-foreground">Total Cost (recorded)</p>
                   </CardContent>
                 </Card>
                 <Card className="bg-red-500/10 border-red-500/20">
                   <CardContent className="p-4 text-center">
-                    <p className="text-2xl font-bold text-red-600">1</p>
+                    <p className="text-2xl font-bold text-red-600">{fuelSummary.anomalies}</p>
                     <p className="text-xs text-muted-foreground">Anomalies</p>
                   </CardContent>
                 </Card>
@@ -2501,10 +2538,10 @@ export default function Reports() {
                           <TableCell className="text-center">{row.distance}</TableCell>
                           <TableCell className="text-center">
                             <span className={row.efficiency >= 2.0 ? "text-green-600" : "text-red-600"}>
-                              {row.efficiency.toFixed(2)}
+                              {row.efficiency === null || row.efficiency === undefined ? "-" : row.efficiency.toFixed(2)}
                             </span>
                           </TableCell>
-                          <TableCell className="text-right">₹{row.cost.toLocaleString()}</TableCell>
+                          <TableCell className="text-right">{row.cost === null || row.cost === undefined ? "-" : `₹${row.cost.toLocaleString()}`}</TableCell>
                           <TableCell className="text-center">
                             {row.anomaly ? (
                               <Badge variant="destructive" className="gap-1">
@@ -2516,9 +2553,9 @@ export default function Reports() {
                           </TableCell>
                           <TableCell>
                             <div className="flex items-center gap-2">
-                              <Progress value={row.score} className="h-2 w-16" />
-                              <span className={`text-sm font-medium ${row.score >= 80 ? "text-green-600" : row.score >= 60 ? "text-yellow-600" : "text-red-600"}`}>
-                                {row.score}
+                              <Progress value={row.score ?? 0} className="h-2 w-16" />
+                              <span className={`text-sm font-medium ${row.score === null || row.score === undefined ? "text-muted-foreground" : row.score >= 80 ? "text-green-600" : row.score >= 60 ? "text-yellow-600" : "text-red-600"}`}>
+                                {row.score === null || row.score === undefined ? "-" : row.score}
                               </span>
                             </div>
                           </TableCell>
