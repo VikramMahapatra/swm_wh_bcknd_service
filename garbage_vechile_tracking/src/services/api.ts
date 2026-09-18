@@ -1129,7 +1129,7 @@ class ApiService {
   }
 
   // Tickets
-  async getTickets(filters?: { status?: string; priority?: string; category?: string }): Promise<any[]> {
+  async getTickets(filters?: { status?: string; priority?: string; category?: string; date_from?: string; date_to?: string }): Promise<any[]> {
     const suffix = this.toQueryString(filters);
     return this.fetchApi(`/tickets${suffix}`);
   }

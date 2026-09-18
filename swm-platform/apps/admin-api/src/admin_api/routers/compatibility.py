@@ -4504,6 +4504,8 @@ async def tickets_list(
     status: str | None = Query(default=None),
     priority: str | None = Query(default=None),
     category: str | None = Query(default=None),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
     _: RoleContext = Depends(require_roles("admin", "ops", "viewer")),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
@@ -4514,6 +4516,10 @@ async def tickets_list(
         stmt = stmt.where(TicketORM.priority == priority.strip().lower())
     if category:
         stmt = stmt.where(TicketORM.category == category.strip().lower())
+    if date_from:
+        stmt = stmt.where(TicketORM.created_at >= datetime.combine(date_from, time.min))
+    if date_to:
+        stmt = stmt.where(TicketORM.created_at <= datetime.combine(date_to, time.max))
 
     rows = (await session.execute(stmt.order_by(TicketORM.created_at.desc()))).scalars().all()
     return [_ticket_to_dict(row) for row in rows]

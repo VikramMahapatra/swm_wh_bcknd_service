@@ -269,15 +269,15 @@ function SmartCityMap({ vehicles, anomalies, crossings }: { vehicles: any[]; ano
             <path d="M20 20 L 82 22 L 78 80 L 25 84 Z" stroke="rgba(148,163,184,.3)" strokeWidth="0.3" fill="rgba(15,23,42,.22)" />
           </svg>
           {pickupMarkers.map((point) => (
-            <span key={point.id} className="absolute h-1.5 w-1.5 rounded-full bg-emerald-300/70 shadow-[0_0_10px_rgba(110,231,183,.8)]" style={{ left: `${point.position?.x}%`, top: `${point.position?.y}%` }} />
+            <span key={point.id} title="Pickup activity" className="absolute h-1.5 w-1.5 rounded-full bg-emerald-300/70 shadow-[0_0_10px_rgba(110,231,183,.8)]" style={{ left: `${point.position?.x}%`, top: `${point.position?.y}%` }} />
           ))}
           {anomalyMarkers.map((point) => (
-            <span key={point.id} className="absolute h-5 w-5 -translate-x-1/2 -translate-y-1/2 animate-pulse rounded-full border border-red-300/70 bg-red-500/20 shadow-[0_0_22px_rgba(248,113,113,.8)]" style={{ left: `${point.position?.x}%`, top: `${point.position?.y}%` }} />
+            <span key={point.id} title="Live anomaly" className="absolute h-5 w-5 -translate-x-1/2 -translate-y-1/2 animate-pulse rounded-full border border-red-300/70 bg-red-500/20 shadow-[0_0_22px_rgba(248,113,113,.8)]" style={{ left: `${point.position?.x}%`, top: `${point.position?.y}%` }} />
           ))}
           {markers.map((marker) => {
             const status = marker.speed > 3 ? "moving" : marker.ignition ? "idle" : "offline";
             return (
-              <div key={marker.id} className="absolute -translate-x-1/2 -translate-y-1/2" style={{ left: `${marker.position?.x}%`, top: `${marker.position?.y}%` }}>
+              <div key={marker.id} title={vehicleLabel(marker.id)} className="absolute -translate-x-1/2 -translate-y-1/2" style={{ left: `${marker.position?.x}%`, top: `${marker.position?.y}%` }}>
                 <div className={`flex h-8 w-8 items-center justify-center rounded-full border shadow-xl ${status === "moving" ? "border-emerald-300 bg-emerald-400/20 text-emerald-100 shadow-emerald-900" : status === "idle" ? "border-amber-300 bg-amber-400/20 text-amber-100 shadow-amber-900" : "border-slate-400 bg-slate-500/20 text-slate-200"}`}>
                   <Truck className="h-4 w-4" />
                 </div>
@@ -331,6 +331,10 @@ export default function Analytics() {
         drivers,
         maintenance,
         wards,
+        weighments,
+        vehicles,
+        routes,
+        pickupPoints,
       ] = await Promise.all([
         safe(() => apiService.getAnalyticsReport(period, queryFilters.base), { items: [], total: 0 }),
         safe(() => apiService.getAnalyticsVehicleUtilization(queryFilters.base), { items: [], total: 0 }),
@@ -345,13 +349,17 @@ export default function Analytics() {
         safe(() => apiService.getAnalyticsOverspeedEvents(queryFilters.timeBase), { items: [], total: 0 }),
         safe(() => apiService.getAnalyticsGeofenceEvents(queryFilters.timeBase), { items: [], total: 0 }),
         safe(() => apiService.getAnalyticsPickupPointCrossings(queryFilters.timeBase), { items: [], total: 0 }),
-        safe(() => apiService.getTickets({ category: "complaint" }), []),
+        safe(() => apiService.getTickets({ category: "complaint", date_from: dateFrom, date_to: dateTo }), []),
         safe(() => apiService.getTicketStatistics(), {}),
         safe(() => apiService.getDrivers(), []),
         safe(() => apiService.getMaintenancePredictions(), []),
         safe(() => apiService.getWards(), []),
+        safe(() => apiService.getDumpYardWeighments(queryFilters.base), []),
+        safe(() => apiService.getVehicles(), []),
+        safe(() => apiService.getRoutes(), []),
+        safe(() => apiService.getPickupPoints(), []),
       ]);
-      return { report, utilization, idleSummary, speedAnalysis, routeDeviation, fuelEfficiency, geofenceSummary, vehicleStates, trips, idleSegments, overspeedEvents, geofenceEvents, pickupCrossings, tickets, ticketStats, drivers, maintenance, wards };
+      return { report, utilization, idleSummary, speedAnalysis, routeDeviation, fuelEfficiency, geofenceSummary, vehicleStates, trips, idleSegments, overspeedEvents, geofenceEvents, pickupCrossings, tickets, ticketStats, drivers, maintenance, wards, weighments, vehicles, routes, pickupPoints };
     },
     refetchInterval: 30 * 1000,
     staleTime: 20 * 1000,
@@ -373,6 +381,30 @@ export default function Analytics() {
   const drivers = itemsOf(bundle.drivers);
   const maintenanceRows = itemsOf(bundle.maintenance);
   const wards = itemsOf(bundle.wards);
+  const weighmentRows = itemsOf(bundle.weighments);
+  const vehicleMasterRows = itemsOf(bundle.vehicles);
+  const routeMasterRows = itemsOf(bundle.routes);
+  const pickupPointMasterRows = itemsOf(bundle.pickupPoints);
+
+  const vehicleNames = new Map(vehicleMasterRows.flatMap((row) => {
+    const id = row.id || row.vehicle_id;
+    const name = row.registration_number || row.vehicle_number || row.registrationNumber || row.name;
+    return id && name ? [[String(id), String(name)]] : [];
+  }));
+  const routeNames = new Map(routeMasterRows.flatMap((row) => {
+    const id = row.id || row.route_id;
+    const name = row.route_name || row.name || row.code;
+    return id && name ? [[String(id), String(name)]] : [];
+  }));
+  const pickupPointNames = new Map(pickupPointMasterRows.flatMap((row) => {
+    const id = row.id || row.pickup_point_id;
+    const name = row.name || row.point_name || row.point_code || row.code;
+    return id && name ? [[String(id), String(name)]] : [];
+  }));
+  const vehicleLabel = (value: unknown) => vehicleNames.get(String(value)) || String(value || "-");
+  const routeLabel = (value: unknown) => routeNames.get(String(value)) || String(value || "-");
+  const pickupPointLabel = (value: unknown) => pickupPointNames.get(String(value)) || String(value || "-");
+  const utilizationChartRows = utilizationRows.slice(0, 10).map((row) => ({ ...row, vehicle_label: vehicleLabel(row.vehicle_id) }));
 
   const driverRows = drivers.map((driver) => {
     const driverVehicleId = driver.assignedVehicle || driver.assigned_vehicle_id;
@@ -393,14 +425,16 @@ export default function Analytics() {
     const activeVehicles = vehicleStateRows.filter((row) => Boolean(row.last_ignition) || numberValue(row.last_speed_kph) > 3).length;
     const inactiveVehicles = Math.max(0, vehicleStateRows.length - activeVehicles);
     const fuel = kpiRows.reduce((sum, row) => sum + numberValue(row.fuel_used_l), 0) || fuelRows.reduce((sum, row) => sum + numberValue(row.fuel_used_l), 0);
-    const wasteTons = Math.max(0, trips * 1.8 + crossingRows.length * 0.08);
+    const measuredWasteTons = weighmentRows.reduce((sum, row) => sum + numberValue(row.netWeightTon ?? row.net_weight_ton ?? row.net_weight_kg / 1000), 0);
+    const estimatedWasteTons = Math.max(0, trips * 1.8 + crossingRows.length * 0.08);
+    const wasteTons = measuredWasteTons > 0 ? measuredWasteTons : estimatedWasteTons;
     const missedPickups = Math.max(0, routeDeviationRows.reduce((sum, row) => sum + numberValue(row.trips_with_deviation), 0));
     const pendingPickups = Math.max(0, Math.round(trips * 12 - crossingRows.length));
     const slaCompliance = ticketRows.length ? ((ticketRows.length - ticketRows.filter((row) => row.sla_breached || row.slaBreached).length) / ticketRows.length) * 100 : Math.max(72, Math.min(99, utilization));
     const recycling = Math.min(68, Math.max(18, 24 + utilization / 4));
     const co2Reduced = Math.max(0, distance * 0.18 + recycling * 0.8);
-    return { trips, distance, idleSeconds, overspeed, utilization, activeVehicles, inactiveVehicles, fuel, wasteTons, missedPickups, pendingPickups, slaCompliance, recycling, co2Reduced };
-  }, [kpiRows, overspeedRows.length, vehicleStateRows, fuelRows, crossingRows.length, routeDeviationRows, ticketRows]);
+    return { trips, distance, idleSeconds, overspeed, utilization, activeVehicles, inactiveVehicles, fuel, wasteTons, measuredWasteTons, missedPickups, pendingPickups, slaCompliance, recycling, co2Reduced };
+  }, [kpiRows, overspeedRows.length, vehicleStateRows, fuelRows, crossingRows.length, routeDeviationRows, ticketRows, weighmentRows]);
 
   const trendRows = kpiRows.map((row) => ({
     period: getPeriodLabel(row),
@@ -434,9 +468,9 @@ export default function Analytics() {
     .slice(0, 5);
 
   const anomalyCards = [
-    ...overspeedRows.slice(0, 4).map((row) => ({ type: "Speed anomaly", severity: numberValue(row.speed_kph) > 90 ? "high" : "medium", timestamp: row.event_ts, vehicle: row.vehicle_id || row.imei, driver: "Assigned driver", location: `${formatNumber(row.lat, 5)}, ${formatNumber(row.lng, 5)}`, action: "Notify driver and verify speed governor" })),
-    ...geofenceEventRows.slice(0, 4).map((row) => ({ type: row.event_type || "Geofence event", severity: String(row.event_type).includes("deviation") ? "high" : "medium", timestamp: row.event_ts, vehicle: row.vehicle_id, driver: "Assigned driver", location: row.geofence_code || "Route geofence", action: "Compare actual route with planned corridor" })),
-    ...idleSegmentRows.slice(0, 3).map((row) => ({ type: "Excessive idle", severity: numberValue(row.duration_seconds) > 900 ? "high" : "medium", timestamp: row.started_at, vehicle: row.vehicle_id, driver: "Assigned driver", location: `${formatNumber(row.lat, 5)}, ${formatNumber(row.lng, 5)}`, action: "Call driver and validate stop reason" })),
+    ...overspeedRows.slice(0, 4).map((row) => ({ type: "Speed anomaly", severity: numberValue(row.speed_kph) > 90 ? "high" : "medium", timestamp: row.event_ts, vehicle: vehicleLabel(row.vehicle_id || row.imei), driver: "Assigned driver", location: `${formatNumber(row.lat, 5)}, ${formatNumber(row.lng, 5)}`, action: "Notify driver and verify speed governor" })),
+    ...geofenceEventRows.slice(0, 4).map((row) => ({ type: row.event_type || "Geofence event", severity: String(row.event_type).includes("deviation") ? "high" : "medium", timestamp: row.event_ts, vehicle: vehicleLabel(row.vehicle_id), driver: "Assigned driver", location: row.geofence_code || "Route geofence", action: "Compare actual route with planned corridor" })),
+    ...idleSegmentRows.slice(0, 3).map((row) => ({ type: "Excessive idle", severity: numberValue(row.duration_seconds) > 900 ? "high" : "medium", timestamp: row.started_at, vehicle: vehicleLabel(row.vehicle_id), driver: "Assigned driver", location: `${formatNumber(row.lat, 5)}, ${formatNumber(row.lng, 5)}`, action: "Call driver and validate stop reason" })),
   ].slice(0, 8);
 
   const anomalyDistribution = [
@@ -485,7 +519,7 @@ export default function Analytics() {
         </div>
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-6">
-          <CommandKpi label="Estimated Waste" value={`${formatNumber(totals.wasteTons, 1)} T`} hint="Estimate from trips and pickup crossings" icon={Recycle} tone="green" progress={totals.utilization} />
+          <CommandKpi label={totals.measuredWasteTons > 0 ? "Collected Waste" : "Estimated Waste"} value={`${formatNumber(totals.wasteTons, 1)} T`} hint={totals.measuredWasteTons > 0 ? "Measured from dump-yard weighments" : "Estimate from trips and pickup crossings"} icon={Recycle} tone="green" progress={totals.utilization} />
           <CommandKpi label="Collection Efficiency" value={pct(totals.utilization)} hint="Average utilization" icon={Target} tone="cyan" progress={totals.utilization} />
           <CommandKpi label="Active Vehicles" value={`${totals.activeVehicles}/${vehicleStateRows.length || 0}`} hint={`${totals.inactiveVehicles} inactive/offline`} icon={Truck} tone="blue" progress={vehicleStateRows.length ? (totals.activeVehicles / vehicleStateRows.length) * 100 : 0} />
           <CommandKpi label="Pending Pickups" value={formatNumber(totals.pendingPickups)} hint={`${formatNumber(totals.missedPickups)} missed/deviation trips`} icon={Clock} tone="amber" />
@@ -544,11 +578,11 @@ export default function Analytics() {
           </TabsContent>
 
           <TabsContent value="fleet" className="space-y-6">
-            <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1.2fr_.8fr]"><SmartCityMap vehicles={vehicleStateRows} anomalies={overspeedRows} crossings={crossingRows} /><DataTable title="Vehicle Activity Timeline" rows={vehicleStateRows.slice(0, 12)} columns={[{ key: "vehicle_id", label: "Vehicle" }, { key: "last_event_ts", label: "Last GPS", render: (row) => formatDateTime(row.last_event_ts || row.updated_at) }, { key: "last_speed_kph", label: "Speed", align: "right", render: (row) => `${formatNumber(row.last_speed_kph, 1)} km/h` }, { key: "last_ignition", label: "Status", align: "center", render: (row) => <Badge className={numberValue(row.last_speed_kph) > 3 ? "bg-emerald-500/15 text-emerald-100" : row.last_ignition ? "bg-amber-500/15 text-amber-100" : "bg-slate-500/20 text-slate-200"}>{numberValue(row.last_speed_kph) > 3 ? "moving" : row.last_ignition ? "idle" : "offline"}</Badge> }]} /></div>
+            <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1.2fr_.8fr]"><SmartCityMap vehicles={vehicleStateRows} anomalies={overspeedRows} crossings={crossingRows} /><DataTable title="Vehicle Activity Timeline" rows={vehicleStateRows.slice(0, 12)} columns={[{ key: "vehicle_id", label: "Vehicle", render: (row) => vehicleLabel(row.vehicle_id) }, { key: "last_event_ts", label: "Last GPS", render: (row) => formatDateTime(row.last_event_ts || row.updated_at) }, { key: "last_speed_kph", label: "Speed", align: "right", render: (row) => `${formatNumber(row.last_speed_kph, 1)} km/h` }, { key: "last_ignition", label: "Status", align: "center", render: (row) => <Badge className={numberValue(row.last_speed_kph) > 3 ? "bg-emerald-500/15 text-emerald-100" : row.last_ignition ? "bg-amber-500/15 text-amber-100" : "bg-slate-500/20 text-slate-200"}>{numberValue(row.last_speed_kph) > 3 ? "moving" : row.last_ignition ? "idle" : "offline"}</Badge> }]} /></div>
           </TabsContent>
 
           <TabsContent value="routes" className="space-y-6">
-            <div className="grid grid-cols-1 gap-6 xl:grid-cols-2"><DataTable title="Route Deviation Analytics" rows={routeDeviationRows} columns={[{ key: "vehicle_id", label: "Vehicle" }, { key: "trips_total", label: "Trips", align: "center" }, { key: "trips_with_deviation", label: "Deviation Trips", align: "center" }, { key: "avg_deviation_distance_km", label: "Avg Deviation", align: "right", render: (row) => row.avg_deviation_distance_km == null ? "-" : `${formatNumber(row.avg_deviation_distance_km, 2)} km` }]} /><Card className="border-slate-700 bg-slate-950/75"><CardHeader><CardTitle className="text-slate-100">Route Efficiency Comparison</CardTitle></CardHeader><CardContent className="h-[310px]"><ChartContainer config={chartConfig} className="h-full"><BarChart data={utilizationRows.slice(0, 10)}><CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,.2)" /><XAxis dataKey="vehicle_id" stroke="#94a3b8" /><YAxis stroke="#94a3b8" /><ChartTooltip content={<ChartTooltipContent />} /><Bar dataKey="utilization_pct" fill="#22d3ee" radius={[6, 6, 0, 0]} /></BarChart></ChartContainer></CardContent></Card></div>
+            <div className="grid grid-cols-1 gap-6 xl:grid-cols-2"><DataTable title="Route Deviation Analytics" rows={routeDeviationRows} columns={[{ key: "vehicle_id", label: "Vehicle", render: (row) => vehicleLabel(row.vehicle_id) }, { key: "trips_total", label: "Trips", align: "center" }, { key: "trips_with_deviation", label: "Deviation Trips", align: "center" }, { key: "avg_deviation_distance_km", label: "Avg Deviation", align: "right", render: (row) => row.avg_deviation_distance_km == null ? "-" : `${formatNumber(row.avg_deviation_distance_km, 2)} km` }]} /><Card className="border-slate-700 bg-slate-950/75"><CardHeader><CardTitle className="text-slate-100">Route Efficiency Comparison</CardTitle></CardHeader><CardContent className="h-[310px]"><ChartContainer config={chartConfig} className="h-full"><BarChart data={utilizationChartRows}><CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,.2)" /><XAxis dataKey="vehicle_label" stroke="#94a3b8" /><YAxis stroke="#94a3b8" /><ChartTooltip content={<ChartTooltipContent />} /><Bar dataKey="utilization_pct" fill="#22d3ee" radius={[6, 6, 0, 0]} /></BarChart></ChartContainer></CardContent></Card></div>
           </TabsContent>
 
           <TabsContent value="anomalies" className="space-y-6">
@@ -556,12 +590,12 @@ export default function Analytics() {
           </TabsContent>
 
           <TabsContent value="drivers" className="space-y-6">
-            <div className="grid grid-cols-1 gap-6 xl:grid-cols-2"><DataTable title="Fleet Utilization" rows={utilizationRows} columns={[{ key: "metric_date", label: "Date" }, { key: "vehicle_id", label: "Vehicle" }, { key: "utilization_pct", label: "Utilization", align: "right", render: (row) => pct(row.utilization_pct) }, { key: "distance_km", label: "Distance", align: "right", render: (row) => `${formatNumber(row.distance_km, 2)} km` }, { key: "trips_count", label: "Trips", align: "center" }]} /><DataTable title="Driver Scorecards" description="Live score when supplied by driver data; otherwise based on assigned vehicle utilization" rows={driverRows.slice(0, 12)} columns={[{ key: "name", label: "Driver" }, { key: "phone", label: "Phone" }, { key: "assignedVehicle", label: "Truck", render: (row) => row.assignedVehicle || row.assigned_vehicle_id || "-" }, { key: "liveScore", label: "Score", align: "center", render: (row) => row.liveScore == null ? <span className="text-slate-500">-</span> : <Badge className="bg-emerald-500/15 text-emerald-100">{formatNumber(row.liveScore)}</Badge> }]} /></div>
-            <DataTable title="Maintenance Alerts" rows={maintenanceRows} columns={[{ key: "vehicle_id", label: "Vehicle" }, { key: "risk", label: "Risk", render: (row) => <Badge className={severityClass(row.risk || row.severity)}>{row.risk || row.severity || "medium"}</Badge> }, { key: "reason", label: "Reason" }, { key: "suggestion", label: "Suggested Maintenance" }]} />
+            <div className="grid grid-cols-1 gap-6 xl:grid-cols-2"><DataTable title="Fleet Utilization" rows={utilizationRows} columns={[{ key: "metric_date", label: "Date" }, { key: "vehicle_id", label: "Vehicle", render: (row) => vehicleLabel(row.vehicle_id) }, { key: "utilization_pct", label: "Utilization", align: "right", render: (row) => pct(row.utilization_pct) }, { key: "distance_km", label: "Distance", align: "right", render: (row) => `${formatNumber(row.distance_km, 2)} km` }, { key: "trips_count", label: "Trips", align: "center" }]} /><DataTable title="Driver Scorecards" description="Live score when supplied by driver data; otherwise based on assigned vehicle utilization" rows={driverRows.slice(0, 12)} columns={[{ key: "name", label: "Driver" }, { key: "phone", label: "Phone" }, { key: "assignedVehicle", label: "Truck", render: (row) => vehicleLabel(row.assignedVehicle || row.assigned_vehicle_id) }, { key: "liveScore", label: "Score", align: "center", render: (row) => row.liveScore == null ? <span className="text-slate-500">-</span> : <Badge className="bg-emerald-500/15 text-emerald-100">{formatNumber(row.liveScore)}</Badge> }]} /></div>
+            <DataTable title="Maintenance Alerts" rows={maintenanceRows} columns={[{ key: "vehicle_id", label: "Vehicle", render: (row) => vehicleLabel(row.vehicle_id) }, { key: "risk", label: "Risk", render: (row) => <Badge className={severityClass(row.risk || row.severity)}>{row.risk || row.severity || "medium"}</Badge> }, { key: "reason", label: "Reason" }, { key: "suggestion", label: "Suggested Maintenance" }]} />
           </TabsContent>
 
           <TabsContent value="complaints" className="space-y-6">
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-4"><CommandKpi label="Total Complaints" value={formatNumber(bundle.ticketStats?.total ?? ticketRows.length)} hint="Citizen tickets" icon={Users} tone="blue" /><CommandKpi label="Open" value={formatNumber(bundle.ticketStats?.open ?? bundle.ticketStats?.open_count ?? ticketRows.filter((row) => row.status === "open").length)} hint="Awaiting action" icon={AlertTriangle} tone="amber" /><CommandKpi label="SLA" value={pct(totals.slaCompliance)} hint="Resolution compliance" icon={CheckCircle2} tone="green" /><CommandKpi label="Breached" value={formatNumber(bundle.ticketStats?.breached ?? bundle.ticketStats?.breached_count ?? 0)} hint="Escalate" icon={ShieldAlert} tone="red" /></div>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-4"><CommandKpi label="Total Complaints" value={formatNumber(ticketRows.length)} hint="Selected date range" icon={Users} tone="blue" /><CommandKpi label="Open" value={formatNumber(ticketRows.filter((row) => row.status === "open").length)} hint="Awaiting action" icon={AlertTriangle} tone="amber" /><CommandKpi label="SLA" value={pct(totals.slaCompliance)} hint="Selected date range" icon={CheckCircle2} tone="green" /><CommandKpi label="Breached" value={formatNumber(ticketRows.filter((row) => row.sla_breached || row.slaBreached).length)} hint="Selected date range" icon={ShieldAlert} tone="red" /></div>
             <DataTable title="Citizen Complaint Management" rows={ticketRows} columns={[{ key: "ticket_number", label: "Ticket" }, { key: "title", label: "Issue" }, { key: "category", label: "Category" }, { key: "priority", label: "Priority", render: (row) => <Badge className={severityClass(row.priority)}>{row.priority}</Badge> }, { key: "status", label: "Status" }, { key: "created_at", label: "Created", render: (row) => formatDateTime(row.created_at || row.createdAt) }]} />
           </TabsContent>
 
@@ -571,7 +605,7 @@ export default function Analytics() {
 
           <TabsContent value="reports" className="space-y-6">
             <DataTable title={`${period.replace("-", " ")} KPI Report`} description="Aggregated from analytics daily KPI tables" rows={kpiRows} columns={[{ key: "period_start", label: "Period", render: getPeriodLabel }, { key: "trips_count", label: "Trips", align: "center", render: (row) => formatNumber(row.trips_count) }, { key: "distance_km", label: "Distance", align: "right", render: (row) => `${formatNumber(row.distance_km, 2)} km` }, { key: "runtime_seconds", label: "Runtime", align: "center", render: (row) => formatDuration(row.runtime_seconds) }, { key: "idle_seconds", label: "Idle", align: "center", render: (row) => formatDuration(row.idle_seconds) }, { key: "overspeed_count", label: "Overspeed", align: "center" }, { key: "route_deviation_count", label: "Deviation", align: "center" }, { key: "utilization_pct", label: "Utilization", align: "right", render: (row) => pct(row.utilization_pct) }]} />
-            <div className="grid grid-cols-1 gap-6 xl:grid-cols-2"><DataTable title="Overspeed Events" rows={overspeedRows} columns={[{ key: "event_ts", label: "Time", render: (row) => formatDateTime(row.event_ts) }, { key: "vehicle_id", label: "Vehicle" }, { key: "imei", label: "IMEI" }, { key: "speed_kph", label: "Speed", align: "right", render: (row) => `${formatNumber(row.speed_kph, 1)} km/h` }, { key: "limit_kph", label: "Limit", align: "right", render: (row) => `${formatNumber(row.limit_kph, 1)} km/h` }]} /><DataTable title="Pickup Point Crossings" rows={crossingRows} columns={[{ key: "crossed_at", label: "Crossed", render: (row) => formatDateTime(row.crossed_at) }, { key: "vehicle_id", label: "Vehicle" }, { key: "route_id", label: "Route" }, { key: "pickup_point_id", label: "Pickup" }, { key: "distance_m", label: "Distance", align: "right", render: (row) => row.distance_m == null ? "-" : `${formatNumber(row.distance_m, 1)} m` }]} /></div>
+            <div className="grid grid-cols-1 gap-6 xl:grid-cols-2"><DataTable title="Overspeed Events" rows={overspeedRows} columns={[{ key: "event_ts", label: "Time", render: (row) => formatDateTime(row.event_ts) }, { key: "vehicle_id", label: "Vehicle", render: (row) => vehicleLabel(row.vehicle_id) }, { key: "imei", label: "Device", render: (row) => row.imei || "-" }, { key: "speed_kph", label: "Speed", align: "right", render: (row) => `${formatNumber(row.speed_kph, 1)} km/h` }, { key: "limit_kph", label: "Limit", align: "right", render: (row) => `${formatNumber(row.limit_kph, 1)} km/h` }]} /><DataTable title="Pickup Point Crossings" rows={crossingRows} columns={[{ key: "crossed_at", label: "Crossed", render: (row) => formatDateTime(row.crossed_at) }, { key: "vehicle_id", label: "Vehicle", render: (row) => vehicleLabel(row.vehicle_id) }, { key: "route_id", label: "Route", render: (row) => routeLabel(row.route_id) }, { key: "pickup_point_id", label: "Pickup Point", render: (row) => pickupPointLabel(row.pickup_point_id) }, { key: "distance_m", label: "Distance", align: "right", render: (row) => row.distance_m == null ? "-" : `${formatNumber(row.distance_m, 1)} m` }]} /></div>
           </TabsContent>
         </Tabs>
 
