@@ -183,7 +183,11 @@ def get_vehicle_gps_data(auth_token):
         verify=VENDOR_VERIFY_SSL,
     )
     response.raise_for_status()
-    return response.json()
+    data = response.json()
+    vendor_error = data.get("root", {}).get("error") if isinstance(data.get("root"), dict) else None
+    if vendor_error:
+        raise RuntimeError(f"Vendor GPS API error: {vendor_error}")
+    return data
 
 
 def is_token_expired(data):
@@ -208,6 +212,8 @@ def fetch_fleet_data():
         data = get_vehicle_gps_data(auth_token)
 
     vehicles = data.get("root", {}).get("VehicleData", [])
+    if not isinstance(vehicles, list):
+        raise ValueError("Vendor GPS API returned an invalid VehicleData payload.")
     print(f"Total vehicles received from vendor API: {len(vehicles)}")
     return vehicles
 

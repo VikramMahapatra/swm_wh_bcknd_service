@@ -64,6 +64,14 @@ const statusConfig: Record<TruckStatus, { color: string; label: string; bgClass:
 export default function Fleet() {
   // State
   const [selectedTruck, setSelectedTruck] = useState<TruckData | null>(null);
+  const [playbackDate, setPlaybackDate] = useState(() => formatLocalDate(new Date()));
+  const [playbackHours, setPlaybackHours] = useState("1");
+  const [playbackSpeed, setPlaybackSpeed] = useState("2");
+  const [playbackPoints, setPlaybackPoints] = useState<any[]>([]);
+  const [playbackIndex, setPlaybackIndex] = useState(0);
+  const [isPlaybackPlaying, setIsPlaybackPlaying] = useState(false);
+  const [isPlaybackLoading, setIsPlaybackLoading] = useState(false);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [selectedMarker, setSelectedMarker] = useState<string | null>(null);
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
@@ -578,10 +586,105 @@ export default function Fleet() {
     });
   }, [liveMapTrucks, searchTerm, filterType, filterStatus]);
 
+  const playbackFilteredTrucks = useMemo(() => {
+    return filteredTrucks.filter((truck) => {
+      const vehicle = getLinkedVehicle(truck);
+      const wardId = String(vehicle?.ward_id || vehicle?.wardId || "");
+      const zoneId = String(vehicle?.zone_id || vehicle?.zoneId || "");
+      const routeId = String(vehicle?.route_id || vehicle?.routeId || "");
+      const ward = wards.find((item) => String(item.id) === wardId);
+      const vehicleZoneId = zoneId || String(ward?.zoneId || ward?.zone_id || "");
+      return (filterZone === "all" || vehicleZoneId === filterZone)
+        && (filterWard === "all" || wardId === filterWard)
+        && (filterRoute === "all" || routeId === filterRoute);
+    });
+  }, [filteredTrucks, getLinkedVehicle, wards, filterZone, filterWard, filterRoute]);
+
   // Update selected truck data when filters change
   const currentSelectedTruck = selectedTruck 
     ? filteredTrucks.find(t => t.id === selectedTruck.id) || selectedTruck
     : null;
+
+  const playbackTruck = selectedTruck ? liveMapTrucks.find((truck) => truck.id === selectedTruck.id) || selectedTruck : null;
+  const playbackVehicle = getLinkedVehicle(playbackTruck);
+  const playbackPosition = playbackPoints[playbackIndex];
+  const playbackCrossedPickupPointIds = useMemo(() => {
+    if (!playbackPosition || selectedRoutePickupPoints.length === 0) return new Set<string>();
+    const toRadians = (value: number) => (value * Math.PI) / 180;
+    const distanceMeters = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => {
+      const radius = 6371000;
+      const dLat = toRadians(b.lat - a.lat);
+      const dLng = toRadians(b.lng - a.lng);
+      const lat1 = toRadians(a.lat);
+      const lat2 = toRadians(b.lat);
+      const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+      return 2 * radius * Math.asin(Math.sqrt(h));
+    };
+    return new Set(
+      selectedRoutePickupPoints
+        .filter((point) => distanceMeters(playbackPosition, point) <= 30)
+        .map((point) => point.id),
+    );
+  }, [playbackPosition, selectedRoutePickupPoints]);
+
+  const playbackWindow = useMemo(() => {
+    const end = new Date(`${playbackDate}T23:59:59+05:30`);
+    const now = new Date();
+    if (playbackDate === todayDate && now < end) end.setTime(now.getTime());
+    const start = new Date(end.getTime() - Number(playbackHours) * 60 * 60 * 1000);
+    return { from: start.toISOString(), to: end.toISOString() };
+  }, [playbackDate, playbackHours, todayDate]);
+
+  useEffect(() => {
+    let disposed = false;
+    setIsPlaybackPlaying(false);
+    setPlaybackIndex(0);
+    setPlaybackPoints([]);
+    setPlaybackError(null);
+    if (!playbackVehicle?.id) return undefined;
+
+    setIsPlaybackLoading(true);
+    apiService.getVehiclePlayback(String(playbackVehicle.id), playbackWindow.from, playbackWindow.to)
+      .then((payload) => {
+        if (disposed) return;
+        const points = (Array.isArray(payload?.telemetry_snapshots) ? payload.telemetry_snapshots : [])
+          .map((point: any) => ({
+            lat: Number(point.lat),
+            lng: Number(point.lon ?? point.lng),
+            speed: Number(point.speed_kph ?? 0),
+            heading: Number(point.heading ?? 0),
+            ts: point.ts,
+          }))
+          .filter((point: any) => Number.isFinite(point.lat) && Number.isFinite(point.lng))
+          .sort((a: any, b: any) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+        setPlaybackPoints(points);
+      })
+      .catch(() => {
+        if (!disposed) setPlaybackError("Playback data could not be loaded.");
+      })
+      .finally(() => {
+        if (!disposed) setIsPlaybackLoading(false);
+      });
+    return () => { disposed = true; };
+  }, [playbackVehicle?.id, playbackWindow]);
+
+  useEffect(() => {
+    if (!isPlaybackPlaying || playbackPoints.length < 2) return undefined;
+    const timer = window.setInterval(() => {
+      setPlaybackIndex((current) => {
+        if (current >= playbackPoints.length - 1) {
+          setIsPlaybackPlaying(false);
+          return current;
+        }
+        return current + 1;
+      });
+    }, Math.max(80, 700 / Number(playbackSpeed)));
+    return () => window.clearInterval(timer);
+  }, [isPlaybackPlaying, playbackPoints.length, playbackSpeed]);
+
+  useEffect(() => {
+    if (playbackPosition && mapRef.current) mapRef.current.panTo({ lat: playbackPosition.lat, lng: playbackPosition.lng });
+  }, [playbackPosition]);
 
   const handleTruckSelect = (truck: TruckData) => {
     setSelectedTruck(truck);
@@ -686,6 +789,10 @@ export default function Fleet() {
               <span className="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
             </span>
             Live Map
+          </TabsTrigger>
+          <TabsTrigger value="playback" className="gap-2">
+            <Clock className="h-4 w-4" />
+            Playback Fleet
           </TabsTrigger>
           <TabsTrigger value="list">Truck List</TabsTrigger>
           <TabsTrigger value="devices">GPS Devices Report</TabsTrigger>
@@ -1255,6 +1362,165 @@ export default function Fleet() {
               </CardContent>
             </Card>
           )}
+        </TabsContent>
+
+        <TabsContent value="playback" className="space-y-4 animate-in fade-in duration-500">
+          <Card className="border-primary/20 shadow-lg">
+            <CardHeader className="pb-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="flex items-center gap-2"><Clock className="h-5 w-5 text-primary" /> Playback Fleet</CardTitle>
+                  <p className="text-sm text-muted-foreground">Replay recorded vehicle movement from the selected date and time window.</p>
+                </div>
+                <Badge variant={playbackPoints.length ? "default" : "secondary"}>
+                  {playbackPoints.length ? `${playbackPoints.length} GPS points` : "No playback loaded"}
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Zone</label>
+                  <Select value={filterZone} onValueChange={(value) => { setFilterZone(value); setFilterWard("all"); setFilterRoute("all"); }}>
+                    <SelectTrigger><SelectValue placeholder="All zones" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All zones</SelectItem>
+                      {availableZones.map((zone) => <SelectItem key={zone.id} value={zone.id}>{zone.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Ward</label>
+                  <Select value={filterWard} onValueChange={(value) => { setFilterWard(value); setFilterRoute("all"); }}>
+                    <SelectTrigger><SelectValue placeholder="All wards" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All wards</SelectItem>
+                      {availableWards.map((ward) => <SelectItem key={ward.id} value={ward.id}>{ward.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Route</label>
+                  <Select value={filterRoute} onValueChange={setFilterRoute}>
+                    <SelectTrigger><SelectValue placeholder="All routes" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All routes</SelectItem>
+                      {availableRoutes.map((route) => <SelectItem key={route.id} value={route.id}>{route.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="grid gap-3 md:grid-cols-[1.2fr_0.8fr_0.8fr_0.8fr_auto] items-end">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Vehicle</label>
+                  <Select value={playbackTruck?.id || ""} onValueChange={(value) => {
+                      const truck = playbackFilteredTrucks.find((item) => item.id === value);
+                    if (truck) handleTruckSelect(truck);
+                  }}>
+                    <SelectTrigger><SelectValue placeholder="Select a vehicle" /></SelectTrigger>
+                    <SelectContent>
+                      {playbackFilteredTrucks.map((truck) => <SelectItem key={truck.id} value={truck.id}>{truck.truckNumber}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Play Date</label>
+                  <Input type="date" value={playbackDate} onChange={(event) => setPlaybackDate(event.target.value)} />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Play For</label>
+                  <Select value={playbackHours} onValueChange={setPlaybackHours}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {[1, 2, 3, 6, 12, 24].map((hours) => <SelectItem key={hours} value={String(hours)}>Last {hours} Hr{hours === 1 ? "" : "s"}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Play Speed</label>
+                  <Select value={playbackSpeed} onValueChange={setPlaybackSpeed}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {[1, 2, 4, 8].map((speed) => <SelectItem key={speed} value={String(speed)}>{speed}x</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button
+                  type="button"
+                  disabled={!playbackPoints.length || isPlaybackLoading}
+                  onClick={() => {
+                    if (playbackIndex >= playbackPoints.length - 1) setPlaybackIndex(0);
+                    setIsPlaybackPlaying((value) => !value);
+                  }}
+                >
+                  {isPlaybackPlaying ? "Pause" : playbackIndex >= playbackPoints.length - 1 && playbackPoints.length ? "Replay" : "Play"}
+                </Button>
+              </div>
+
+              {playbackPoints.length > 0 && (
+                <div className="space-y-2 rounded-xl border bg-muted/20 p-3">
+                  <input
+                    className="w-full accent-primary"
+                    type="range"
+                    min={0}
+                    max={Math.max(playbackPoints.length - 1, 0)}
+                    value={playbackIndex}
+                    onChange={(event) => { setIsPlaybackPlaying(false); setPlaybackIndex(Number(event.target.value)); }}
+                  />
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                    <span>{playbackPosition?.ts ? new Date(playbackPosition.ts).toLocaleString() : "-"}</span>
+                    <span>{playbackPosition?.speed ?? 0} km/h</span>
+                    <span>{playbackIndex + 1} / {playbackPoints.length}</span>
+                  </div>
+                </div>
+              )}
+              {isPlaybackLoading && <p className="text-sm text-muted-foreground">Loading recorded movement...</p>}
+              {playbackError && <p className="text-sm text-destructive">{playbackError}</p>}
+              {!playbackVehicle && <p className="text-sm text-muted-foreground">Select a vehicle to load its recorded movement.</p>}
+              {playbackVehicle && !isPlaybackLoading && !playbackError && !playbackPoints.length && <p className="text-sm text-muted-foreground">No telemetry was recorded for this vehicle in the selected window.</p>}
+
+              <div className="h-[620px] overflow-hidden rounded-2xl border">
+                <GoogleMap
+                  mapContainerStyle={containerStyle}
+                  center={KHARADI_CENTER}
+                  zoom={16}
+                  onLoad={onMapLoad}
+                  options={{ streetViewControl: false, zoomControl: true, fullscreenControl: true }}
+                >
+                  {isMapLoaded && window.google && playbackPoints.length > 1 && (
+                    <Polyline
+                      path={playbackPoints}
+                      options={{ strokeColor: "#0f766e", strokeOpacity: 0.85, strokeWeight: 5 }}
+                    />
+                  )}
+                  {isMapLoaded && window.google && selectedRoutePickupPoints.map((point) => (
+                    <Marker
+                      key={`playback-pickup-${point.id}`}
+                      position={{ lat: point.lat, lng: point.lng }}
+                      icon={{
+                        url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(
+                          `<svg width="30" height="30" viewBox="0 0 30 30" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="26" height="26" rx="7" fill="${playbackCrossedPickupPointIds.has(point.id) ? "#16a34a" : "#f59e0b"}" stroke="white" stroke-width="2"/><text x="15" y="20" text-anchor="middle" font-size="11" fill="white" font-weight="bold">${point.sequence}</text></svg>`,
+                        )}`,
+                        scaledSize: new window.google.maps.Size(30, 30),
+                      }}
+                      title={`${point.sequence}. ${point.name}${playbackCrossedPickupPointIds.has(point.id) ? " (Crossed)" : ""}`}
+                    />
+                  ))}
+                  {isMapLoaded && window.google && playbackPosition && (
+                    <Marker
+                      position={playbackPosition}
+                      icon={{
+                        url: createTruckMarkerIcon("moving", playbackTruck?.truckType || "primary", playbackPosition.heading, playbackPosition.speed),
+                        scaledSize: new window.google.maps.Size(64, 54),
+                        anchor: new window.google.maps.Point(32, 44),
+                      }}
+                      title={`${playbackTruck?.truckNumber || "Vehicle"} playback`}
+                    />
+                  )}
+                </GoogleMap>
+              </div>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="list">

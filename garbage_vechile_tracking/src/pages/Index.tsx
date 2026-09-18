@@ -182,13 +182,20 @@ const Index = () => {
   // Shared zone/ward filter applied across all four drill-down panels
   const [drilldownZone, setDrilldownZone] = useState<string>("all");
   const [drilldownWard, setDrilldownWard] = useState<string>("all");
+  const [coverageDays, setCoverageDays] = useState("7");
   const dateTo = format(new Date(), "yyyy-MM-dd");
   const dateFrom = format(subDays(new Date(), 6), "yyyy-MM-dd");
+  const coverageDateFrom = format(subDays(new Date(), Number(coverageDays) - 1), "yyyy-MM-dd");
 
   const { trucks: liveTrucks, isConnected } = useSwmLiveFleet();
   const { data: reportsData = {}, isLoading: reportsLoading } = useReportsData({
     report_type: "material_wise_collection,daily_pickup_coverage,spare_usage",
     date_from: dateFrom,
+    date_to: dateTo,
+  });
+  const { data: coverageReportsData = {}, isLoading: coverageLoading } = useReportsData({
+    report_type: "daily_pickup_coverage",
+    date_from: coverageDateFrom,
     date_to: dateTo,
   });
   const { data: activeAlerts = [] } = useActiveAlerts();
@@ -200,7 +207,7 @@ const Index = () => {
   const { data: ticketStats = {} } = useTicketStatistics();
 
   const materialRows: any[] = (reportsData as any).material_wise_collection || (reportsData as any).dump_yard || [];
-  const dailyCoverageRows: any[] = (reportsData as any).daily_pickup_coverage || [];
+  const dailyCoverageRows: any[] = (coverageReportsData as any).daily_pickup_coverage || [];
   const routePerformanceRows: any[] = (reportsData as any).route_performance || [];
   const spareUsageRows: any[] = (reportsData as any).spare_usage || [];
 
@@ -316,7 +323,14 @@ const Index = () => {
           status: asText(row.status, percent >= 90 ? "complete" : percent >= 70 ? "partial" : "attention"),
         };
       })
-      .sort((a, b) => a.percent - b.percent)
+      .sort((a, b) => (
+        b.date.localeCompare(a.date)
+        || a.zone.localeCompare(b.zone)
+        || a.ward.localeCompare(b.ward)
+        || b.totalPoints - a.totalPoints
+        || b.covered - a.covered
+        || b.percent - a.percent
+      ))
       .slice(0, 12);
 
     const mix = Array.from(materialMix, ([name, kg]) => ({ name, kg, tons: Number((kg / 1000).toFixed(2)) }))
@@ -917,8 +931,21 @@ const Index = () => {
                   Pickup Coverage Drill Down
                 </CardTitle>
                 <p className="text-sm text-muted-foreground">
-                  Last 7 days from {dateFrom} to {dateTo}. Sorted by lowest coverage first so supervisors can act quickly.
+                  Latest {coverageDays} day{coverageDays === "1" ? "" : "s"} from {coverageDateFrom} to {dateTo}, sorted newest first by date, zone, ward, points, and coverage.
                 </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-muted-foreground">Days</span>
+                <Select value={coverageDays} onValueChange={setCoverageDays}>
+                  <SelectTrigger className="h-8 w-[104px] text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[7, 6, 5, 3, 2, 1].map((days) => (
+                      <SelectItem key={days} value={String(days)}>{days} day{days === 1 ? "" : "s"}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <DrilldownZoneWardFilter
                 zone={drilldownZone}
@@ -936,7 +963,11 @@ const Index = () => {
             </div>
           </CardHeader>
           <CardContent>
-            {collection.coverageDetails.length ? (
+            {coverageLoading ? (
+              <div className="rounded-3xl border border-dashed bg-white/70 p-8 text-center text-sm text-muted-foreground">
+                Loading pickup coverage for {coverageDays} day{coverageDays === "1" ? "" : "s"}...
+              </div>
+            ) : collection.coverageDetails.length ? (
               <div className="overflow-hidden rounded-3xl border bg-white">
                 <div className="grid grid-cols-[1fr_0.8fr_0.8fr_0.8fr_1fr_0.8fr_1fr] bg-slate-50 px-4 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
                   <span>Date</span>
@@ -974,8 +1005,8 @@ const Index = () => {
               </div>
             ) : (
               <div className="rounded-3xl border border-dashed bg-white/70 p-8 text-center">
-                <p className="font-semibold text-foreground">No pickup coverage rows found for this 7-day window.</p>
-                <p className="mt-1 text-sm text-muted-foreground">If collection exists for older dates, the dashboard window may need a date selector next.</p>
+                <p className="font-semibold text-foreground">No pickup coverage rows found for this {coverageDays} day window.</p>
+                <p className="mt-1 text-sm text-muted-foreground">Try a wider day range or confirm that pickup crossing data is being ingested.</p>
               </div>
             )}
           </CardContent>

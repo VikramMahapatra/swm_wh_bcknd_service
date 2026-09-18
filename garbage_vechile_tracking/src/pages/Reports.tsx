@@ -1278,7 +1278,7 @@ export default function Reports() {
               <div>
                 <CardTitle className="flex items-center gap-2">
                   <MapPin className="h-5 w-5 text-primary" />
-                  Daily Pickup Coverage Report
+                  Live Daily Pickup Coverage Report
                 </CardTitle>
                 <CardDescription>Pickup points coverage by ward, zone, and truck with completion status</CardDescription>
               </div>

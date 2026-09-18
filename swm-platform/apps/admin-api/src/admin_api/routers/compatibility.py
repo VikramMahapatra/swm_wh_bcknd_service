@@ -3672,6 +3672,7 @@ async def reports_data(
             vehicle_stmt = vehicle_stmt.where(cast(WardORM.id, String) == ward_id)
         vehicle_rows = (await session.execute(vehicle_stmt)).all()
         vehicle_meta: dict[str, dict] = {}
+        vehicle_ids_for_drivers: set[str] = set()
         for row in vehicle_rows:
             info = {
                 "truck": row.vehicle_number,
@@ -3682,6 +3683,29 @@ async def reports_data(
             for key in (row.vehicle_id, row.vehicle_number, row.registration_number):
                 if key is not None:
                     vehicle_meta[str(key)] = info
+            vehicle_ids_for_drivers.add(str(row.vehicle_id))
+
+        driver_name_by_vehicle: dict[str, str] = {}
+        if vehicle_ids_for_drivers:
+            driver_rows = (
+                await session.execute(
+                    select(DriverORM.assigned_vehicle_id, DriverORM.name)
+                    .where(
+                        DriverORM.active.is_(True),
+                        DriverORM.person_type == "driver",
+                        cast(DriverORM.assigned_vehicle_id, String).in_(vehicle_ids_for_drivers),
+                    )
+                )
+            ).all()
+            for driver_row in driver_rows:
+                if driver_row.assigned_vehicle_id is not None:
+                    driver_name_by_vehicle[str(driver_row.assigned_vehicle_id)] = driver_row.name
+            for row in vehicle_rows:
+                driver_name = driver_name_by_vehicle.get(str(row.vehicle_id))
+                if driver_name:
+                    for key in (row.vehicle_id, row.vehicle_number, row.registration_number):
+                        if key is not None:
+                            driver_name_by_vehicle[str(key)] = driver_name
 
         route_rows = (await session.execute(select(RouteORM.id, RouteORM.route_name))).all()
         route_name_by_id = {str(row.id): row.route_name for row in route_rows}
@@ -3783,7 +3807,7 @@ async def reports_data(
                     "ward": vehicle_info.get("ward") or "-",
                     "zone": vehicle_info.get("zone") or "-",
                     "truck": vehicle_info.get("truck") or str(row.vehicle_id),
-                    "driver": "Unassigned",
+                    "driver": driver_name_by_vehicle.get(str(row.vehicle_id)) or "Unassigned",
                     "route": route_name_by_id.get(route_id or "", route_id or "-"),
                     "totalPoints": total_points,
                     "covered": covered,

@@ -293,6 +293,15 @@ class ApiService {
     return items.map((item) => this.toLegacyTruckModel(item));
   }
 
+  async getVehiclePlayback(vehicleId: string, fromTs: string, toTs: string): Promise<any> {
+    const params = new URLSearchParams({
+      from_ts: fromTs,
+      to_ts: toTs,
+      history_limit: "1000",
+    });
+    return this.fetchApi(`/v1/vehicles/${encodeURIComponent(vehicleId)}/detail?${params.toString()}`);
+  }
+
   async getTrucks(filters?: { zone_id?: string; vendor_id?: string; status?: string }): Promise<any[]> {
     const suffix = this.toQueryString(filters);
     return this.fetchApi(`/trucks${suffix}`);
