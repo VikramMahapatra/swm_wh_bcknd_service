@@ -38,6 +38,7 @@ const CollectionRate = lazy(() => import("./pages/CollectionRate"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 const GtcCheckpoint = lazy(() => import("./pages/GtcCheckpoint"));
 const CollectionTonToday = lazy(() => import("./pages/CollectionTonToday"));
+const AiChatbot = lazy(() => import("./pages/AiChatbot"));
 
 const queryClient = new QueryClient();
 
@@ -97,6 +98,7 @@ const App = () => (
                 <Route path="/collection-rate" element={<ProtectedRoute><CollectionRate /></ProtectedRoute>} />
                 <Route path="/gtc-checkpoint" element={<ProtectedRoute><GtcCheckpoint /></ProtectedRoute>} />
                 <Route path="/collection-ton-today" element={<ProtectedRoute><CollectionTonToday /></ProtectedRoute>} />
+                <Route path="/ai-chatbot" element={<ProtectedRoute><AiChatbot /></ProtectedRoute>} />
                 {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
                 <Route path="*" element={<NotFound />} />
               </Routes>

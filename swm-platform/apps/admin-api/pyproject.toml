@@ -9,6 +9,7 @@ dependencies = [
   "clickhouse-connect>=0.8.15",
   "openpyxl>=3.1.5",
   "reportlab>=4.2.2",
+  "openai>=1.55.3,<2",
   "swm-common",
   "swm-auth",
   "swm-db",

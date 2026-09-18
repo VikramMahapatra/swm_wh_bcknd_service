@@ -20,7 +20,8 @@ import {
   Car,
   LogOut,
   ClipboardCheck,
-  Scale
+  Scale,
+  MessageCircle
 } from 'lucide-react';
 import { NavLink } from '@/components/NavLink';
 import { useAuth } from '@/hooks/useAuth';
@@ -52,6 +53,7 @@ const menuItems = [
   { title: 'Reports', url: '/reports', icon: FileText },
   { title: 'Analytics', url: '/analytics', icon: BarChart3 },
   { title: 'GTS Checkpoint', url: '/gtc-checkpoint', icon: ClipboardCheck },
+  { title: 'AI Chat Bot', url: '/ai-chatbot', icon: MessageCircle },
   { title: 'Twitter Mentions', url: '/twitter', icon: Twitter },
   { title: 'Tickets', url: '/tickets', icon: Ticket },
   { title: 'Users', url: '/users', icon: Users },

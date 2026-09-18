@@ -96,6 +96,11 @@ from admin_api.routers import dashboard as dashboard_router  # noqa: PLC0415
 
 app.include_router(dashboard_router.router)
 
+# Self-contained AI Chat Bot module (see admin_api/modules/ai_chatbot/).
+from admin_api.modules.ai_chatbot.router import router as ai_chatbot_router  # noqa: PLC0415
+
+app.include_router(ai_chatbot_router)
+
 
 def run() -> None:
     uvicorn.run(

@@ -119,12 +119,14 @@ app.include_router(gtc_checkpoints.router, prefix="/api")
 
 # Import new routers
 from .routers import auth, tickets, social_media, analytics
+from .modules.ai_chatbot.router import router as ai_chatbot_router
 
 # Include new routers
 app.include_router(auth.router, prefix="/api")
 app.include_router(tickets.router, prefix="/api")
 app.include_router(social_media.router, prefix="/api")
 app.include_router(analytics.router, prefix="/api")
+app.include_router(ai_chatbot_router, prefix="/api")
 
 # WebSocket endpoint
 @app.websocket("/ws")
