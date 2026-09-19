@@ -68,7 +68,8 @@ export default function Fleet() {
   const [playbackHours, setPlaybackHours] = useState("1");
   const [playbackSpeed, setPlaybackSpeed] = useState("2");
   const [playbackPoints, setPlaybackPoints] = useState<any[]>([]);
-  const [playbackIndex, setPlaybackIndex] = useState(0);
+  // Fractional position between telemetry points so the marker glides instead of jumping.
+  const [playbackProgress, setPlaybackProgress] = useState(0);
   const [isPlaybackPlaying, setIsPlaybackPlaying] = useState(false);
   const [isPlaybackLoading, setIsPlaybackLoading] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
@@ -607,8 +608,61 @@ export default function Fleet() {
 
   const playbackTruck = selectedTruck ? liveMapTrucks.find((truck) => truck.id === selectedTruck.id) || selectedTruck : null;
   const playbackVehicle = getLinkedVehicle(playbackTruck);
-  const playbackPosition = playbackPoints[playbackIndex];
+  const playbackIndex = Math.min(Math.floor(playbackProgress), Math.max(playbackPoints.length - 1, 0));
+  const playbackAnchor = playbackPoints[playbackIndex];
+
+  const playbackPosition = useMemo(() => {
+    if (!playbackPoints.length) return undefined;
+    const maxIndex = playbackPoints.length - 1;
+    const clamped = Math.min(Math.max(playbackProgress, 0), maxIndex);
+    const base = Math.floor(clamped);
+    const from = playbackPoints[base];
+    const to = playbackPoints[Math.min(base + 1, maxIndex)];
+    const t = clamped - base;
+    if (!from || !to || t <= 0) return from;
+    const lerp = (a: number, b: number) => a + (b - a) * t;
+    const fromHeading = Number(from.heading) || 0;
+    const toHeading = Number(to.heading) || 0;
+    const headingDelta = ((toHeading - fromHeading + 540) % 360) - 180;
+    return {
+      ...from,
+      lat: lerp(from.lat, to.lat),
+      lng: lerp(from.lng, to.lng),
+      speed: lerp(Number(from.speed) || 0, Number(to.speed) || 0),
+      heading: (fromHeading + headingDelta * t + 360) % 360,
+    };
+  }, [playbackPoints, playbackProgress]);
+
+  // Per-segment pacing weights (1 = typical gap) so uneven telemetry gaps replay proportionally.
+  const playbackSegmentWeights = useMemo(() => {
+    if (playbackPoints.length < 2) return [] as number[];
+    const gaps = playbackPoints.slice(1).map((point: any, index: number) => {
+      const gap = new Date(point.ts).getTime() - new Date(playbackPoints[index].ts).getTime();
+      return Number.isFinite(gap) && gap > 0 ? gap : 0;
+    });
+    const positiveGaps = gaps.filter((gap) => gap > 0).sort((a, b) => a - b);
+    if (!positiveGaps.length) return gaps.map(() => 1);
+    const medianGap = positiveGaps[Math.floor(positiveGaps.length / 2)];
+    return gaps.map((gap) => (gap > 0 ? Math.min(Math.max(gap / medianGap, 0.25), 4) : 1));
+  }, [playbackPoints]);
+
+  const playbackSegmentWeightsRef = useRef<number[]>(playbackSegmentWeights);
+  playbackSegmentWeightsRef.current = playbackSegmentWeights;
+
+  // Bucketed so the marker icon is not rebuilt on every animation frame.
+  const playbackHeadingBucket = Math.round((Number(playbackPosition?.heading) || 0) / 5) * 5;
+  const playbackSpeedBucket = Math.round(Number(playbackPosition?.speed) || 0);
+  const playbackMarkerIcon = useMemo(() => {
+    if (!isMapLoaded || !window.google) return undefined;
+    return {
+      url: createTruckMarkerIcon("moving", playbackTruck?.truckType || "primary", playbackHeadingBucket, playbackSpeedBucket),
+      scaledSize: new window.google.maps.Size(64, 54),
+      anchor: new window.google.maps.Point(32, 44),
+    };
+  }, [isMapLoaded, playbackTruck?.truckType, playbackHeadingBucket, playbackSpeedBucket]);
+
   const playbackCrossedPickupPointIds = useMemo(() => {
+    const playbackPosition = playbackAnchor;
     if (!playbackPosition || selectedRoutePickupPoints.length === 0) return new Set<string>();
     const toRadians = (value: number) => (value * Math.PI) / 180;
     const distanceMeters = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => {
@@ -625,7 +679,7 @@ export default function Fleet() {
         .filter((point) => distanceMeters(playbackPosition, point) <= 30)
         .map((point) => point.id),
     );
-  }, [playbackPosition, selectedRoutePickupPoints]);
+  }, [playbackAnchor, selectedRoutePickupPoints]);
 
   const playbackWindow = useMemo(() => {
     const end = new Date(`${playbackDate}T23:59:59+05:30`);
@@ -638,7 +692,7 @@ export default function Fleet() {
   useEffect(() => {
     let disposed = false;
     setIsPlaybackPlaying(false);
-    setPlaybackIndex(0);
+    setPlaybackProgress(0);
     setPlaybackPoints([]);
     setPlaybackError(null);
     if (!playbackVehicle?.id) return undefined;
@@ -670,21 +724,42 @@ export default function Fleet() {
 
   useEffect(() => {
     if (!isPlaybackPlaying || playbackPoints.length < 2) return undefined;
-    const timer = window.setInterval(() => {
-      setPlaybackIndex((current) => {
-        if (current >= playbackPoints.length - 1) {
-          setIsPlaybackPlaying(false);
-          return current;
+    const maxProgress = playbackPoints.length - 1;
+    const stepMs = Math.max(80, 700 / Number(playbackSpeed));
+    let lastFrameTime = performance.now();
+    let frameId = window.requestAnimationFrame(function step(now: number) {
+      const elapsed = now - lastFrameTime;
+      lastFrameTime = now;
+      setPlaybackProgress((current) => {
+        const weights = playbackSegmentWeightsRef.current;
+        let budget = elapsed / stepMs;
+        let next = current;
+        while (budget > 0 && next < maxProgress) {
+          const segment = Math.floor(next);
+          const weight = weights[segment] ?? 1;
+          const costToSegmentEnd = (segment + 1 - next) * weight;
+          if (budget >= costToSegmentEnd) {
+            budget -= costToSegmentEnd;
+            next = segment + 1;
+          } else {
+            next += budget / weight;
+            budget = 0;
+          }
         }
-        return current + 1;
+        if (next >= maxProgress) {
+          setIsPlaybackPlaying(false);
+          return maxProgress;
+        }
+        return next;
       });
-    }, Math.max(80, 700 / Number(playbackSpeed)));
-    return () => window.clearInterval(timer);
+      frameId = window.requestAnimationFrame(step);
+    });
+    return () => window.cancelAnimationFrame(frameId);
   }, [isPlaybackPlaying, playbackPoints.length, playbackSpeed]);
 
   useEffect(() => {
-    if (playbackPosition && mapRef.current) mapRef.current.panTo({ lat: playbackPosition.lat, lng: playbackPosition.lng });
-  }, [playbackPosition]);
+    if (playbackAnchor && mapRef.current) mapRef.current.panTo({ lat: playbackAnchor.lat, lng: playbackAnchor.lng });
+  }, [playbackAnchor]);
 
   const handleTruckSelect = (truck: TruckData) => {
     setSelectedTruck(truck);
@@ -1449,7 +1524,7 @@ export default function Fleet() {
                   type="button"
                   disabled={!playbackPoints.length || isPlaybackLoading}
                   onClick={() => {
-                    if (playbackIndex >= playbackPoints.length - 1) setPlaybackIndex(0);
+                    if (playbackIndex >= playbackPoints.length - 1) setPlaybackProgress(0);
                     setIsPlaybackPlaying((value) => !value);
                   }}
                 >
@@ -1465,11 +1540,11 @@ export default function Fleet() {
                     min={0}
                     max={Math.max(playbackPoints.length - 1, 0)}
                     value={playbackIndex}
-                    onChange={(event) => { setIsPlaybackPlaying(false); setPlaybackIndex(Number(event.target.value)); }}
+                    onChange={(event) => { setIsPlaybackPlaying(false); setPlaybackProgress(Number(event.target.value)); }}
                   />
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                    <span>{playbackPosition?.ts ? new Date(playbackPosition.ts).toLocaleString() : "-"}</span>
-                    <span>{playbackPosition?.speed ?? 0} km/h</span>
+                    <span>{playbackAnchor?.ts ? new Date(playbackAnchor.ts).toLocaleString() : "-"}</span>
+                    <span>{Math.round(playbackPosition?.speed ?? 0)} km/h</span>
                     <span>{playbackIndex + 1} / {playbackPoints.length}</span>
                   </div>
                 </div>
@@ -1508,12 +1583,8 @@ export default function Fleet() {
                   ))}
                   {isMapLoaded && window.google && playbackPosition && (
                     <Marker
-                      position={playbackPosition}
-                      icon={{
-                        url: createTruckMarkerIcon("moving", playbackTruck?.truckType || "primary", playbackPosition.heading, playbackPosition.speed),
-                        scaledSize: new window.google.maps.Size(64, 54),
-                        anchor: new window.google.maps.Point(32, 44),
-                      }}
+                      position={{ lat: playbackPosition.lat, lng: playbackPosition.lng }}
+                      icon={playbackMarkerIcon}
                       title={`${playbackTruck?.truckNumber || "Vehicle"} playback`}
                     />
                   )}
